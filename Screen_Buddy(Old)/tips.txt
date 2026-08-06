@@ -1,0 +1,14 @@
+# Screen Buddy — Custom Tips
+# One tip per line. Lines starting with # are ignored.
+# Drop this file next to main.py and restart Screen Buddy.
+# These will be used instead of (or mixed with) the built-in tips.
+
+Drink some water! 💧
+Time to stand up and stretch! 🙆
+Save your work before you forget! 💾
+Take a 2-minute walk. Your body will thank you. 🚶
+Eyes feeling heavy? Close them for 30 seconds. 👁️
+Check in with a teammate — a quick message goes a long way. 💬
+Deep breath in... and out. 🌬️
+Commit your changes before lunch. 💻
+Write one thing you accomplished today. 📝
