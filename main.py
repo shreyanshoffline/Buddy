@@ -11,21 +11,21 @@ from models import run_manager_step, run_action_step
 # GLOBAL CONFIG
 # ============================================================
 
-# --- Model selection ---
-# Manager: writes plans / simple replies. Cheap model, low reasoning needs.
 MANAGER_MODEL = "google/gemini-2.5-flash-lite"
-# Worker: actually calls tools. Needs decent instruction-following.
-WORKER_MODEL = "google/gemini-2.5-flash-lite"
+DEFAULT_WORKER_MODEL = "google/gemini-2.5-flash-lite"
 
-# --- Token limits per call ---
+WORKER_MODELS = {
+    "simple_task": "google/gemini-2.5-flash-lite",
+    "moderate_task": "google/gemini-3.5-flash-lite",
+    "heavy_task": "~anthropic/claude-haiku-latest"
+}
+
 MANAGER_MAX_TOKENS = 600
-WORKER_MAX_TOKENS = 400
+WORKER_MAX_TOKENS = 500
 
-# --- Retry / step limits ---
-MAX_PLAN_RETRIES = 1   # how many times the Manager gets to re-plan if the Worker rejects a plan
-MAX_WORKER_STEPS = 15  # hard cap on tool-call rounds per plan, prevents infinite loops
+MAX_PLAN_RETRIES = 1   
+MAX_WORKER_STEPS = 15  
 
-# --- UI colors (ANSI escape codes) ---
 DIM = "\033[90m"
 RESET = "\033[0m"
 RED = "\033[38;2;236;55;80m"
@@ -33,7 +33,7 @@ BLUE = "\033[38;2;39;118;234m"
 
 
 def print_banner():
-    print(f"{RED}Buddy system initialized. - Powered By Hack AI. "
+    print(f"{RED}Buddy v0.0.3 initialized. - Powered By Hack AI."
           f"\n{BLUE}'Control + C' to terminate.{RESET}")
 
 
@@ -42,19 +42,11 @@ def print_banner():
 # ============================================================
 
 def get_manager_output(message_history):
-    """
-    Calls the Manager model with the current conversation history.
-    Returns the raw text output (still prefixed with 'RESPONSE:' or 'PLAN:').
-    """
     print(f"{RED}Buddy is thinking...{RESET}", end="", flush=True)
     start_time = time.time()
 
     plan_response = run_manager_step(MANAGER_MODEL, message_history, MANAGER_MAX_TOKENS)
     manager_message = plan_response.choices[0].message
-
-    # Guard: if the model returns no text content (e.g. it tried to call a tool
-    # instead of replying), don't crash — fall back to an empty string so the
-    # caller can handle it as an unexpected response.
     manager_output = (manager_message.content or "").strip()
 
     elapsed_time = time.time() - start_time
@@ -65,18 +57,27 @@ def get_manager_output(message_history):
 
 def parse_manager_output(manager_output):
     """
-    Splits the Manager's output into a route ("response" or "plan") and the
-    cleaned text. Falls back to "plan" if the model forgot the prefix.
+    Returns: (route_type, content, selected_worker_model)
     """
-    if manager_output.startswith("RESPONSE:"):
-        return "response", manager_output.replace("RESPONSE:", "").strip()
+    cleaned_output = manager_output.strip()
 
-    if manager_output.startswith("PLAN:"):
-        return "plan", manager_output.replace("PLAN:", "").strip()
+    if cleaned_output.startswith("RESPONSE:"):
+        return "response", cleaned_output.removeprefix("RESPONSE:").strip(), DEFAULT_WORKER_MODEL
 
-    # Model ignored formatting instructions — treat raw text as a plan rather
-    # than silently dropping it.
-    return "plan", manager_output.strip()
+    if cleaned_output.startswith("PLAN:"):
+        plan_content = cleaned_output.removeprefix("PLAN:").strip()
+        selected_model = DEFAULT_WORKER_MODEL
+
+        # Dynamically route model based on classification tag
+        for tag, model in WORKER_MODELS.items():
+            if plan_content.startswith(f"[{tag}]"):
+                selected_model = model
+                break
+
+        return "plan", plan_content, selected_model
+
+    # Fallback if no prefix provided
+    return "plan", cleaned_output, DEFAULT_WORKER_MODEL
 
 
 # ============================================================
@@ -84,10 +85,6 @@ def parse_manager_output(manager_output):
 # ============================================================
 
 def execute_tool(tool_name, tool_args):
-    """
-    Runs a single tool by name from tools.py, catching any runtime errors so
-    a bad tool call doesn't crash the whole session.
-    """
     if not hasattr(tools, tool_name):
         return f"Error: Tool '{tool_name}' not found."
 
@@ -98,15 +95,9 @@ def execute_tool(tool_name, tool_args):
         return f"Error executing {tool_name}: {str(e)}"
 
 
-def run_worker(plan_text):
+def run_worker(plan_text, worker_model):
     """
-    Feeds the plan to the Worker model and lets it call tools until it either
-    calls finish_task, gives up (no tool calls at all), or hits MAX_WORKER_STEPS.
-
-    Returns a dict describing the outcome:
-      {"status": "success", "summary": str}
-      {"status": "rejected", "complaint": str}   -> worker refused the plan outright
-      {"status": "incomplete", "message": str}   -> worker stopped talking without finishing
+    Accepts worker_model dynamically selected by Manager.
     """
     action_history = [
         {"role": "system", "content": Action_instruction},
@@ -118,17 +109,14 @@ def run_worker(plan_text):
     while step_count < MAX_WORKER_STEPS:
         step_count += 1
 
-        action_response = run_action_step(WORKER_MODEL, action_history, WORKER_MAX_TOKENS, tools_schema)
+        action_response = run_action_step(worker_model, action_history, WORKER_MAX_TOKENS, tools_schema)
         action_msg = action_response.choices[0].message
 
-        # No tool calls at all this round.
         if not getattr(action_msg, "tool_calls", None):
             if step_count == 1:
-                # Worker rejected the plan on the very first turn.
                 complaint = action_msg.content or "No reason given."
                 return {"status": "rejected", "complaint": complaint}
             else:
-                # Worker stopped without explicitly calling finish_task.
                 message = action_msg.content or "Task ended without a summary."
                 return {"status": "incomplete", "message": message}
 
@@ -151,7 +139,6 @@ def run_worker(plan_text):
                 "content": str(result)
             })
 
-    # Hit MAX_WORKER_STEPS without finishing.
     return {"status": "incomplete", "message": "Reached max steps without finishing."}
 
 
@@ -173,14 +160,14 @@ def main():
 
             attempt = 0
             task_success = False
-            plan_text = None  # tracked across retries so Phase 3 can log the failed plan
+            plan_text = None
 
             while attempt <= MAX_PLAN_RETRIES and not task_success:
                 attempt += 1
 
                 # ---- PHASE 1: Manager decides response vs plan ----
                 manager_output = get_manager_output(message_history)
-                route, content = parse_manager_output(manager_output)
+                route, content, worker_model = parse_manager_output(manager_output)
 
                 if route == "response":
                     print(f"\nBuddy: {content}")
@@ -189,10 +176,10 @@ def main():
                     break
 
                 plan_text = content
-                print(f"{DIM}[Internal Plan: {plan_text.replace(chr(10), ' | ')}]{RESET}")
+                print(f"{DIM}[Internal Plan ({worker_model}): {plan_text.replace(chr(10), ' | ')}]{RESET}")
 
                 # ---- PHASE 2: Worker executes plan ----
-                outcome = run_worker(plan_text)
+                outcome = run_worker(plan_text, worker_model)
 
                 if outcome["status"] == "success":
                     print(f"\nBuddy: {outcome['summary']}")
@@ -202,7 +189,7 @@ def main():
                 elif outcome["status"] == "incomplete":
                     print(f"Buddy: {outcome['message']}")
                     message_history.append({"role": "assistant", "content": outcome["message"]})
-                    task_success = True  # treat as done, even though it didn't call finish_task
+                    task_success = True
 
                 else:  # "rejected"
                     # ---- PHASE 3: Self-correction ----
@@ -210,13 +197,13 @@ def main():
 
                     if attempt <= MAX_PLAN_RETRIES:
                         print(f"{BLUE}Buddy is refining the approach...{RESET}")
+                        # Removed hardcoded instruction constraint
                         refinement_prompt = (
                             f"The execution agent rejected your plan with this message: '{complaint}'. "
-                            "Please create a NEW PLAN that fixes this issue. Rely on direct URLs or App launching."
+                            "Please create a NEW PLAN that addresses this exact failure."
                         )
                         message_history.append({"role": "assistant", "content": f"PLAN:\n{plan_text}"})
                         message_history.append({"role": "user", "content": refinement_prompt})
-                        # loop continues -> Manager is re-called with updated message_history
                     else:
                         print(f"\nBuddy: I'm sorry, I ran into an issue doing that. {complaint}")
                         message_history.append(

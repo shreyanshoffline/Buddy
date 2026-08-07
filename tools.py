@@ -6,6 +6,7 @@ import pyautogui
 import time
 import requests
 from dotenv import load_dotenv
+from ddgs import DDGS
 
 # App Tools ================================================
 
@@ -102,45 +103,26 @@ def minimize_app(app):
 
 def web_search(query, max_results=3):
     """
-    Searches the live web using the Google Custom Search JSON API 
-    and returns summaries of the top results.
+    Searches the live web using DuckDuckGo and returns top results.
+    No API key required. Unrestricted full-web search.
     """
-    load_dotenv()
-    api_key = os.getenv("GOOGLE_SEARCH_API_KEY")
-    search_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
-    
-    if not api_key or not search_engine_id:
-        return "Error: GOOGLE_API_KEY or GOOGLE_SEARCH_ENGINE_ID environment variables are not set."
-
-    endpoint = "https://www.googleapis.com/customsearch/v1"
-    
-    params = {
-        "key": api_key,
-        "cx": search_engine_id,
-        "q": query,
-        "num": max_results
-    }
-
     try:
-        response = requests.get(endpoint, params=params)
-        response.raise_for_status()
-        json_data = response.json()
+        results = list(DDGS().text(query, max_results=max_results))
         
-        results = json_data.get("items", [])
         if not results:
-            return f"No search results found for: {query}"
+            return f"No search results found for: '{query}'"
 
-        formatted_output = f"Google Search Results for '{query}':\n"
+        formatted_output = f"DuckDuckGo Search Results for '{query}':\n"
         for i, res in enumerate(results, 1):
             title = res.get('title', 'No Title')
-            snippet = res.get('snippet', 'No Description')
-            url = res.get('link', 'No URL')
+            snippet = res.get('body', 'No Description')
+            url = res.get('href', 'No URL')
             formatted_output += f"\n{i}. {title}\n   Snippet: {snippet}\n   URL: {url}\n"
             
         return formatted_output
 
     except Exception as e:
-        return f"Failed to execute Google search: {str(e)}"
+        return f"Failed to execute web search: {str(e)}"
 
 def open_url(url):
     result = subprocess.run(
@@ -568,3 +550,41 @@ def play_spotify_playlist(playlist_name):
     else:
         # Crucial: If Buddy doesn't know the playlist, he tells the Manager to inform you.
         return f"Error: Playlist '{playlist_name}' is not saved in your dictionary. Tell the user to add it to tools.py."
+
+def get_clipboard():
+    """Returns the text currently stored in the system clipboard."""
+    result = subprocess.run(["pbpaste"], capture_output=True, text=True)
+    return result.stdout
+
+def set_clipboard(text):
+    """Sets text directly to the system clipboard."""
+    process = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE, text=True)
+    process.communicate(text)
+    return "Copied text to clipboard."
+
+def run_terminal_command(command):
+    """Executes a bash command in the terminal and returns output."""
+    try:
+        result = subprocess.run(
+            command, shell=True, capture_output=True, text=True, timeout=15
+        )
+        return f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    except Exception as e:
+        return f"Failed to execute command: {str(e)}"
+
+def send_notification(title, message):
+    """Sends a native macOS desktop notification."""
+    script = f'display notification "{message}" with title "{title}"'
+    subprocess.run(["osascript", "-e", script])
+    return "Notification sent."
+
+def search_local_files(query):
+    """Searches local files on the Mac using Spotlight index (mdfind)."""
+    try:
+        result = subprocess.run(
+            ["mdfind", "-name", query], capture_output=True, text=True, timeout=5
+        )
+        files = result.stdout.strip().split("\n")[:5]  # Limit top 5 matches
+        return f"Found files:\n" + "\n".join(files) if files[0] else "No files found."
+    except Exception as e:
+        return f"File search failed: {str(e)}"

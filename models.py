@@ -10,6 +10,7 @@ client = OpenRouter(
 
 
 def run_manager_step(model, message_history, max_tokens):
+    
     plan_response = client.chat.send(
     model=model,
     messages=message_history,

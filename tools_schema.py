@@ -88,6 +88,22 @@ tools_schema = [
     },
 
     # --- Web Tools ---
+
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Searches the live web using DuckDuckGo to find up-to-date information, news, or facts. Use this when the user asks about current events or topics outside your training data.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The specific search query to look up on the web."},
+                    "max_results": {"type": "integer","description": "The maximum number of search results to return. Default is 3."}
+                },
+                "required": ["query"]
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
