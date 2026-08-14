@@ -1,8 +1,9 @@
 import json
 import time
 
-import tools
-from tools_schema import tools_schema
+import tools.tools as tools
+import tools.gmail_tools as gmail_tools
+from tools.tools_schema import tools_schema
 from instruction import Manager_instruction, Action_instruction
 from models import run_manager_step, run_action_step
 
@@ -24,7 +25,7 @@ MANAGER_MAX_TOKENS = 600
 WORKER_MAX_TOKENS = 500
 
 MAX_PLAN_RETRIES = 1   
-MAX_WORKER_STEPS = 15  
+MAX_WORKER_STEPS = 8 
 
 DIM = "\033[90m"
 RESET = "\033[0m"
@@ -56,9 +57,6 @@ def get_manager_output(message_history):
 
 
 def parse_manager_output(manager_output):
-    """
-    Returns: (route_type, content, selected_worker_model)
-    """
     cleaned_output = manager_output.strip()
 
     if cleaned_output.startswith("RESPONSE:"):
@@ -68,7 +66,6 @@ def parse_manager_output(manager_output):
         plan_content = cleaned_output.removeprefix("PLAN:").strip()
         selected_model = DEFAULT_WORKER_MODEL
 
-        # Dynamically route model based on classification tag
         for tag, model in WORKER_MODELS.items():
             if plan_content.startswith(f"[{tag}]"):
                 selected_model = model
@@ -76,24 +73,32 @@ def parse_manager_output(manager_output):
 
         return "plan", plan_content, selected_model
 
-    # Fallback if no prefix provided
-    return "plan", cleaned_output, DEFAULT_WORKER_MODEL
-
+    # FIX 2: no more silent fallback-to-plan on garbage output
+    return "invalid", cleaned_output, DEFAULT_WORKER_MODEL
 
 # ============================================================
 # PHASE 2: WORKER — execute plan via tool calls
 # ============================================================
 
 def execute_tool(tool_name, tool_args):
-    if not hasattr(tools, tool_name):
-        return f"Error: Tool '{tool_name}' not found."
+    known_tools = [name for name in dir(tools) if not name.startswith("_")]
+    known_tools += [name for name in dir(gmail_tools) if not name.startswith("_")]
 
-    try:
-        func = getattr(tools, tool_name)
-        return func(**tool_args)
-    except Exception as e:
-        return f"Error executing {tool_name}: {str(e)}"
+    cleaned = tool_name
+    if cleaned not in known_tools:
+        for known in known_tools:
+            if tool_name.endswith(known):
+                cleaned = known
+                break
 
+    for module in (tools, gmail_tools):
+        if hasattr(module, cleaned):
+            try:
+                func = getattr(module, cleaned)
+                return func(**tool_args)
+            except Exception as e:
+                return f"Error executing {cleaned}: {str(e)}"
+    return f"Error: Tool '{tool_name}' not found."
 
 def run_worker(plan_text, worker_model):
     """
@@ -115,22 +120,23 @@ def run_worker(plan_text, worker_model):
         if not getattr(action_msg, "tool_calls", None):
             if step_count == 1:
                 complaint = action_msg.content or "No reason given."
-                return {"status": "rejected", "complaint": complaint}
+                return {"status": "rejected", "complaint": complaint, "step_count": step_count}
             else:
                 message = action_msg.content or "Task ended without a summary."
-                return {"status": "incomplete", "message": message}
+                return {"status": "incomplete", "message": message, "step_count": step_count}
 
         action_history.append(action_msg)
 
         for tool_call in action_msg.tool_calls:
             tool_name = tool_call.function.name
             tool_args = json.loads(tool_call.function.arguments)
+            args = list(tool_args.values())
 
             if tool_name == "finish_task":
                 summary = tool_args.get("summary", "Task successfully completed.")
-                return {"status": "success", "summary": summary}
+                return {"status": "success", "summary": summary, "step_count": step_count}
 
-            print(f"{DIM} -> Executing system process: {tool_name}{RESET}")
+            print(f"{DIM} -> Executing system process: {tool_name}({args}){RESET}")
             result = execute_tool(tool_name, tool_args)
 
             action_history.append({
@@ -139,7 +145,7 @@ def run_worker(plan_text, worker_model):
                 "content": str(result)
             })
 
-    return {"status": "incomplete", "message": "Reached max steps without finishing."}
+    return {"status": "incomplete", "message": "Reached max steps without finishing.", "step_count": step_count}
 
 
 # ============================================================
@@ -169,6 +175,16 @@ def main():
                 manager_output = get_manager_output(message_history)
                 route, content, worker_model = parse_manager_output(manager_output)
 
+                # FIX 2: catch garbage/unprefixed Manager output explicitly
+                if route == "invalid":
+                    print(f"{RED}Buddy: Manager returned malformed output, retrying...{RESET}")
+                    if attempt <= MAX_PLAN_RETRIES:
+                        continue
+                    else:
+                        print(f"\nBuddy: I'm having trouble planning that. Could you rephrase?")
+                        task_success = True
+                        break
+
                 if route == "response":
                     print(f"\nBuddy: {content}")
                     message_history.append({"role": "assistant", "content": content})
@@ -180,6 +196,7 @@ def main():
 
                 # ---- PHASE 2: Worker executes plan ----
                 outcome = run_worker(plan_text, worker_model)
+                step_count = outcome["step_count"]
 
                 if outcome["status"] == "success":
                     print(f"\nBuddy: {outcome['summary']}")
@@ -192,28 +209,28 @@ def main():
                     task_success = True
 
                 else:  # "rejected"
-                    # ---- PHASE 3: Self-correction ----
                     complaint = outcome["complaint"]
 
                     if attempt <= MAX_PLAN_RETRIES:
                         print(f"{BLUE}Buddy is refining the approach...{RESET}")
-                        # Removed hardcoded instruction constraint
                         refinement_prompt = (
-                            f"The execution agent rejected your plan with this message: '{complaint}'. "
-                            "Please create a NEW PLAN that addresses this exact failure."
+                            f"Your previous plan was rejected by the execution agent with this message: "
+                            f"'{complaint}'. The original request was: '{user_input}'. "
+                            "Write a corrected PLAN or RESPONSE from scratch — do not repeat the old plan."
                         )
-                        message_history.append({"role": "assistant", "content": f"PLAN:\n{plan_text}"})
+                        # FIX 1: don't leave a dangling "PLAN:" assistant turn in history either —
+                        # just add the refinement prompt as a fresh user-style correction note.
                         message_history.append({"role": "user", "content": refinement_prompt})
                     else:
                         print(f"\nBuddy: I'm sorry, I ran into an issue doing that. {complaint}")
-                        message_history.append(
-                            {"role": "assistant", "content": f"Failed task. Reason: {complaint}"}
-                        )
+                        # FIX 1: keep the failure OUT of message_history entirely.
+                        # It's not useful context for future unrelated turns, and it was
+                        # what caused the Manager to echo it back as a fake "plan" next time.
                         task_success = True
+                print(str(step_count))
 
     except KeyboardInterrupt:
         print(f"\n\n{RED}Control + C pressed. Buddy powering down. Goodbye!{RESET}")
-
 
 if __name__ == "__main__":
     main()
