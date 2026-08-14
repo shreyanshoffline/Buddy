@@ -1,113 +1,128 @@
-# Buddy v0.0.1
+# Buddy v1.0.0 Pre-Release
 
-Buddy is a voice-of-Jarvis-style AI assistant for macOS, built by Shreyansh Patra ("Shrey") using [Hack Club's Hack AI](https://ai.hackclub.com/). It controls apps, browses the web, manages files, and operates the system — all through natural language in the terminal.
-
-Buddy uses a **Manager/Worker architecture**: a cheap "Manager" model interprets what you want and writes a plan, and a "Worker" model executes that plan step-by-step using real tool calls against your Mac.
+Buddy is a Jarvis-style AI desktop assistant for macOS built by **Shreyansh Patra ("Shrey")** using [Hack Club's Hack AI](https://ai.hackclub.com/). Featuring a custom PySide6 desktop interface, system tray persistence, dynamic local storage, and real-time tool calls, Buddy controls apps, browses the web, manages files, and operates system settings directly from your desktop.
 
 ---
 
-## How it works
+## 🚀 What's New in v1.0.0
 
-```
-User input
-   │
-   ▼
-┌─────────────┐   RESPONSE:   ┌──────────────┐
-│   Manager    │──────────────▶│ Reply to user│
-│ (writes plan │               └──────────────┘
-│  or replies) │
-└──────┬───────┘
-       │ PLAN:
-       ▼
-┌──────────────┐   tool calls   ┌───────────────┐
-│    Worker     │───────────────▶│  tools.py      │
-│ (executes plan│                │ (real actions  │
-│  step by step)│◀───────────────│  on your Mac)  │
-└──────┬────────┘   results      └───────────────┘
-       │
-       ▼
-  finish_task(summary) ──▶ shown to user
-```
-
-1. **Manager** reads the conversation and either answers directly (`RESPONSE:`) or writes a numbered step-by-step plan (`PLAN:`).
-2. **Worker** receives the plan and calls tools one at a time — opening apps, hitting URLs, moving the cursor, adjusting system settings, etc. — until it calls `finish_task` or hits the step limit.
-3. If the Worker rejects a plan outright, the Manager gets one retry with the rejection reason fed back into its context.
+- **PySide6 Desktop GUI:** Replaced the terminal UI with a native, frameless macOS window featuring a sleek, collapsible sidebar (48px collapsed / 200px expanded).
+- **macOS System Tray Integration:** Quick access to toggle window visibility, trigger global shortcuts, or exit via a custom tray menu.
+- **3-Tier Modular Architecture:** Clean separation of presentation (`gui_main.py`), orchestration logic (`core.py`), and local persistence (`storage.py`).
+- **SQLite Local History (`buddy.db`):** Persistent conversation memory, background chat titling, dynamic recent chat sidebar updates, and saved settings.
+- **DuckDuckGo Web Search:** Integrated web searching capability to fetch live, real-time facts directly into conversation context.
 
 ---
 
-## Project structure
+## 🏗️ Architecture
 
-| File | Purpose |
-|---|---|
-| `main.py` | Orchestration loop — Manager/Worker phases, retries, conversation state |
-| `models.py` | Thin wrapper around the OpenRouter client; owns API key and model calls |
-| `tools.py` | Real implementations of every action Buddy can take (subprocess/AppleScript/pyautogui) |
-| `tools_schema.py` | JSON-Schema tool definitions describing each tool to the models |
-| `instruction.py` | System prompts for the Manager and Worker roles |
-| `.env` | Local secrets (API key) — never committed |
+Buddy utilizes a structured 3-tier presentation, orchestration, and persistence setup:
 
----
+    ┌────────────────────────────────────────────────────────┐
+    │                      gui_main.py                       │
+    │  (PySide6 Desktop GUI, Tray Hooks & Event Processing)  │
+    └───────────────────────────┬────────────────────────────┘
+                                │
+    ┌───────────────────────────▼────────────────────────────┐
+    │                        core.py                         │
+    │ (Manager/Worker Logic, Tool Dispatch, DDG Web Search)  │
+    └───────────────────────────┬────────────────────────────┘
+                                │
+    ┌───────────────────────────▼────────────────────────────┐
+    │                       storage.py                       │
+    │      (SQLite Engine: ~/Library/Application Support)    │
+    └────────────────────────────────────────────────────────┘
 
-## Setup
+### Execution Pipeline
 
-```bash
-pip install python-dotenv pyautogui
-```
-
-Create a `.env` file in the project root:
-
-```
-OPENROUTER_API_KEY=sk-hc-v1-your-key-here
-```
-
-Run it:
-
-```bash
-python3 main.py
-```
-
-Type `quit` or `exit`, or press `Control + C`, to stop.
-
----
-
-## What Buddy can do
-
-- **Apps** — open, close, force-close, maximize, minimize, list installed/running apps
-- **Web** — open URLs, manage tabs/windows, browser history, undo/redo (Chrome-first by policy)
-- **Coding** — run/test Python scripts, open folders in VS Code, install/update/uninstall packages, create/delete files
-- **System** — screenshots, screen recording, volume, dark mode, sleep/lock/restart/shutdown/log out (destructive actions require confirmation)
-- **Input control** — move/click/drag the cursor, scroll, type text, copy/cut/paste, undo/redo, select all, save
-- **Spotify** — play/pause/skip, and play saved playlists by name
-
-The full list of callable tools lives in `tools_schema.py`; the logic behind each one is in `tools.py`.
+    User Prompt (GUI)
+           │
+           ▼
+      core.py ─── Manager (Generates execution plan or direct reply)
+           │
+           ▼
+      Worker Model (Executes plan step-by-step)
+           │
+      ┌────┴──────────────────────────┐
+      │                               │
+      ▼                               ▼
+    Web Search (DDG)           System Tools (tools.py)
+      │                               │
+      └────┬──────────────────────────┘
+           │
+           ▼
+    storage.py ─── SQLite DB (Saves prompt, tool calls, and response)
+           │
+           ▼
+    GUI Update ─── Renders message bubbles & refreshes sidebar recents
 
 ---
 
-## Known limitations
+## 📁 File Structure
 
-- **No live browser state.** Buddy can't see which tabs are actually open — "close tab" style commands work off a URL keyword guess, not real tab awareness. There's no `list_open_tabs` tool yet.
-- **`close_tab` is single-browser.** Unlike most web tools, it doesn't take a `browser` argument.
-- **Long plans can hit the step limit.** `MAX_WORKER_STEPS` caps how many tool calls one plan can make; hitting it doesn't currently preserve partial progress, so a follow-up "finish the rest" request may restart the plan from scratch.
-- **A few tools are stubs.** `set_brightness`, `set_key_glow`, and `toggle_stage_manager` exist in `tools.py` but always return "not supported" — they're intentionally left out of `tools_schema.py` so the model doesn't try to call them.
-- **Destructive actions require a confirmation flag** (`restart`, `shutdown`, `log_out`) — the Worker is expected to pass this along rather than assume consent.
-
----
-
-## Config
-
-Model choice, token limits, and retry/step limits are all defined as constants at the top of `main.py`:
-
-```python
-MANAGER_MODEL = "..."      # writes plans / replies
-WORKER_MODEL = "..."       # executes tool calls
-MANAGER_MAX_TOKENS = 750
-WORKER_MAX_TOKENS = 500
-MAX_PLAN_RETRIES = 1
-MAX_WORKER_STEPS = 10
-```
+| File / Component | Layer | Description |
+|---|---|---|
+| `gui_main.py` | Presentation | PySide6 frameless window, responsive sidebar, chat bubbles, tray icon handling, and theme styling. |
+| `core.py` | Business / Brain | Manages prompt evaluation, Manager/Worker reasoning loops, web search execution, and message pipeline orchestration. |
+| `storage.py` | Data Persistence | SQLite database operations (`buddy.db`), managing `conversations`, `messages`, and `user_profile` records. |
+| `tools.py` | Execution | System control scripts (AppleScript, subprocess, `pyautogui`) for controlling macOS features and applications. |
+| `tools_schema.py` | Tool Definitions | JSON-Schema specifications passed to the LLM to define available tools and parameter constraints. |
+| `instruction.py` | System Prompts | Contextual guidelines and behavior rules for the Manager and Worker roles. |
 
 ---
 
-## Credits
+## ⚡ Setup & Installation
 
-Built by Shrey using Hack Club's Hack AI. Part of a series of maker projects including a custom QMK macropad ("The Anypad") and several 2D Python games.
+### 1. Requirements
+Ensure you have Python 3.10+ installed on macOS.
+
+### 2. Install Dependencies
+Run this in your terminal:
+    
+    pip install PySide6 duckduckgo_search python-dotenv pyautogui pillow
+
+### 3. Environment Configuration
+Create a `.env` file in the root directory:
+
+    OPENROUTER_API_KEY=sk-hc-v1-your-key-here
+
+### 4. Run Buddy
+Launch the desktop application:
+
+    python3 gui_main.py
+
+---
+
+## 🛠️ What Buddy Can Do
+
+- **Web Search** — Real-time DuckDuckGo searches with parsed title, snippet, and URL synthesis.
+- **App Control** — Launch, quit, force-close, minimize, maximize, and monitor installed or running Mac applications.
+- **Browser Automation** — Open URLs, open/close tabs, navigate browser history (Chrome-first support).
+- **System Actions** — Take screenshots, record screen, adjust master volume, toggle dark mode, lock screen, or trigger power actions (sleep, restart, shutdown).
+- **Input Simulation** — Precise cursor positioning, click/drag operations, scrolling, text typing, and keyboard shortcuts.
+- **Code & File Ops** — Execute Python scripts, manage project files, open workspace paths in VS Code, and handle terminal package commands.
+- **Media / Spotify** — Play/pause tracks, skip songs, and launch specific playlists by name.
+
+---
+
+## 🔒 Safety & Permissions
+
+- **Destructive Actions:** Power options (`restart`, `shutdown`, `log_out`) and critical file deletions require explicit user confirmation.
+- **System Permissions:** macOS Accessibility, Screen Recording, and Automation permissions are required for `pyautogui` cursor control and screen features.
+- **Local Database:** All conversation history, user preferences, and app state are saved locally inside `~/Library/Application Support/Buddy/buddy.db`.
+
+---
+
+## 💡 Config & Customization
+
+Key operational settings, window dimensions, and model configurations can be tweaked directly in the source files:
+
+- **UI Dimensions (`gui_main.py`):** `SIDEBAR_COLLAPSED_WIDTH = 48`, `SIDEBAR_EXPANDED_WIDTH = 200`.
+- **Model Parameters (`core.py` / `main.py`):** `MANAGER_MODEL`, `WORKER_MODEL`, token limits, and `MAX_WORKER_STEPS`.
+- **Database Path (`storage.py`):** Automatically initializes inside standard macOS Application Support directory.
+
+---
+
+## 🙌 Credits
+
+Built with ❤️ by **Shreyansh Patra ("Shrey")** using **Hack Club's Hack AI**. Part of a series of maker projects including custom hardware (The Anypad macropad) and Python software tools.
