@@ -6,7 +6,14 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeyEvent, QTextDocument
-from .utils import get_svg_icon, ICONS
+
+try:
+    from .utils import get_svg_icon, ICONS
+except ImportError:
+    import os
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from GUI.utils import get_svg_icon, ICONS
 
 
 # --- Dynamic Expanding Input ---
@@ -184,25 +191,33 @@ class ChatBubble(QWidget):
             QPushButton:pressed { background: rgba(43,127,240,0.1); }
         """
 
+        def set_active_button(button, active, active_color, inactive_color="#555"):
+            button.setIcon(get_svg_icon(button.property("icon_key"), active_color if active else inactive_color))
+            button.setProperty("active", active)
+            button.setStyleSheet(btn_style + ("QPushButton[active=true] { background: rgba(43,127,240,0.12); }" if active_color == "#2b7ff0" else "QPushButton[active=true] { background: rgba(244,67,54,0.12); }" if active_color == "#f44336" else ""))
+
         if 'copy' in self.callbacks:
-            self.copy_btn = QPushButton(icon=get_svg_icon(ICONS["copy"]))
+            self.copy_btn = QPushButton(icon=get_svg_icon(ICONS["copy"], "#555"))
+            self.copy_btn.setProperty("icon_key", "copy")
             self.copy_btn.setStyleSheet(btn_style)
             self.copy_btn.setCursor(Qt.PointingHandCursor)
-            self.copy_btn.clicked.connect(lambda: self.callbacks['copy'](self.versions[self.current_idx]["text"]))
+            self.copy_btn.clicked.connect(lambda: (self.callbacks['copy'](self.versions[self.current_idx]["text"]), set_active_button(self.copy_btn, True, "#2b7ff0")))
             self.footer_layout.addWidget(self.copy_btn)
 
         if 'like' in self.callbacks:
-            self.like_btn = QPushButton(icon=get_svg_icon(ICONS["like"]))
+            self.like_btn = QPushButton(icon=get_svg_icon(ICONS["like"], "#555"))
+            self.like_btn.setProperty("icon_key", "like")
             self.like_btn.setStyleSheet(btn_style)
             self.like_btn.setCursor(Qt.PointingHandCursor)
-            self.like_btn.clicked.connect(lambda: (self.callbacks['like'](), self.like_btn.setIcon(get_svg_icon(ICONS["like"], "#2b7ff0"))))
+            self.like_btn.clicked.connect(self._toggle_like)
             self.footer_layout.addWidget(self.like_btn)
 
         if 'dislike' in self.callbacks:
-            self.dislike_btn = QPushButton(icon=get_svg_icon(ICONS["dislike"]))
+            self.dislike_btn = QPushButton(icon=get_svg_icon(ICONS["dislike"], "#555"))
+            self.dislike_btn.setProperty("icon_key", "dislike")
             self.dislike_btn.setStyleSheet(btn_style)
             self.dislike_btn.setCursor(Qt.PointingHandCursor)
-            self.dislike_btn.clicked.connect(lambda: (self.callbacks['dislike'](), self.dislike_btn.setIcon(get_svg_icon(ICONS["dislike"], "#f44336"))))
+            self.dislike_btn.clicked.connect(self._toggle_dislike)
             self.footer_layout.addWidget(self.dislike_btn)
 
         self.footer_layout.addStretch()
@@ -226,13 +241,88 @@ class ChatBubble(QWidget):
         self.footer_layout.addWidget(self.next_btn)
 
         if 'redo' in self.callbacks:
-            self.redo_btn = QPushButton(icon=get_svg_icon(ICONS["redo"]))
+            self.redo_btn = QPushButton(icon=get_svg_icon(ICONS["redo"], "#555"))
+            self.redo_btn.setProperty("icon_key", "redo")
             self.redo_btn.setStyleSheet(btn_style)
             self.redo_btn.setCursor(Qt.PointingHandCursor)
             self.redo_btn.clicked.connect(self._trigger_redo)
             self.footer_layout.addWidget(self.redo_btn)
 
         self.bubble_layout.addLayout(self.footer_layout)
+
+    def _toggle_like(self):
+        if getattr(self, 'like_btn', None) is None:
+            return
+
+        is_active = self.like_btn.property('active')
+        if is_active:
+            self.like_btn.setProperty('active', False)
+            self.like_btn.setIcon(get_svg_icon(ICONS['like'], '#555'))
+            self.like_btn.setStyleSheet("""
+                QPushButton { background: transparent; border: none; padding: 4px; border-radius: 4px; }
+                QPushButton:hover { background: rgba(0,0,0,0.05); }
+                QPushButton:pressed { background: rgba(43,127,240,0.1); }
+            """)
+            if hasattr(self, 'callbacks') and self.callbacks and 'like' in self.callbacks:
+                self.callbacks['like']()
+            return
+
+        self.like_btn.setProperty('active', True)
+        self.like_btn.setIcon(get_svg_icon(ICONS['like'], '#2b7ff0'))
+        self.like_btn.setStyleSheet("""
+            QPushButton { background: rgba(43,127,240,0.12); border: none; padding: 4px; border-radius: 4px; }
+            QPushButton:hover { background: rgba(43,127,240,0.18); }
+            QPushButton:pressed { background: rgba(43,127,240,0.2); }
+        """)
+
+        if hasattr(self, 'dislike_btn') and self.dislike_btn.property('active'):
+            self.dislike_btn.setProperty('active', False)
+            self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], '#555'))
+            self.dislike_btn.setStyleSheet("""
+                QPushButton { background: transparent; border: none; padding: 4px; border-radius: 4px; }
+                QPushButton:hover { background: rgba(0,0,0,0.05); }
+                QPushButton:pressed { background: rgba(43,127,240,0.1); }
+            """)
+
+        if hasattr(self, 'callbacks') and self.callbacks and 'like' in self.callbacks:
+            self.callbacks['like']()
+
+    def _toggle_dislike(self):
+        if getattr(self, 'dislike_btn', None) is None:
+            return
+
+        is_active = self.dislike_btn.property('active')
+        if is_active:
+            self.dislike_btn.setProperty('active', False)
+            self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], '#555'))
+            self.dislike_btn.setStyleSheet("""
+                QPushButton { background: transparent; border: none; padding: 4px; border-radius: 4px; }
+                QPushButton:hover { background: rgba(0,0,0,0.05); }
+                QPushButton:pressed { background: rgba(43,127,240,0.1); }
+            """)
+            if hasattr(self, 'callbacks') and self.callbacks and 'dislike' in self.callbacks:
+                self.callbacks['dislike']()
+            return
+
+        self.dislike_btn.setProperty('active', True)
+        self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], '#f44336'))
+        self.dislike_btn.setStyleSheet("""
+            QPushButton { background: rgba(244,67,54,0.12); border: none; padding: 4px; border-radius: 4px; }
+            QPushButton:hover { background: rgba(244,67,54,0.18); }
+            QPushButton:pressed { background: rgba(244,67,54,0.2); }
+        """)
+
+        if hasattr(self, 'like_btn') and self.like_btn.property('active'):
+            self.like_btn.setProperty('active', False)
+            self.like_btn.setIcon(get_svg_icon(ICONS['like'], '#555'))
+            self.like_btn.setStyleSheet("""
+                QPushButton { background: transparent; border: none; padding: 4px; border-radius: 4px; }
+                QPushButton:hover { background: rgba(0,0,0,0.05); }
+                QPushButton:pressed { background: rgba(43,127,240,0.1); }
+            """)
+
+        if hasattr(self, 'callbacks') and self.callbacks and 'dislike' in self.callbacks:
+            self.callbacks['dislike']()
 
     def _trigger_redo(self):
         if len(self.versions) >= 3:
@@ -253,6 +343,12 @@ class ChatBubble(QWidget):
         self.current_idx = len(self.versions) - 1
         self._render_current_version()
         self.redo_btn.setEnabled(True)
+        self.redo_btn.setIcon(get_svg_icon(ICONS["redo"], "#2b7ff0"))
+        self.redo_btn.setStyleSheet("""
+            QPushButton { background: rgba(43,127,240,0.12); border: none; padding: 4px; border-radius: 4px; }
+            QPushButton:hover { background: rgba(43,127,240,0.18); }
+            QPushButton:pressed { background: rgba(43,127,240,0.2); }
+        """)
 
     def _switch_page(self, direction):
         new_idx = self.current_idx + direction

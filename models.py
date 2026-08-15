@@ -4,8 +4,8 @@ import os
 
 load_dotenv()
 client = OpenRouter(
-    api_key=os.getenv("HACK_AI_API_KEY"),
-    server_url="https://ai.hackclub.com/proxy/v1",
+    api_key=os.getenv("API_KEY"),
+    server_url=os.getenv("SERVER_URL"),
 )
 
 

@@ -12,7 +12,7 @@ import storage.storage as db
 # Ensure the database is initialized before any storage calls.
 db.init_db()
 
-MANAGER_MODEL = "google/gemini-2.5-flash-lite"
+MANAGER_MODEL = "deepseek-v4-flash-free"
 DEFAULT_WORKER_MODEL = "google/gemini-2.5-flash-lite"
 
 WORKER_MODELS = {

@@ -1,9 +1,12 @@
-from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtGui import QPixmap, QPainter, QIcon
 from PySide6.QtCore import Qt
+from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtGui import QPixmap, QPainter, QIcon, QPainterPath
 
 # --- Cyber / Modern App Icon ---
-def create_buddy_icon():
+def create_buddy_icon(image_path=None):
+    if image_path:
+        return create_image_icon(image_path)
+
     svg_data = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
         <defs>
             <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -20,13 +23,47 @@ def create_buddy_icon():
         <circle cx="32" cy="32" r="6" fill="url(#logoGrad)" />
     </svg>"""
     renderer = QSvgRenderer(svg_data.encode('utf-8'))
-    pixmap = QPixmap(64, 64)
-    pixmap.fill(Qt.transparent)
+    pixmap = QPixmap(128, 128)
+    pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     renderer.render(painter)
     painter.end()
     return QIcon(pixmap)
 
+
+def create_image_icon(image_path):
+    # 1. Load the image from the provided file path
+    original_pixmap = QPixmap(image_path)
+    
+    size = 64
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    
+    # 2. Create a rounded rectangle clip path (mimicking the app icon shape)
+    path = QPainterPath()
+    path.addRoundedRect(0, 0, size, size, 22, 22)
+    painter.setClipPath(path)
+    
+    # 3. Scale the input image to fit the 64x64 icon size smoothly
+    scaled_image = original_pixmap.scaled(
+        size, size, 
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
+        Qt.TransformationMode.SmoothTransformation
+    )
+    
+    # Center the image if it wasn't a perfect square
+    x = (size - scaled_image.width()) // 2
+    y = (size - scaled_image.height()) // 2
+    
+    # 4. Draw the image onto the masked/rounded pixmap
+    painter.drawPixmap(x, y, scaled_image)
+    painter.end()
+    
+    return QIcon(pixmap)
 
 # --- SVG Icon Generator ---
 def get_svg_icon(svg_path, color="#888888", size=20):
