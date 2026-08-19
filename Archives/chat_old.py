@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent, QTextDocument, QDragEnterEvent, QDropEvent
 
 try:
-    from .utils import get_svg_icon, ICONS
+    from ..GUI.utils import get_svg_icon, ICONS
 except ImportError:
     import os
     import sys

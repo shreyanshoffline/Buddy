@@ -538,6 +538,7 @@ class BuddyWindow(QWidget):
         self.greeting.setAlignment(Qt.AlignCenter)
         self.greeting.setWordWrap(True)
         self.greeting.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        self.greeting.setMinimumHeight(60)
         self.greeting.setStyleSheet(f"color: {GREETING_COLOR}; background: transparent;")
         self.greeting.setFont(QFont(".AppleSystemUIFont", GREETING_FONT_SIZE, QFont.Medium))
  
@@ -582,7 +583,7 @@ class BuddyWindow(QWidget):
         self.scroll_area.setWidget(self.chat_container)
  
         self.input_container = QWidget()
-        self.input_container.setFixedHeight(INPUT_CONTAINER_HEIGHT)
+        self.input_container.setMinimumHeight(INPUT_CONTAINER_HEIGHT)
  
         self.input_box = ChatInput(self.handle_send, self.input_container)
 
@@ -920,6 +921,29 @@ class BuddyWindow(QWidget):
         )
         self.input_box.clear()
         self.input_box.setFocus()
+
+        reply = result.get("reply", "")
+        if reply:
+            self.message_history.append({"role": "assistant", "content": reply})
+            assistant_bubble = ChatBubble(
+                text=reply,
+                is_user=False,
+                plan_text=result.get("plan_text"),
+                tools_used=result.get("tools_used"),
+                stats=result.get("stats"),
+                callbacks={
+                    'copy': lambda text=reply: QApplication.clipboard().setText(text),
+                    'like': lambda: None,
+                    'dislike': lambda: None,
+                    'redo': lambda: None,
+                }
+            )
+            self.chat_layout.insertWidget(self.chat_layout.count() - 1, assistant_bubble)
+            self._scroll_to_bottom()
+
+        if result.get("chat_title"):
+            self._set_conversation_title(result["chat_title"])
+            self.sidebar.refresh_recents(on_chat_click=self.load_chat, on_delete_chat=self.delete_chat)
         
     def _scroll_to_bottom(self):
         QApplication.processEvents()

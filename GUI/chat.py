@@ -227,9 +227,21 @@ class ChatInput(QTextEdit):
         min_height = 40
         max_height = 150
         new_height = max(min_height, min(int(doc_height) + 16, max_height))
- 
-        if self.parentWidget():
-            self.parentWidget().setFixedHeight(new_height + 10)
+
+        tray = None
+        parent = self.parentWidget()
+        if parent:
+            # find AttachmentTray sibling in composer layout
+            from PySide6.QtWidgets import QWidget as _QW
+            for child in parent.parent().children() if parent.parent() else []:
+                if hasattr(child, 'file_removed'):
+                    tray = child
+                    break
+
+        tray_height = (tray.sizeHint().height() + 6) if (tray and tray.isVisible()) else 0
+
+        if parent:
+            parent.setMinimumHeight(new_height + 10 + tray_height)
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
@@ -417,7 +429,8 @@ class ChatBubble(QWidget):
         self.layout.setAlignment(Qt.AlignTop)
  
         self.bubble_container = QFrame()
-        self.bubble_container.setMaximumWidth(320)
+        self.bubble_container.setMaximumWidth(460)
+        self.bubble_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.bubble_layout = QVBoxLayout(self.bubble_container)
         self.bubble_layout.setContentsMargins(14, 10, 14, 10)
         self.bubble_layout.setSpacing(6)

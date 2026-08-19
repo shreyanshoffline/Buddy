@@ -1,4 +1,3 @@
-
 # ==============================================================================
 # GLOBAL CONFIGURATION & UI CONSTANTS
 # ==============================================================================
@@ -58,10 +57,10 @@ CHAT_BUBBLE_AGENT = "rgba(255, 255, 255, 0.9)"
 CHAT_BUBBLE_AGENT_TEXT = "#222222"
 
 # Window sizing — kept generous enough that nothing clips at min size
-WINDOW_MIN_WIDTH = 350
-WINDOW_MIN_HEIGHT = 400
-WINDOW_DEFAULT_WIDTH = 400
-WINDOW_DEFAULT_HEIGHT = 450
+WINDOW_MIN_WIDTH = 380
+WINDOW_MIN_HEIGHT = 450
+WINDOW_DEFAULT_WIDTH = 500
+WINDOW_DEFAULT_HEIGHT = 600
 
 # Typography
 GREETING_FONT_SIZE = 24
@@ -73,4 +72,3 @@ SEND_BUTTON_SIZE = 36
 SEND_BUTTON_RADIUS = 18
 INPUT_CONTAINER_HEIGHT = 50
 SIZE_GRIP_SIZE = 48
-
