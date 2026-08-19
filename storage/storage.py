@@ -11,6 +11,10 @@ import json
 import time
 from pathlib import Path
 from contextlib import contextmanager
+import re
+MAX_FILE_CHARS = 100_000
+CHUNK_CHARS = 1800
+CHUNK_OVERLAP = 200
 
 # --- Where the DB lives ---
 def _default_db_path():
@@ -64,6 +68,16 @@ def init_db():
             FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS task_memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_summary TEXT NOT NULL,     -- short description of what was asked
+            plan_text TEXT,                 -- the plan that worked
+            outcome_summary TEXT,           -- finish_task summary / result
+            keywords TEXT,                  -- space-joined lowercase keywords, precomputed for cheap matching
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_memories_created ON task_memories(created_at);
+
         CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
 
         CREATE TABLE IF NOT EXISTS user_profile (
@@ -71,16 +85,46 @@ def init_db():
             name TEXT,
             age INTEGER,
             bio TEXT,                          -- the "3 sentences about yourself"
+            email TEXT,
             theme_color TEXT DEFAULT 'blue',
             dark_mode INTEGER DEFAULT 0,
             subscription_tier TEXT DEFAULT 'free',
             byo_api_key TEXT
         );
         """)
+        # migration: add email column for older dbs created before this existed
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(user_profile)")]
+        if "email" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN email TEXT")
         # Ensure the single profile row exists
         conn.execute("""
             INSERT OR IGNORE INTO user_profile (id, name, theme_color, dark_mode, subscription_tier)
             VALUES (1, NULL, 'blue', 0, 'free')
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER NOT NULL,
+                message_id INTEGER,
+                name TEXT NOT NULL,
+                extension TEXT,
+                path TEXT,
+                extracted_text TEXT,
+                char_count INTEGER DEFAULT 0,
+                created_at REAL NOT NULL,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS attachment_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                attachment_id INTEGER NOT NULL,
+                conversation_id INTEGER NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                FOREIGN KEY (attachment_id) REFERENCES attachments(id) ON DELETE CASCADE,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            )
         """)
 
 
@@ -228,7 +272,7 @@ def update_profile(**fields):
     """update_profile(name='Shrey', age=14, theme_color='purple', dark_mode=True)"""
     if not fields:
         return
-    allowed = {"name", "age", "bio", "theme_color", "dark_mode", "subscription_tier", "byo_api_key"}
+    allowed = {"name", "age", "bio", "email", "theme_color", "dark_mode", "subscription_tier", "byo_api_key"}
     fields = {k: v for k, v in fields.items() if k in allowed}
     if "dark_mode" in fields:
         fields["dark_mode"] = 1 if fields["dark_mode"] else 0
@@ -239,3 +283,155 @@ def update_profile(**fields):
     values = list(fields.values()) + [1]
     with _connect() as conn:
         conn.execute(f"UPDATE user_profile SET {set_clause} WHERE id = ?", values)
+
+# --- Long-term task memory (POC: keyword overlap, no embeddings yet) ---
+
+_STOPWORDS = {
+    "the", "a", "an", "to", "of", "and", "for", "in", "on", "with", "my",
+    "me", "is", "it", "this", "that", "please", "can", "you", "i", "do",
+    "make", "file", "up", "at", "as", "be", "get", "into"
+}
+
+def _extract_keywords(text):
+    words = "".join(c.lower() if c.isalnum() else " " for c in text).split()
+    return sorted(set(w for w in words if len(w) > 2 and w not in _STOPWORDS))
+
+
+def save_task_memory(task_summary, plan_text, outcome_summary):
+    keywords = " ".join(_extract_keywords(f"{task_summary} {plan_text or ''}"))
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO task_memories (task_summary, plan_text, outcome_summary, keywords, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (task_summary, plan_text, outcome_summary, keywords, time.time())
+        )
+
+
+def find_similar_task_memories(query_text, limit=2, min_overlap=2):
+    """Cheap keyword-overlap retrieval. Not real semantic search — good
+    enough for a POC. Returns best-matching past tasks, most relevant first."""
+    query_keywords = set(_extract_keywords(query_text))
+    if not query_keywords:
+        return []
+
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT task_summary, plan_text, outcome_summary, keywords, created_at "
+            "FROM task_memories ORDER BY created_at DESC LIMIT 200"  # cap scan for POC
+        ).fetchall()
+
+    scored = []
+    for r in rows:
+        row_keywords = set(r["keywords"].split()) if r["keywords"] else set()
+        overlap = len(query_keywords & row_keywords)
+        if overlap >= min_overlap:
+            scored.append((overlap, dict(r)))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [mem for _, mem in scored[:limit]]
+
+def _tokenize(text):
+    return set(re.findall(r"[a-zA-Z0-9_]{2,}", (text or "").lower()))
+
+
+def chunk_text(text, chunk_size=CHUNK_CHARS, overlap=CHUNK_OVERLAP):
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= chunk_size:
+        return [text]
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(len(text), start + chunk_size)
+        chunks.append(text[start:end])
+        if end >= len(text):
+            break
+        start = max(end - overlap, start + 1)
+    return chunks
+
+
+def save_conversation_attachments(conversation_id, message_id, files):
+    """files = [{name, extension, contents, path}, ...]"""
+    conn = sqlite3.connect(_DB_PATH)
+    saved_ids = []
+    now = time.time()
+    for item in files or []:
+        text = (item.get("contents") or "")[:MAX_FILE_CHARS]
+        cur = conn.execute(
+            """
+            INSERT INTO attachments
+                (conversation_id, message_id, name, extension, path, extracted_text, char_count, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                conversation_id,
+                message_id,
+                item.get("name") or "untitled",
+                item.get("extension") or "",
+                item.get("path") or "",
+                text,
+                len(text),
+                now,
+            ),
+        )
+        attachment_id = cur.lastrowid
+        for i, chunk in enumerate(chunk_text(text)):
+            conn.execute(
+                """
+                INSERT INTO attachment_chunks
+                    (attachment_id, conversation_id, chunk_index, content)
+                VALUES (?, ?, ?, ?)
+                """,
+                (attachment_id, conversation_id, i, chunk),
+            )
+        saved_ids.append(attachment_id)
+    conn.commit()
+    conn.close()
+    return saved_ids
+
+
+def latest_user_message_id(conversation_id):
+    conn = sqlite3.connect(_DB_PATH)
+    row = conn.execute(
+        """
+        SELECT id FROM messages
+        WHERE conversation_id = ? AND role = 'user'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (conversation_id,),
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def find_relevant_chunks(conversation_id, query, limit=6):
+    conn = sqlite3.connect(_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT c.id, c.attachment_id, c.chunk_index, c.content, a.name
+        FROM attachment_chunks c
+        JOIN attachments a ON a.id = c.attachment_id
+        WHERE c.conversation_id = ?
+        ORDER BY a.id DESC, c.chunk_index ASC
+        """,
+        (conversation_id,),
+    ).fetchall()
+    conn.close()
+
+    chunks = [dict(r) for r in rows]
+    if not chunks:
+        return []
+
+    query_tokens = _tokenize(query)
+    scored = []
+    for chunk in chunks:
+        overlap = len(query_tokens & _tokenize(chunk["content"]))
+        scored.append((overlap, chunk))
+    scored.sort(key=lambda item: (-item[0], item[1]["id"]))
+
+    picked = [chunk for overlap, chunk in scored if overlap > 0][:limit]
+    if not picked:
+        picked = chunks[:limit]
+    return picked
