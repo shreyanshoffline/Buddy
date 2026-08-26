@@ -12,9 +12,9 @@ import time
 from pathlib import Path
 from contextlib import contextmanager
 import re
-MAX_FILE_CHARS = 100_000
-CHUNK_CHARS = 1800
-CHUNK_OVERLAP = 200
+MAX_FILE_CHARS = 200_000   # doubled — handle larger files
+CHUNK_CHARS = 3000         # bigger chunks = more context per retrieval hit
+CHUNK_OVERLAP = 400        # more overlap = less chance of splitting mid-thought
 
 # --- Where the DB lives ---
 def _default_db_path():
@@ -52,6 +52,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS conversations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL DEFAULT 'New chat',
+            is_private INTEGER NOT NULL DEFAULT 0,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         );
@@ -96,6 +97,14 @@ def init_db():
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(user_profile)")]
         if "email" not in cols:
             conn.execute("ALTER TABLE user_profile ADD COLUMN email TEXT")
+        # migration: add is_private column for older dbs
+        conv_cols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)")]
+        if "is_private" not in conv_cols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0")
+        # migration: add feedback column for older dbs
+        msg_cols = [r["name"] for r in conn.execute("PRAGMA table_info(messages)")]
+        if "feedback" not in msg_cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN feedback TEXT")
         # Ensure the single profile row exists
         conn.execute("""
             INSERT OR IGNORE INTO user_profile (id, name, theme_color, dark_mode, subscription_tier)
@@ -157,11 +166,36 @@ def touch_conversation(conversation_id, title=None):
 def list_conversations(limit=30):
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, title, created_at, updated_at FROM conversations "
+            "SELECT id, title, created_at, updated_at, is_private FROM conversations "
             "ORDER BY updated_at DESC LIMIT ?",
             (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def search_conversations(query, limit=50):
+    """Matches on chat title OR any message content in the chat."""
+    like = f"%{query}%"
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT c.id, c.title, c.created_at, c.updated_at, c.is_private
+            FROM conversations c
+            LEFT JOIN messages m ON m.conversation_id = c.id
+            WHERE c.title LIKE ? OR m.content LIKE ?
+            ORDER BY c.updated_at DESC LIMIT ?
+            """,
+            (like, like, limit)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def set_conversation_private(conversation_id, is_private):
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE conversations SET is_private = ? WHERE id = ?",
+            (1 if is_private else 0, conversation_id)
+        )
 
 
 def get_most_recent_conversation_id():
@@ -180,6 +214,14 @@ def get_conversation_title(conversation_id):
         return row["title"] if row else None
 
 
+def get_conversation_is_private(conversation_id):
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT is_private FROM conversations WHERE id = ?", (conversation_id,)
+        ).fetchone()
+        return bool(row["is_private"]) if row else False
+
+
 def delete_conversation(conversation_id):
     with _connect() as conn:
         conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
@@ -195,7 +237,7 @@ def save_message(conversation_id, role, content=None, tool_calls=None, tool_call
                 sent back to the model, purely for the UI.
     """
     with _connect() as conn:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO messages (conversation_id, role, content, tool_calls, tool_call_id, metadata, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
@@ -206,7 +248,15 @@ def save_message(conversation_id, role, content=None, tool_calls=None, tool_call
                 time.time()
             )
         )
+        message_id = cur.lastrowid
     touch_conversation(conversation_id)
+    return message_id
+
+
+def set_message_feedback(message_id, feedback):
+    """feedback: 'like' / 'dislike' / None (clears it)."""
+    with _connect() as conn:
+        conn.execute("UPDATE messages SET feedback = ? WHERE id = ?", (feedback, message_id))
 
 
 def load_messages(conversation_id):
@@ -232,18 +282,18 @@ def load_messages(conversation_id):
 
 
 def load_messages_with_metadata(conversation_id):
-    """Same as load_messages but includes parsed `metadata` — use this when
-    rebuilding the GUI's chat bubbles on app relaunch, not for model context."""
+    """Same as load_messages but includes id/feedback/parsed metadata — use
+    this when rebuilding the GUI's chat bubbles, not for model context."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT role, content, tool_calls, tool_call_id, metadata FROM messages "
+            "SELECT id, role, content, tool_calls, tool_call_id, metadata, feedback FROM messages "
             "WHERE conversation_id = ? ORDER BY id ASC",
             (conversation_id,)
         ).fetchall()
 
     history = []
     for r in rows:
-        msg = {"role": r["role"], "content": r["content"]}
+        msg = {"id": r["id"], "role": r["role"], "content": r["content"], "feedback": r["feedback"]}
         if r["tool_calls"]:
             msg["tool_calls"] = json.loads(r["tool_calls"])
         if r["tool_call_id"]:
@@ -330,8 +380,17 @@ def find_similar_task_memories(query_text, limit=2, min_overlap=2):
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return [mem for _, mem in scored[:limit]]
 
+_RAG_STOPWORDS = {
+    "the", "a", "an", "to", "of", "and", "for", "in", "on", "with", "my",
+    "me", "is", "it", "this", "that", "can", "you", "i", "do", "be", "get",
+    "at", "as", "or", "if", "by", "we", "he", "she", "they", "are", "was",
+    "were", "has", "have", "had", "not", "but", "from", "up", "out", "so",
+    "its", "into", "than", "then", "will", "would", "could", "should", "also"
+}
+
 def _tokenize(text):
-    return set(re.findall(r"[a-zA-Z0-9_]{2,}", (text or "").lower()))
+    tokens = set(re.findall(r"[a-zA-Z0-9_]{2,}", (text or "").lower()))
+    return tokens - _RAG_STOPWORDS
 
 
 def chunk_text(text, chunk_size=CHUNK_CHARS, overlap=CHUNK_OVERLAP):
@@ -405,8 +464,15 @@ def latest_user_message_id(conversation_id):
     return row[0] if row else None
 
 
-def find_relevant_chunks(conversation_id, query, limit=6):
-    conn = sqlite3.connect(_DB_PATH)
+def find_relevant_chunks(conversation_id, query, limit=8):
+    """
+    Improved retrieval:
+    - TF-IDF-style scoring: tokens that appear in few chunks score higher
+    - Diversity: won't return 5 consecutive chunks from same file when another
+      file is more relevant
+    - Falls back to first N chunks if nothing scores
+    """
+    conn = sqlite3.connect(get_db_path())
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         """
@@ -425,13 +491,59 @@ def find_relevant_chunks(conversation_id, query, limit=6):
         return []
 
     query_tokens = _tokenize(query)
-    scored = []
-    for chunk in chunks:
-        overlap = len(query_tokens & _tokenize(chunk["content"]))
-        scored.append((overlap, chunk))
-    scored.sort(key=lambda item: (-item[0], item[1]["id"]))
+    if not query_tokens:
+        return chunks[:limit]
 
-    picked = [chunk for overlap, chunk in scored if overlap > 0][:limit]
+    total = len(chunks)
+
+    # Build IDF: how many chunks contain each token
+    doc_freq = {}
+    for chunk in chunks:
+        for tok in _tokenize(chunk["content"]):
+            doc_freq[tok] = doc_freq.get(tok, 0) + 1
+
+    import math
+    def idf(tok):
+        df = doc_freq.get(tok, 0)
+        return math.log((total + 1) / (df + 1)) + 1  # smoothed IDF
+
+    def score_chunk(chunk):
+        chunk_tokens = _tokenize(chunk["content"])
+        if not chunk_tokens:
+            return 0.0
+        # TF * IDF for each query token found in chunk
+        score = 0.0
+        for tok in query_tokens:
+            if tok in chunk_tokens:
+                tf = 1.0  # binary TF (present/absent) — simple but effective
+                score += tf * idf(tok)
+        # Bonus: reward chunks where query tokens are dense (hit ratio)
+        hit_ratio = len(query_tokens & chunk_tokens) / len(query_tokens)
+        score *= (1.0 + hit_ratio)
+        return score
+
+    scored = [(score_chunk(c), c) for c in chunks]
+    scored.sort(key=lambda x: -x[0])
+
+    # Diversity: pick top chunks but allow at most 3 per attachment_id
+    picked = []
+    per_file_count = {}
+    MAX_PER_FILE = 3
+    for score, chunk in scored:
+        if score <= 0:
+            break
+        aid = chunk["attachment_id"]
+        if per_file_count.get(aid, 0) >= MAX_PER_FILE:
+            continue
+        picked.append(chunk)
+        per_file_count[aid] = per_file_count.get(aid, 0) + 1
+        if len(picked) >= limit:
+            break
+
+    # Fallback: if nothing scored, return first N chunks ordered by file/position
     if not picked:
         picked = chunks[:limit]
+
+    # Re-sort picked by (attachment_id, chunk_index) so context reads in order
+    picked.sort(key=lambda c: (c["attachment_id"], c["chunk_index"]))
     return picked

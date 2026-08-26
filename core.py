@@ -2,9 +2,9 @@ import json
 import time
  
 import pyautogui
-import tools.tools as tools
+import tools.mac_tools as tools
 import tools.gmail_tools as gmail_tools
-from tools.tools_schema import tools_schema
+from tools.mac_tools_schema import tools_schema
 from instruction import Manager_instruction, Action_instruction
 from models import run_manager_step, run_action_step
 import storage.storage as db
@@ -152,7 +152,7 @@ def execute_tool(tool_name, tool_args):
     return f"Error: Tool '{tool_name}' not found."
  
  
-def run_worker(plan_text, worker_model, on_event=None):
+def run_worker(plan_text, worker_model, on_event=None, cancel_check=None):
     action_history = [
         {"role": "system", "content": Action_instruction},
         {"role": "user", "content": f"Execute this plan:\n{plan_text}"}
@@ -163,6 +163,8 @@ def run_worker(plan_text, worker_model, on_event=None):
     stats = {"tools": [], "tokens_in": 0, "tokens_out": 0, "requests": 0}
  
     while step_count < MAX_WORKER_STEPS:
+        if cancel_check and cancel_check():
+            return {"status": "cancelled", "message": "Cancelled by user.", "step_count": step_count, **stats}
         step_count += 1
         action_response = run_action_step(worker_model, action_history, WORKER_MAX_TOKENS, tools_schema)
         action_msg = action_response.choices[0].message
@@ -206,7 +208,7 @@ def run_worker(plan_text, worker_model, on_event=None):
     return {"status": "incomplete", "message": "Reached max steps without finishing.", "step_count": step_count, **stats}
  
  
-def process_message(user_input, message_history, on_event=None, file_context=None):
+def process_message(user_input, message_history, on_event=None, file_context=None, cancel_check=None):
     """Pure model-facing turn: takes a message + history, talks to the
     Manager/Worker pipeline, returns a result dict. Knows nothing about
     conversation_id or the database — that's send_and_save_message's job."""
@@ -242,6 +244,11 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
     while attempt <= MAX_PLAN_RETRIES:
         attempt += 1
  
+        if cancel_check and cancel_check():
+            reply = "Cancelled."
+            message_history.append({"role": "assistant", "content": reply})
+            return format_response(reply, metrics, start_time)
+
         if on_event:
             on_event({"type": "thinking"})
  
@@ -278,7 +285,7 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         if on_event:
             on_event({"type": "plan", "model": worker_model, "plan": plan_text})
  
-        outcome = run_worker(plan_text, worker_model, on_event=on_event)
+        outcome = run_worker(plan_text, worker_model, on_event=on_event, cancel_check=cancel_check)
  
         # Merge worker metrics
         metrics["requests"] += outcome.get("requests", 0)
@@ -303,7 +310,7 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
                 response["chat_title"] = response_title
             return response
  
-        elif outcome["status"] == "incomplete":
+        elif outcome["status"] in ("incomplete", "cancelled"):
             reply = outcome["message"]
             message_history.append({"role": "assistant", "content": reply})
             response = format_response(reply, metrics, start_time)
@@ -353,7 +360,7 @@ def _ensure_conversation_title(conversation_id, user_text, response_title=None):
         db.touch_conversation(conversation_id, title=title)
     return title
  
-def send_and_save_message(conversation_id, user_text, on_event=None, attachments=None):
+def send_and_save_message(conversation_id, user_text, on_event=None, attachments=None, cancel_check=None):
     previous_history = db.load_messages(conversation_id)
 
     db.save_message(conversation_id, "user", content=user_text)
@@ -367,7 +374,7 @@ def send_and_save_message(conversation_id, user_text, on_event=None, attachments
     excerpts = db.find_relevant_chunks(conversation_id, user_text, limit=6)
     file_context = format_attachment_context(excerpts)
 
-    result = process_message(user_text, history, on_event=on_event, file_context=file_context)
+    result = process_message(user_text, history, on_event=on_event, file_context=file_context, cancel_check=cancel_check)
 
     assistant_metadata = None
     if result.get("plan_text") or result.get("tools_used") or result.get("stats"):
@@ -377,7 +384,7 @@ def send_and_save_message(conversation_id, user_text, on_event=None, attachments
             "stats": result.get("stats")
         }
 
-    db.save_message(
+    result["message_id"] = db.save_message(
         conversation_id,
         "assistant",
         content=result["reply"],
@@ -405,7 +412,7 @@ def redo_assistant_response(conversation_id, user_text, on_event=None):
             "stats": result.get("stats")
         }
  
-    db.save_message(
+    result["message_id"] = db.save_message(
         conversation_id,
         "assistant",
         content=result["reply"],
@@ -423,10 +430,23 @@ def redo_assistant_response(conversation_id, user_text, on_event=None):
 def get_recent_conversations(limit=5):
     """Fetches real chat history titles and IDs for the sidebar."""
     return db.list_conversations(limit=limit)
+
+
+def search_conversations(query, limit=50):
+    """Searches chat titles AND message content."""
+    return db.search_conversations(query, limit=limit)
+
+
+def set_conversation_private(conversation_id, is_private):
+    db.set_conversation_private(conversation_id, is_private)
  
  
 def get_conversation_title(conversation_id):
     return db.get_conversation_title(conversation_id)
+
+
+def get_conversation_is_private(conversation_id):
+    return db.get_conversation_is_private(conversation_id)
  
  
 def create_conversation():
@@ -438,7 +458,11 @@ def delete_conversation(conversation_id):
  
  
 def get_conversation_history(conversation_id):
-    return db.load_messages(conversation_id)
+    return db.load_messages_with_metadata(conversation_id)
+
+
+def set_message_feedback(message_id, feedback):
+    db.set_message_feedback(message_id, feedback)
  
  
 def create_conversation_from_title(user_text):

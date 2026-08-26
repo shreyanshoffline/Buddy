@@ -1,35 +1,192 @@
+import os
+import sys
+from pathlib import Path
 from PySide6.QtWidgets import (
     QTextEdit, QWidget, QVBoxLayout, QPushButton, QFrame,
     QLabel, QHBoxLayout, QDialog, QButtonGroup, QRadioButton,
     QApplication, QFileDialog, QSizePolicy, QLayout, QLayoutItem,
 )
-from PySide6.QtCore import Qt, Signal, QRect, QPoint, QSize
-from PySide6.QtGui import QKeyEvent, QTextDocument, QDragEnterEvent, QDropEvent, QFontMetrics
+from PySide6.QtCore import Qt, Signal, QRect, QPoint, QSize, QTimer, QRectF
+from PySide6.QtGui import (
+    QKeyEvent, QTextDocument, QDragEnterEvent, QDropEvent, QFontMetrics,
+    QPainter, QColor, QPainterPath
+)
 from pypdf import PdfReader
 
 try:
     from .utils import get_svg_icon, ICONS
 except ImportError:
-    import os
-    import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from GUI.utils import get_svg_icon, ICONS
-from pathlib import Path
 
 TEXT_EXTS = {
-        ".txt", ".md", ".json", ".csv", ".py", ".js", ".ts",
-        ".yaml", ".yml", ".html", ".css",
-    }
+    ".txt", ".md", ".json", ".csv", ".py", ".js", ".ts",
+    ".yaml", ".yml", ".html", ".css",
+}
 
-# Single blue theme for every attachment pill, regardless of file type.
 PILL_BG = "#E7F0FA"
 PILL_BORDER = "#B7CDE8"
 PILL_TEXT = "#1c6ad9"
 
+class BuddyPawLoader(QWidget):
+    """Compact animated thinking indicator featuring bear paw prints walking upward."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(64, 38)
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._animate)
+        self._timer.start(35)  # ~30 FPS smooth walking loop
+
+    def _animate(self):
+        self._phase = (self._phase + 0.045) % 4.0
+        self.update()
+
+    def _draw_paw(self, painter: QPainter, cx: float, cy: float, scale: float, opacity: float, is_right: bool):
+        if opacity <= 0.01:
+            return
+
+        painter.save()
+        painter.translate(cx, cy)
+        painter.scale(scale, scale)
+
+        # Primary accent color for Buddy paws
+        color = QColor("#2b7ff0")
+        color.setAlphaF(max(0.0, min(1.0, opacity)))
+        painter.setBrush(color)
+        painter.setPen(Qt.NoPen)
+
+        # Main heel pad
+        main_pad = QPainterPath()
+        main_pad.addRoundedRect(QRectF(-4.5, -2.0, 9.0, 6.0), 3.0, 3.0)
+        painter.drawPath(main_pad)
+
+        # 4 Toe pads in an arc
+        toe_offsets = [
+            (-3.5, -4.8, 1.4),  # Toe 1 (Outer)
+            (-1.2, -5.8, 1.6),  # Toe 2
+            (1.2, -5.8, 1.6),   # Toe 3
+            (3.5, -4.8, 1.4),   # Toe 4 (Inner)
+        ]
+
+        for tx, ty, radius in toe_offsets:
+            toe_x = tx + (0.3 if is_right else -0.3)
+            painter.drawEllipse(QRectF(toe_x - radius, ty - radius, radius * 2, radius * 2))
+
+        painter.restore()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        center_x = self.width() / 2.0
+        total_paws = 4
+        spacing_y = 8.0
+        base_y = 30.0
+
+        for i in range(total_paws):
+            # Calculate position for paw i offset by continuous phase walking upwards
+            progress = (i - self._phase) % total_paws
+            y_pos = base_y - (progress * spacing_y)
+            is_right = (i % 2 == 1)
+            x_offset = 6.5 if is_right else -6.5
+            x_pos = center_x + x_offset
+
+            # Opacity transition: New paws form at top, old paws erase at bottom
+            if y_pos > 25.0:
+                opacity = max(0.0, (32.0 - y_pos) / 7.0)
+            elif y_pos < 10.0:
+                opacity = max(0.0, (y_pos - 3.0) / 7.0)
+            else:
+                opacity = 0.92
+
+            scale = 0.85 + (opacity * 0.15)
+            self._draw_paw(painter, x_pos, y_pos, scale, opacity, is_right)
+
+
+    def __init__(self, parent=None, margin=0, h_spacing=6, v_spacing=6):
+        super().__init__(parent)
+        self._h_spacing = h_spacing
+        self._v_spacing = v_spacing
+        self._items = []
+        self.setContentsMargins(margin, margin, margin, margin)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def horizontalSpacing(self):
+        return self._h_spacing
+
+    def verticalSpacing(self):
+        return self._v_spacing
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return size
+
+    def _do_layout(self, rect, test_only):
+        margins = self.contentsMargins()
+        x = rect.x() + margins.left()
+        y = rect.y() + margins.top()
+        line_height = 0
+        max_x = rect.right() - margins.right()
+
+        for item in self._items:
+            widget = item.widget()
+            if widget is not None and not widget.isVisible():
+                continue
+            item_width = item.sizeHint().width()
+            item_height = item.sizeHint().height()
+            next_x = x + item_width + self._h_spacing
+            if next_x - self._h_spacing > max_x and line_height > 0:
+                x = rect.x() + margins.left()
+                y = y + line_height + self._v_spacing
+                next_x = x + item_width + self._h_spacing
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), QSize(item_width, item_height)))
+            x = next_x
+            line_height = max(line_height, item_height)
+
+        return y + line_height - rect.y() + margins.bottom()
+
 
 class FlowLayout(QLayout):
-    """Wraps child widgets onto new rows as needed instead of overflowing
-    horizontally — so the attachment tray never needs a horizontal scrollbar."""
+    """Wraps child widgets onto new rows as needed — no horizontal scrollbar ever."""
 
     def __init__(self, parent=None, margin=0, h_spacing=6, v_spacing=6):
         super().__init__(parent)
@@ -119,15 +276,14 @@ class AttachmentPill(QFrame):
         super().__init__(parent)
         self.file_packet = file_packet
         self.file_path = file_packet["path"]
-        bg, border, text = PILL_BG, PILL_BORDER, PILL_TEXT
 
         self.setFixedHeight(26)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip(f"{file_packet.get('name', 'file')}  ·  double-click to preview")
+        self.setToolTip(f"{file_packet.get('name', 'file')} · double-click to preview")
         self.setStyleSheet(f"""
             QFrame {{
-                background: {bg};
-                border: 1px solid {border};
+                background: {PILL_BG};
+                border: 1px solid {PILL_BORDER};
                 border-radius: 13px;
             }}
             QFrame:hover {{
@@ -141,7 +297,7 @@ class AttachmentPill(QFrame):
 
         name = file_packet.get("name", "file")
         label = QLabel()
-        label.setStyleSheet(f"color: {text}; font-size: 11px; font-weight: 600; background: transparent; border: none;")
+        label.setStyleSheet(f"color: {PILL_TEXT}; font-size: 11px; font-weight: 600; background: transparent; border: none;")
         metrics = QFontMetrics(label.font())
         label.setText(metrics.elidedText(name, Qt.ElideMiddle, 120))
         label.setToolTip(name)
@@ -154,7 +310,7 @@ class AttachmentPill(QFrame):
         close_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent;
-                color: {text};
+                color: {PILL_TEXT};
                 border: none;
                 border-radius: 8px;
                 font-size: 12px;
@@ -185,6 +341,7 @@ class AttachmentTray(QWidget):
         self.row = FlowLayout(self, margin=4, h_spacing=6, v_spacing=6)
 
     def set_files(self, files):
+        
         while self.row.count():
             item = self.row.takeAt(0)
             if item.widget():
@@ -197,51 +354,40 @@ class AttachmentTray(QWidget):
             self.row.addWidget(pill)
 
         self.setVisible(bool(files))
- 
-# --- Dynamic Expanding Input ---
+
+
 class ChatInput(QTextEdit):
     attachment_changed = Signal()
- 
-    def __init__(self, send_callback, parent=None):
+
+    def __init__(self, send_callback, parent=None, tray_ref=None):
         super().__init__(parent)
         self.send_callback = send_callback
+        self.tray_ref = tray_ref  # direct ref avoids widget-tree crawl on every keystroke
         self.setPlaceholderText("Ask Buddy...")
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setAcceptDrops(True)
         self.attached_files = []
- 
+
         self.setStyleSheet("""
             QTextEdit {
-                background: white;
-                border: 1px solid rgba(0,0,0,0.06);
-                border-radius: 20px;
-                padding: 10px 48px 10px 40px;
+                background: transparent;
+                border: none;
+                padding: 4px;
                 font-size: 14px;
                 color: #333;
             }
         """)
+        self.setFixedHeight(36)  # start at single-line height; grows on text change
         self.textChanged.connect(self.adjust_height)
 
     def adjust_height(self):
         doc_height = self.document().size().height()
-        min_height = 40
-        max_height = 150
-        new_height = max(min_height, min(int(doc_height) + 16, max_height))
-
-        tray = None
-        parent = self.parentWidget()
-        if parent:
-            # find AttachmentTray sibling in composer layout
-            from PySide6.QtWidgets import QWidget as _QW
-            for child in parent.parent().children() if parent.parent() else []:
-                if hasattr(child, 'file_removed'):
-                    tray = child
-                    break
-
-        tray_height = (tray.sizeHint().height() + 6) if (tray and tray.isVisible()) else 0
-
-        if parent:
-            parent.setMinimumHeight(new_height + 10 + tray_height)
+        if doc_height <= 0 or doc_height > 500:  # ignore bogus values before layout settles
+            return
+        min_height = 36
+        max_height = 120
+        new_height = max(min_height, min(int(doc_height) + 12, max_height))
+        self.setFixedHeight(new_height)
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
@@ -251,38 +397,38 @@ class ChatInput(QTextEdit):
                 self.send_callback()
         else:
             super().keyPressEvent(event)
- 
+
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             super().dragEnterEvent(event)
- 
+
     def dragMoveEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             super().dragMoveEvent(event)
- 
+
     def dropEvent(self, event: QDropEvent):
         urls = event.mimeData().urls()
         if not urls:
             super().dropEvent(event)
             return
- 
+
         files = []
         for url in urls:
             local_path = url.toLocalFile()
             if local_path:
                 files.append(Path(local_path))
- 
+
         if files:
             self._add_file_attachments(files)
             event.acceptProposedAction()
             return
- 
+
         super().dropEvent(event)
- 
+
     def clear(self):
         super().clear()
         if self.attached_files:
@@ -303,12 +449,10 @@ class ChatInput(QTextEdit):
 
     def _extract_file_text(self, file_path):
         suffix = file_path.suffix.lower()
-        text_exts = {".txt", ".md", ".json", ".csv", ".py", ".js", ".ts", ".yaml", ".yml", ".html", ".css"}
-        if suffix in text_exts:
+        if suffix in TEXT_EXTS:
             return file_path.read_text(encoding="utf-8", errors="replace")
         if suffix == ".pdf":
             try:
-                from pypdf import PdfReader
                 text = "\n\n".join((page.extract_text() or "") for page in PdfReader(str(file_path)).pages).strip()
                 return text or "[PDF had no extractable text.]"
             except Exception as exc:
@@ -342,14 +486,15 @@ class ChatInput(QTextEdit):
         )
         if paths:
             self._add_file_attachments([Path(p) for p in paths])
-# --- DEV CHAMBER: Collapsible Thought Process ---
+
+
 class DevChamber(QWidget):
     def __init__(self, plan_text="", tools_used=None, stats=None):
         super().__init__()
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 4, 0, 0)
         self.layout.setSpacing(0)
- 
+
         self.toggle_btn = QPushButton("▶ See thought process")
         self.toggle_btn.setCursor(Qt.PointingHandCursor)
         self.toggle_btn.setCheckable(True)
@@ -367,7 +512,7 @@ class DevChamber(QWidget):
             QPushButton:checked { color: #2b7ff0; }
         """)
         self.toggle_btn.toggled.connect(self.on_toggle)
- 
+
         self.content_frame = QFrame()
         self.content_frame.setVisible(False)
         self.content_frame.setStyleSheet("""
@@ -378,11 +523,11 @@ class DevChamber(QWidget):
                 margin-top: 4px;
             }
         """)
- 
+
         content_layout = QVBoxLayout(self.content_frame)
         content_layout.setContentsMargins(10, 10, 10, 10)
         content_layout.setSpacing(8)
- 
+
         if plan_text:
             plan_doc = QTextDocument()
             plan_doc.setMarkdown(plan_text)
@@ -390,158 +535,212 @@ class DevChamber(QWidget):
             plan_label.setWordWrap(True)
             plan_label.setStyleSheet("color: #555; font-size: 11px; background: transparent; border: none;")
             content_layout.addWidget(plan_label)
- 
+
         if tools_used:
             tools_str = f"<b>Tools Executed:</b> {', '.join(tools_used)}"
             tools_label = QLabel(tools_str)
             tools_label.setWordWrap(True)
             tools_label.setStyleSheet("color: #999; font-size: 10px; font-style: italic; background: transparent; border: none;")
             content_layout.addWidget(tools_label)
- 
+
         if stats:
             stats_str = " • ".join([f"{k}: {v}" for k, v in stats.items()])
             stats_label = QLabel(stats_str)
             stats_label.setWordWrap(True)
             stats_label.setStyleSheet("color: #aaa; font-size: 10px; font-family: monospace; background: transparent; border: none;")
             content_layout.addWidget(stats_label)
- 
+
         self.layout.addWidget(self.toggle_btn)
         self.layout.addWidget(self.content_frame)
- 
+
     def on_toggle(self, checked):
         self.toggle_btn.setText("▼ Hide thought process" if checked else "▶ See thought process")
         self.content_frame.setVisible(checked)
- 
- 
-# --- Chat Bubble with Dev Chamber & Action Footer ---
+
+
 class ChatBubble(QWidget):
-    def __init__(self, text, is_user=True, plan_text=None, tools_used=None, stats=None, callbacks=None):
+    def __init__(self, text="", is_user=True, plan_text=None, tools_used=None, stats=None, callbacks=None, is_thinking=False, message_id=None, initial_feedback=None):
         super().__init__()
         self.is_user = is_user
-        self.callbacks = callbacks
+        self.is_thinking = is_thinking
+        self.callbacks = callbacks if callbacks is not None else ({} if not is_user else None)
+        self.message_id = message_id
+        self.initial_feedback = initial_feedback
         self.dev_chamber_container = None
- 
+
         self.versions = [{"text": text, "plan": plan_text, "tools": tools_used, "stats": stats}]
         self.current_idx = 0
- 
+
         self.layout = QHBoxLayout(self)
-        self.layout.setContentsMargins(0, 4, 0, 4)
+        self.layout.setContentsMargins(8, 4, 8, 4)
         self.layout.setAlignment(Qt.AlignTop)
- 
+
         self.bubble_container = QFrame()
-        self.bubble_container.setMaximumWidth(460)
-        self.bubble_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.bubble_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         self.bubble_layout = QVBoxLayout(self.bubble_container)
         self.bubble_layout.setContentsMargins(14, 10, 14, 10)
         self.bubble_layout.setSpacing(6)
- 
-        self.text_label = QLabel()
-        self.text_label.setWordWrap(True)
-        self.text_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
-        self.text_label.setOpenExternalLinks(True)
-        self.text_label.setStyleSheet("background: transparent; border: none;")
-        self.bubble_layout.addWidget(self.text_label)
- 
+
+        if self.is_thinking:
+            # Thinking state with animated bear paw loader
+            thinking_row = QHBoxLayout()
+            thinking_row.setContentsMargins(0, 0, 0, 0)
+            thinking_row.setSpacing(8)
+
+            self.paw_loader = BuddyPawLoader()
+            thinking_row.addWidget(self.paw_loader)
+
+            thinking_label = QLabel("Buddy is thinking...")
+            thinking_label.setStyleSheet("color: #6b7280; font-size: 13px; font-weight: 500; font-style: italic; background: transparent;")
+            thinking_row.addWidget(thinking_label)
+            thinking_row.addStretch()
+
+            self.bubble_layout.addLayout(thinking_row)
+        else:
+            self.text_label = QLabel()
+            self.text_label.setWordWrap(True)
+            self.text_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
+            self.text_label.setOpenExternalLinks(True)
+            self.text_label.setStyleSheet("background: transparent; border: none;")
+            self.bubble_layout.addWidget(self.text_label)
+
         if self.is_user:
             self.bubble_container.setStyleSheet("""
-                QFrame { background-color: #2b7ff0; border-radius: 16px; border-bottom-right-radius: 4px; }
-                QLabel { color: white; font-size: 14px; }
-                QLabel a { color: #d0e2ff; }
+                QFrame {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2b7ff0, stop:1 #1c6ad9);
+                    border-radius: 18px;
+                    border-bottom-right-radius: 4px;
+                }
+                QLabel {
+                    color: #ffffff;
+                    font-size: 13.5px;
+                    line-height: 1.4;
+                }
+                QLabel a { color: #d0e2ff; text-decoration: underline; }
             """)
             self.layout.addStretch()
             self.layout.addWidget(self.bubble_container)
         else:
             self.bubble_container.setStyleSheet("""
-                QFrame { background-color: rgba(255, 255, 255, 0.9); border-radius: 16px; border-bottom-left-radius: 4px; }
-                QLabel { color: #222222; font-size: 14px; }
-                QLabel a { color: #2b7ff0; }
-                QLabel pre { background-color: #f0f0f0; padding: 6px; border-radius: 6px; font-family: monospace; }
+                QFrame {
+                    background-color: #f7f9fc;
+                    border: 1px solid rgba(0, 0, 0, 0.07);
+                    border-radius: 18px;
+                    border-bottom-left-radius: 4px;
+                }
+                QLabel {
+                    color: #1a202c;
+                    font-size: 13.5px;
+                    line-height: 1.4;
+                }
+                QLabel a { color: #2b7ff0; text-decoration: none; font-weight: 600; }
+                QLabel pre {
+                    background-color: #e2e8f0;
+                    color: #1a202c;
+                    padding: 8px 10px;
+                    border-radius: 8px;
+                    font-family: 'Consolas', 'Courier New', monospace;
+                    font-size: 12px;
+                }
             """)
- 
-            self.dev_chamber_container = QVBoxLayout()
-            self.bubble_layout.addLayout(self.dev_chamber_container)
- 
-            if self.callbacks:
+
+            if not self.is_thinking:
+                self.dev_chamber_container = QVBoxLayout()
+                self.bubble_layout.addLayout(self.dev_chamber_container)
                 self._build_footer()
- 
+
             self.layout.addWidget(self.bubble_container)
             self.layout.addStretch()
- 
-        self._render_current_version()
- 
+
+        if not self.is_thinking:
+            self._render_current_version()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_responsive_width()
+
+    def _update_responsive_width(self):
+        """Ensures bubble stretches up to slightly less than halfway (~46%) when window expands."""
+        parent_w = self.width()
+        if parent_w > 0:
+            # Sizing constraint: Max width is ~46% of window width so each side gets roughly half
+            calc_max = int(parent_w * 0.46)
+            target_max = max(240, calc_max)
+            self.bubble_container.setMaximumWidth(target_max)
+
     def _build_footer(self):
         self.footer_layout = QHBoxLayout()
         self.footer_layout.setContentsMargins(0, 4, 0, 0)
- 
+
         btn_style = """
             QPushButton { background: transparent; border: none; padding: 4px; border-radius: 4px; }
             QPushButton:hover { background: rgba(0,0,0,0.05); }
             QPushButton:pressed { background: rgba(43,127,240,0.1); }
         """
- 
+
         def set_active_button(button, active, active_color, inactive_color="#555"):
             button.setIcon(get_svg_icon(button.property("icon_key"), active_color if active else inactive_color))
             button.setProperty("active", active)
             button.setStyleSheet(btn_style + ("QPushButton[active=true] { background: rgba(43,127,240,0.12); }" if active_color == "#2b7ff0" else "QPushButton[active=true] { background: rgba(244,67,54,0.12); }" if active_color == "#f44336" else ""))
- 
-        if 'copy' in self.callbacks:
-            self.copy_btn = QPushButton(icon=get_svg_icon(ICONS["copy"], "#555"))
-            self.copy_btn.setProperty("icon_key", "copy")
-            self.copy_btn.setStyleSheet(btn_style)
-            self.copy_btn.setCursor(Qt.PointingHandCursor)
-            self.copy_btn.clicked.connect(lambda: (self.callbacks['copy'](self.versions[self.current_idx]["text"]), set_active_button(self.copy_btn, True, "#2b7ff0")))
-            self.footer_layout.addWidget(self.copy_btn)
- 
-        if 'like' in self.callbacks:
-            self.like_btn = QPushButton(icon=get_svg_icon(ICONS["like"], "#555"))
-            self.like_btn.setProperty("icon_key", "like")
-            self.like_btn.setStyleSheet(btn_style)
-            self.like_btn.setCursor(Qt.PointingHandCursor)
-            self.like_btn.clicked.connect(self._toggle_like)
-            self.footer_layout.addWidget(self.like_btn)
- 
-        if 'dislike' in self.callbacks:
-            self.dislike_btn = QPushButton(icon=get_svg_icon(ICONS["dislike"], "#555"))
-            self.dislike_btn.setProperty("icon_key", "dislike")
-            self.dislike_btn.setStyleSheet(btn_style)
-            self.dislike_btn.setCursor(Qt.PointingHandCursor)
-            self.dislike_btn.clicked.connect(self._toggle_dislike)
-            self.footer_layout.addWidget(self.dislike_btn)
- 
+
+        self.copy_btn = QPushButton(icon=get_svg_icon(ICONS["copy"], "#555"))
+        self.copy_btn.setProperty("icon_key", "copy")
+        self.copy_btn.setStyleSheet(btn_style)
+        self.copy_btn.setCursor(Qt.PointingHandCursor)
+        self.copy_btn.clicked.connect(lambda: (self.callbacks.get('copy', lambda t: None)(self.versions[self.current_idx]["text"]), set_active_button(self.copy_btn, True, "#2b7ff0")))
+        self.footer_layout.addWidget(self.copy_btn)
+
+        self.like_btn = QPushButton(icon=get_svg_icon(ICONS["like"], "#555"))
+        self.like_btn.setProperty("icon_key", "like")
+        self.like_btn.setStyleSheet(btn_style)
+        self.like_btn.setCursor(Qt.PointingHandCursor)
+        self.like_btn.clicked.connect(self._toggle_like)
+        self.footer_layout.addWidget(self.like_btn)
+
+        self.dislike_btn = QPushButton(icon=get_svg_icon(ICONS["dislike"], "#555"))
+        self.dislike_btn.setProperty("icon_key", "dislike")
+        self.dislike_btn.setStyleSheet(btn_style)
+        self.dislike_btn.setCursor(Qt.PointingHandCursor)
+        self.dislike_btn.clicked.connect(self._toggle_dislike)
+        self.footer_layout.addWidget(self.dislike_btn)
+
         self.footer_layout.addStretch()
- 
+
         self.prev_btn = QPushButton(icon=get_svg_icon(ICONS["left"], "#555"))
         self.prev_btn.setFixedSize(20, 20)
         self.prev_btn.setStyleSheet(btn_style)
         self.prev_btn.setCursor(Qt.PointingHandCursor)
         self.prev_btn.clicked.connect(lambda: self._switch_page(-1))
         self.footer_layout.addWidget(self.prev_btn)
- 
+
         self.page_label = QLabel("1/1")
         self.page_label.setStyleSheet("color: #888; font-size: 11px; font-weight: bold; background: transparent;")
         self.footer_layout.addWidget(self.page_label)
- 
+
         self.next_btn = QPushButton(icon=get_svg_icon(ICONS["right"], "#555"))
         self.next_btn.setFixedSize(20, 20)
         self.next_btn.setStyleSheet(btn_style)
         self.next_btn.setCursor(Qt.PointingHandCursor)
         self.next_btn.clicked.connect(lambda: self._switch_page(1))
         self.footer_layout.addWidget(self.next_btn)
- 
-        if 'redo' in self.callbacks:
-            self.redo_btn = QPushButton(icon=get_svg_icon(ICONS["redo"], "#555"))
-            self.redo_btn.setProperty("icon_key", "redo")
-            self.redo_btn.setStyleSheet(btn_style)
-            self.redo_btn.setCursor(Qt.PointingHandCursor)
-            self.redo_btn.clicked.connect(self._trigger_redo)
-            self.footer_layout.addWidget(self.redo_btn)
- 
+
+        self.redo_btn = QPushButton(icon=get_svg_icon(ICONS["redo"], "#555"))
+        self.redo_btn.setProperty("icon_key", "redo")
+        self.redo_btn.setStyleSheet(btn_style)
+        self.redo_btn.setCursor(Qt.PointingHandCursor)
+        self.redo_btn.clicked.connect(self._trigger_redo)
+        self.footer_layout.addWidget(self.redo_btn)
+
         self.bubble_layout.addLayout(self.footer_layout)
- 
+
+        if self.initial_feedback == "like":
+            self.like_btn.setProperty('active', True)
+            self.like_btn.setIcon(get_svg_icon(ICONS['like'], '#2b7ff0'))
+        elif self.initial_feedback == "dislike":
+            self.dislike_btn.setProperty('active', True)
+            self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], '#f44336'))
+
     def _toggle_like(self):
-        if getattr(self, 'like_btn', None) is None:
-            return
- 
         is_active = self.like_btn.property('active')
         if is_active:
             self.like_btn.setProperty('active', False)
@@ -551,34 +750,27 @@ class ChatBubble(QWidget):
                 QPushButton:hover { background: rgba(0,0,0,0.05); }
                 QPushButton:pressed { background: rgba(43,127,240,0.1); }
             """)
-            if hasattr(self, 'callbacks') and self.callbacks and 'like' in self.callbacks:
-                self.callbacks['like']()
+            self.callbacks.get('like', lambda active: None)(False)
             return
- 
+
         self.like_btn.setProperty('active', True)
         self.like_btn.setIcon(get_svg_icon(ICONS['like'], '#2b7ff0'))
         self.like_btn.setStyleSheet("""
             QPushButton { background: rgba(43,127,240,0.12); border: none; padding: 4px; border-radius: 4px; }
             QPushButton:hover { background: rgba(43,127,240,0.18); }
-            QPushButton:pressed { background: rgba(43,127,240,0.2); }
+            QPushButton:pressed { background: rgba(43,127,240,0.25); }
         """)
- 
-        if hasattr(self, 'dislike_btn') and self.dislike_btn.property('active'):
+        if hasattr(self, 'dislike_btn'):
             self.dislike_btn.setProperty('active', False)
             self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], '#555'))
             self.dislike_btn.setStyleSheet("""
                 QPushButton { background: transparent; border: none; padding: 4px; border-radius: 4px; }
                 QPushButton:hover { background: rgba(0,0,0,0.05); }
-                QPushButton:pressed { background: rgba(43,127,240,0.1); }
+                QPushButton:pressed { background: rgba(244,67,54,0.1); }
             """)
- 
-        if hasattr(self, 'callbacks') and self.callbacks and 'like' in self.callbacks:
-            self.callbacks['like']()
- 
+        self.callbacks.get('like', lambda active: None)(True)
+
     def _toggle_dislike(self):
-        if getattr(self, 'dislike_btn', None) is None:
-            return
- 
         is_active = self.dislike_btn.property('active')
         if is_active:
             self.dislike_btn.setProperty('active', False)
@@ -586,21 +778,19 @@ class ChatBubble(QWidget):
             self.dislike_btn.setStyleSheet("""
                 QPushButton { background: transparent; border: none; padding: 4px; border-radius: 4px; }
                 QPushButton:hover { background: rgba(0,0,0,0.05); }
-                QPushButton:pressed { background: rgba(43,127,240,0.1); }
+                QPushButton:pressed { background: rgba(244,67,54,0.1); }
             """)
-            if hasattr(self, 'callbacks') and self.callbacks and 'dislike' in self.callbacks:
-                self.callbacks['dislike']()
+            self.callbacks.get('dislike', lambda active: None)(False)
             return
- 
+
         self.dislike_btn.setProperty('active', True)
         self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], '#f44336'))
         self.dislike_btn.setStyleSheet("""
             QPushButton { background: rgba(244,67,54,0.12); border: none; padding: 4px; border-radius: 4px; }
             QPushButton:hover { background: rgba(244,67,54,0.18); }
-            QPushButton:pressed { background: rgba(244,67,54,0.2); }
+            QPushButton:pressed { background: rgba(244,67,54,0.25); }
         """)
- 
-        if hasattr(self, 'like_btn') and self.like_btn.property('active'):
+        if hasattr(self, 'like_btn'):
             self.like_btn.setProperty('active', False)
             self.like_btn.setIcon(get_svg_icon(ICONS['like'], '#555'))
             self.like_btn.setStyleSheet("""
@@ -608,130 +798,66 @@ class ChatBubble(QWidget):
                 QPushButton:hover { background: rgba(0,0,0,0.05); }
                 QPushButton:pressed { background: rgba(43,127,240,0.1); }
             """)
- 
-        if hasattr(self, 'callbacks') and self.callbacks and 'dislike' in self.callbacks:
-            self.callbacks['dislike']()
- 
-    def _trigger_redo(self):
-        if len(self.versions) >= 3:
-            return
- 
-        self.text_label.setText("<i>Buddy is thinking...</i>")
-        self.redo_btn.setEnabled(False)
-        QApplication.processEvents()
- 
-        new_result = self.callbacks['redo']()
- 
-        self.versions.append({
-            "text": new_result["reply"],
-            "plan": new_result["plan_text"],
-            "tools": new_result["tools_used"],
-            "stats": new_result["stats"]
-        })
-        self.current_idx = len(self.versions) - 1
-        self._render_current_version()
-        self.redo_btn.setEnabled(True)
-        self.redo_btn.setIcon(get_svg_icon(ICONS["redo"], "#2b7ff0"))
-        self.redo_btn.setStyleSheet("""
-            QPushButton { background: rgba(43,127,240,0.12); border: none; padding: 4px; border-radius: 4px; }
-            QPushButton:hover { background: rgba(43,127,240,0.18); }
-            QPushButton:pressed { background: rgba(43,127,240,0.2); }
-        """)
- 
+        self.callbacks.get('dislike', lambda active: None)(True)
+
     def _switch_page(self, direction):
         new_idx = self.current_idx + direction
         if 0 <= new_idx < len(self.versions):
             self.current_idx = new_idx
             self._render_current_version()
- 
+
+    def _trigger_redo(self):
+        self.callbacks.get('redo', lambda: None)()
+
     def _render_current_version(self):
-        data = self.versions[self.current_idx]
- 
+        v = self.versions[self.current_idx]
+
         doc = QTextDocument()
-        doc.setMarkdown(data["text"])
+        doc.setMarkdown(v["text"])
         self.text_label.setText(doc.toHtml())
- 
-        if self.dev_chamber_container is not None:
+
+        if not self.is_user and self.dev_chamber_container is not None:
             while self.dev_chamber_container.count():
                 item = self.dev_chamber_container.takeAt(0)
                 if item.widget():
                     item.widget().deleteLater()
- 
-            if not self.is_user and (data["plan"] or data["tools"] or data["stats"]):
-                dev_chamber = DevChamber(data["plan"], data["tools"], data["stats"])
-                self.dev_chamber_container.addWidget(dev_chamber)
- 
-        if not self.is_user and hasattr(self, 'page_label'):
-            total = len(self.versions)
-            self.page_label.setText(f"{self.current_idx + 1}/{total}")
- 
-            has_versions = total > 1
-            self.prev_btn.setVisible(has_versions)
-            self.page_label.setVisible(has_versions)
-            self.next_btn.setVisible(has_versions)
- 
+
+            has_chamber_data = v.get("plan") or v.get("tools") or v.get("stats")
+            if has_chamber_data:
+                chamber = DevChamber(plan_text=v.get("plan"), tools_used=v.get("tools"), stats=v.get("stats"))
+                self.dev_chamber_container.addWidget(chamber)
+
+        if hasattr(self, 'page_label'):
+            self.page_label.setText(f"{self.current_idx + 1}/{len(self.versions)}")
             self.prev_btn.setEnabled(self.current_idx > 0)
-            self.next_btn.setEnabled(self.current_idx < total - 1)
- 
-            if total >= 3:
-                self.redo_btn.setIcon(get_svg_icon(ICONS["redo"], "#dddddd"))
-                self.redo_btn.setEnabled(False)
- 
- 
-# --- Feedback Pop-up for Dislikes ---
+            self.next_btn.setEnabled(self.current_idx < len(self.versions) - 1)
+
+
 class FeedbackDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Feedback")
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.selected_feedback = None
- 
+        self.setWindowTitle("Provide Feedback")
+        self.setFixedSize(300, 200)
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
- 
-        container = QFrame()
-        container.setStyleSheet("""
-            QFrame {
-                background: white;
-                border-radius: 12px;
-                border: 1px solid #ddd;
-            }
-        """)
-        vbox = QVBoxLayout(container)
-        vbox.setSpacing(12)
-        vbox.setContentsMargins(20, 20, 20, 20)
- 
-        title = QLabel("<b>What went wrong?</b>")
-        title.setStyleSheet("font-size: 14px; color: #333; border: none;")
-        vbox.addWidget(title)
- 
+
+        label = QLabel("What was wrong with this response?")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
         self.btn_group = QButtonGroup(self)
-        options = ["Didn't follow instructions", "Not helpful", "Incorrect information", "Other"]
- 
-        for i, opt in enumerate(options):
-            radio = QRadioButton(opt)
-            radio.setStyleSheet("color: #555; font-size: 13px; border: none;")
-            self.btn_group.addButton(radio, i)
-            vbox.addWidget(radio)
- 
+        reasons = ["Not helpful", "Inaccurate", "Too long", "Other"]
+        for i, reason in enumerate(reasons):
+            rb = QRadioButton(reason)
+            self.btn_group.addButton(rb, i)
+            layout.addWidget(rb)
+
         btn_layout = QHBoxLayout()
-        cancel_btn = QPushButton("Cancel")
         submit_btn = QPushButton("Submit")
- 
-        cancel_btn.setStyleSheet("background: #f0f0f0; color: #555; border-radius: 6px; padding: 6px 12px; border: none;")
-        submit_btn.setStyleSheet("background: #2b7ff0; color: white; border-radius: 6px; padding: 6px 12px; border: none;")
- 
-        cancel_btn.clicked.connect(self.reject)
         submit_btn.clicked.connect(self.accept)
- 
-        btn_layout.addStretch()
-        btn_layout.addWidget(cancel_btn)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+
         btn_layout.addWidget(submit_btn)
- 
-        vbox.addLayout(btn_layout)
-        layout.addWidget(container)
- 
-    def get_feedback(self):
-        checked = self.btn_group.checkedButton()
-        return checked.text() if checked else "User provided no specific reason."
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)

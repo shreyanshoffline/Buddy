@@ -1,5 +1,6 @@
 import sys
 import random
+import threading
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
@@ -9,7 +10,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import (
     Qt, QEvent, QPoint, QVariantAnimation, QEasingCurve,
-    QPropertyAnimation, QTimer, QSize
+    QPropertyAnimation, QTimer, QSize, QThread, Signal as QtSignal
 )
 from PySide6.QtGui import (
     QFont, QIcon, QPixmap, QPainter, QKeyEvent,
@@ -40,6 +41,51 @@ from GUI.utils import create_buddy_icon
 import storage.storage as db
  
  
+class SendWorker(QThread):
+    """Runs send_and_save_message off the main thread so the UI stays responsive."""
+    finished = QtSignal(dict)   # emits the result dict on success
+    error = QtSignal(str)       # emits error message string on failure
+    progress = QtSignal(dict)   # emits live agent events (thinking/plan/tool_call/etc)
+
+    def __init__(self, conversation_id, user_text, attachments=None):
+        super().__init__()
+        self.conversation_id = conversation_id
+        self.user_text = user_text
+        self.attachments = attachments
+        self.cancel_event = threading.Event()
+
+    def run(self):
+        try:
+            result = send_and_save_message(
+                self.conversation_id,
+                self.user_text,
+                attachments=self.attachments or None,
+                on_event=lambda e: self.progress.emit(e),
+                cancel_check=self.cancel_event.is_set,
+            )
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class RedoWorker(QThread):
+    """Runs redo_assistant_response off the main thread."""
+    finished = QtSignal(dict)
+    error = QtSignal(str)
+
+    def __init__(self, conversation_id, user_text):
+        super().__init__()
+        self.conversation_id = conversation_id
+        self.user_text = user_text
+
+    def run(self):
+        try:
+            result = core.redo_assistant_response(self.conversation_id, self.user_text)
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class CardPage(QWidget):
     def __init__(self, title, subtitle="", parent=None, close_callback=None):
         super().__init__(parent)
@@ -263,6 +309,7 @@ class LibraryPage(CardPage):
         for chat in chats:
             title = chat.get("title") or "Untitled Chat"
             chat_id = chat["id"]
+            is_private = bool(chat.get("is_private"))
 
             box = QFrame()
             box.setCursor(Qt.PointingHandCursor)
@@ -286,18 +333,36 @@ class LibraryPage(CardPage):
             box_layout.addWidget(label)
             box_layout.addStretch()
 
+            lock_btn = QPushButton("🔒" if is_private else "🔓")
+            lock_btn.setFlat(True)
+            lock_btn.setCursor(Qt.PointingHandCursor)
+            lock_btn.setToolTip("Private chat" if is_private else "Mark as private")
+            lock_btn.setStyleSheet("QPushButton { border: none; background: transparent; font-size: 12px; }")
+            lock_btn.clicked.connect(lambda checked=False, c_id=chat_id, cur=is_private: self._toggle_private(c_id, cur))
+            box_layout.addWidget(lock_btn)
+
             box.mousePressEvent = lambda event, c_id=chat_id: self._select_chat(c_id)
 
             self.list_container.addWidget(box)
             self.chat_item_widgets.append((box, title.lower()))
 
+    def _toggle_private(self, chat_id, currently_private):
+        core.set_conversation_private(chat_id, not currently_private)
+        self.refresh_chats()
+        query = self.search_box.text().strip()
+        if query:
+            self._filter_chats(query)
+
     def _filter_chats(self, query):
-        query = (query or "").strip().lower()
+        query = (query or "").strip()
         if not query:
             self._render_chat_list(self.all_chats)
             return
-        filtered = [c for c in self.all_chats if query in (c.get("title") or "").lower()]
-        self._render_chat_list(filtered)
+        try:
+            results = core.search_conversations(query, limit=200)
+        except Exception:
+            results = [c for c in self.all_chats if query.lower() in (c.get("title") or "").lower()]
+        self._render_chat_list(results)
 
     def _select_chat(self, chat_id):
         """Opens the clicked chat; the main window handles switching off the settings/library page."""
@@ -320,7 +385,11 @@ class BuddyWindow(QWidget):
         self.current_conversation_id = None
         self.current_chat_title = None
         self.message_history = new_message_history()
- 
+        self._thinking_bubble = None
+        self._last_assistant_bubble = None
+        self._is_sending = False
+        self._send_worker = None
+
         self._build_ui()
         self._setup_tray_icon()
  
@@ -498,9 +567,18 @@ class BuddyWindow(QWidget):
             }}
         """)
         self.close_btn.clicked.connect(self.hide)
- 
+
+        self.privacy_btn = QPushButton("🔓")
+        self.privacy_btn.setFlat(True)
+        self.privacy_btn.setCursor(Qt.PointingHandCursor)
+        self.privacy_btn.setToolTip("Mark this chat as private")
+        self.privacy_btn.setStyleSheet("QPushButton { border: none; background: transparent; font-size: 14px; }")
+        self.privacy_btn.clicked.connect(self._toggle_current_chat_private)
+        self.privacy_btn.setVisible(False)
+
         self.header_layout.addWidget(self.title_label)
         self.header_layout.addStretch()
+        self.header_layout.addWidget(self.privacy_btn)
         self.header_layout.addWidget(self.close_btn)
  
         self.content_area_layout.addWidget(self.header_bar)
@@ -582,17 +660,54 @@ class BuddyWindow(QWidget):
         self.chat_layout.addStretch()
         self.scroll_area.setWidget(self.chat_container)
  
-        self.input_container = QWidget()
-        self.input_container.setMinimumHeight(INPUT_CONTAINER_HEIGHT)
- 
-        self.input_box = ChatInput(self.handle_send, self.input_container)
+        # --- Unified composer box: white rounded frame holding tray + input row ---
+        self.input_container = QFrame()
+        self.input_container.setObjectName("InputContainer")
+        self.input_container.setStyleSheet("""
+            QFrame#InputContainer {
+                background: white;
+                border: 1px solid rgba(0,0,0,0.06);
+                border-radius: 20px;
+            }
+        """)
+        input_outer = QVBoxLayout(self.input_container)
+        input_outer.setContentsMargins(0, 6, 0, 6)
+        input_outer.setSpacing(0)
 
+        # Tray lives inside the frame, shown only when files attached
         self.attachment_tray = AttachmentTray()
-        self.attachment_tray.file_removed.connect(self.input_box.remove_attachment)
-        self.attachment_tray.preview_requested.connect(self._show_attachment_preview)
-        self.input_box.attachment_changed.connect(self._update_attachment_controls)
- 
-        self.send_button = QPushButton("➤", self.input_container)
+        self.attachment_tray.setContentsMargins(10, 4, 10, 0)
+        input_outer.addWidget(self.attachment_tray)
+
+        # Row: attach btn | text field | send btn
+        input_row = QHBoxLayout()
+        input_row.setContentsMargins(8, 0, 8, 0)
+        input_row.setSpacing(4)
+
+        self.attach_button = QPushButton()
+        self.attach_button.setFixedSize(28, 28)
+        self.attach_button.setCursor(Qt.PointingHandCursor)
+        self.attach_button.setToolTip("Attach files")
+        self.attach_button.setIcon(get_svg_icon(ICONS["plus"], "#6B7280", 16))
+        self.attach_button.setIconSize(QSize(16, 16))
+        self.attach_button.setStyleSheet("""
+            QPushButton { background: transparent; border: none; border-radius: 14px; }
+            QPushButton:hover { background: rgba(0,0,0,0.06); }
+        """)
+        self.attach_button.clicked.connect(lambda: self.input_box.open_file_picker())
+
+        self.input_box = ChatInput(self.handle_send, tray_ref=self.attachment_tray)
+        self.input_box.setStyleSheet("""
+            QTextEdit {
+                background: transparent;
+                border: none;
+                padding: 4px 4px;
+                font-size: 14px;
+                color: #333;
+            }
+        """)
+
+        self.send_button = QPushButton("➤")
         self.send_button.setFixedSize(SEND_BUTTON_SIZE, SEND_BUTTON_SIZE)
         self.send_button.setCursor(Qt.PointingHandCursor)
         self.send_button.setStyleSheet(f"""
@@ -600,35 +715,15 @@ class BuddyWindow(QWidget):
             QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
         """)
         self.send_button.clicked.connect(self.handle_send)
-        self.attach_button = QPushButton(self.input_container)
-        self.attach_button.setFixedSize(28, 28)
-        self.attach_button.setCursor(Qt.PointingHandCursor)
-        self.attach_button.setToolTip("Attach files")
-        self.attach_button.setIcon(get_svg_icon(ICONS["plus"], "#6B7280", 16))
-        self.attach_button.setIconSize(QSize(16, 16))
-        self.attach_button.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                border: none;
-                border-radius: 14px;
-            }
-            QPushButton:hover {
-                background: rgba(0, 0, 0, 0.06);
-            }
-        """)
-        self.attach_button.clicked.connect(self.input_box.open_file_picker)
-        def position_send_button():
-            self.send_button.move(
-                self.input_container.width() - self.send_button.width() - 8,
-                self.input_container.height() - self.send_button.height() - 7
-            )
-            self.attach_button.move(
-                8,
-                self.input_container.height() - self.attach_button.height() - 9
-            )
-            self.attach_button.raise_()
- 
-        self.input_container.resizeEvent = lambda e: (self.input_box.resize(self.input_container.size()), position_send_button())
+
+        input_row.addWidget(self.attach_button, 0, Qt.AlignBottom)
+        input_row.addWidget(self.input_box, 1)
+        input_row.addWidget(self.send_button, 0, Qt.AlignBottom)
+        input_outer.addLayout(input_row)
+
+        self.attachment_tray.file_removed.connect(self.input_box.remove_attachment)
+        self.attachment_tray.preview_requested.connect(self._show_attachment_preview)
+        self.input_box.attachment_changed.connect(self._update_attachment_controls)
  
         self.preview_overlay = QFrame(self.chat_page)
         self.preview_overlay.setObjectName("PreviewOverlay")
@@ -713,8 +808,7 @@ class BuddyWindow(QWidget):
         self.composer.setStyleSheet("background: transparent;")
         composer_layout = QVBoxLayout(self.composer)
         composer_layout.setContentsMargins(0, 0, 0, 0)
-        composer_layout.setSpacing(6)
-        composer_layout.addWidget(self.attachment_tray)
+        composer_layout.setSpacing(0)
         composer_layout.addWidget(self.input_container)
         self.main_layout.addWidget(self.composer)
  
@@ -805,22 +899,30 @@ class BuddyWindow(QWidget):
                 bubble = ChatBubble(text=content, is_user=True)
                 self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
             elif role == "assistant":
-                metadata = msg.get("tool_calls") if isinstance(msg.get("tool_calls"), dict) else {}
+                metadata = msg.get("metadata") if isinstance(msg.get("metadata"), dict) else {}
+                msg_id = msg.get("id")
                 bubble = ChatBubble(
                     text=content,
                     is_user=False,
                     plan_text=metadata.get("plan_text"),
                     tools_used=metadata.get("tools_used"),
                     stats=metadata.get("stats"),
+                    message_id=msg_id,
+                    initial_feedback=msg.get("feedback"),
                     callbacks={
                         'copy': lambda text=content: QApplication.clipboard().setText(text),
-                        'like': lambda: None,
-                        'dislike': lambda: None,
+                        'like': lambda active, mid=msg_id: self._set_feedback(mid, 'like', active),
+                        'dislike': lambda active, mid=msg_id: self._set_feedback(mid, 'dislike', active),
                         'redo': lambda: None
-                    } if metadata else None
+                    }
                 )
                 self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
         self._scroll_to_bottom()
+
+    def _set_feedback(self, message_id, kind, active):
+        if message_id is None:
+            return
+        core.set_message_feedback(message_id, kind if active else None)
  
     def _redo_assistant_response(self, user_text):
         if self.current_conversation_id is None:
@@ -845,6 +947,7 @@ class BuddyWindow(QWidget):
         self.current_conversation_id = conversation_id
         title = core.get_conversation_title(conversation_id)
         self._set_conversation_title(title)
+        self._refresh_privacy_button()
  
         history = core.get_conversation_history(conversation_id)
         self.message_history = list(history)
@@ -853,6 +956,22 @@ class BuddyWindow(QWidget):
         self.greeting.setVisible(False)
         self.greeting_spacer.setVisible(False)
         self.greeting_spacer_bottom.setVisible(False)
+
+    def _refresh_privacy_button(self):
+        if self.current_conversation_id is None:
+            self.privacy_btn.setVisible(False)
+            return
+        is_private = core.get_conversation_is_private(self.current_conversation_id)
+        self.privacy_btn.setText("🔒" if is_private else "🔓")
+        self.privacy_btn.setToolTip("Private chat — click to unmark" if is_private else "Mark this chat as private")
+        self.privacy_btn.setVisible(True)
+
+    def _toggle_current_chat_private(self):
+        if self.current_conversation_id is None:
+            return
+        is_private = core.get_conversation_is_private(self.current_conversation_id)
+        core.set_conversation_private(self.current_conversation_id, not is_private)
+        self._refresh_privacy_button()
  
     def delete_chat(self, conversation_id):
         core.delete_conversation(conversation_id)
@@ -872,13 +991,21 @@ class BuddyWindow(QWidget):
         self.current_chat_title = None
         self.message_history = new_message_history()
         self._set_conversation_title(None)
+        self.privacy_btn.setVisible(False)
         self._clear_chat_history()
         self.scroll_area.setVisible(False)
         self.greeting.setVisible(True)
         self.greeting_spacer.setVisible(True)
         self.greeting_spacer_bottom.setVisible(True)
  
+    def _set_input_enabled(self, enabled):
+        self.input_box.setReadOnly(not enabled)
+        self.send_button.setEnabled(enabled)
+        self.attach_button.setEnabled(enabled)
+
     def handle_send(self, forced_text=None):
+        if self._is_sending:
+            return
         attached_files = list(getattr(self.input_box, 'attached_files', []))
         user_text = forced_text if forced_text else self.input_box.toPlainText().strip()
 
@@ -902,6 +1029,7 @@ class BuddyWindow(QWidget):
         if self.current_conversation_id is None:
             self.current_conversation_id = core.create_conversation()
             self._set_conversation_title(None)
+            self._refresh_privacy_button()
             self.sidebar.refresh_recents()
 
         self.scroll_area.setVisible(True)
@@ -914,36 +1042,233 @@ class BuddyWindow(QWidget):
         self.chat_layout.insertWidget(self.chat_layout.count() - 1, user_bubble)
         self._scroll_to_bottom()
 
-        result = send_and_save_message(
-            self.current_conversation_id,
-            user_text,
-            attachments=attached_files or None,
-        )
+        self._last_send_text = user_text
+        self._last_send_attachments = attached_files
+
+        # Show a "thinking" placeholder bubble (animated paw loader)
+        self._thinking_bubble = ChatBubble(is_user=False, is_thinking=True)
+        self.chat_layout.insertWidget(self.chat_layout.count() - 1, self._thinking_bubble)
+        self._scroll_to_bottom()
+
         self.input_box.clear()
+        self._set_input_enabled(False)
+        self._set_send_button_stop_mode(True)
+
+        self._is_sending = True
+        self._send_worker = SendWorker(self.current_conversation_id, user_text, attached_files)
+        self._send_worker.finished.connect(lambda result: self._on_send_result(result))
+        self._send_worker.error.connect(lambda err: self._on_send_error(err))
+        self._send_worker.progress.connect(self._on_send_progress)
+        self._send_worker.start()
+
+    def _set_send_button_stop_mode(self, is_stopping):
+        """Swaps the send button into a Stop button while a request is in flight."""
+        if is_stopping:
+            self.send_button.setText("■")
+            self.send_button.setEnabled(True)
+            self.send_button.setToolTip("Stop")
+            try:
+                self.send_button.clicked.disconnect()
+            except TypeError:
+                pass
+            self.send_button.clicked.connect(self._cancel_current_send)
+        else:
+            self.send_button.setText("➤")
+            self.send_button.setToolTip("")
+            try:
+                self.send_button.clicked.disconnect()
+            except TypeError:
+                pass
+            self.send_button.clicked.connect(self.handle_send)
+
+    def _cancel_current_send(self):
+        if self._send_worker is not None:
+            self._send_worker.cancel_event.set()
+            self.send_button.setEnabled(False)
+            self.send_button.setToolTip("Stopping…")
+            if self._thinking_bubble and hasattr(self._thinking_bubble, 'paw_loader'):
+                pass  # loader keeps animating until the worker actually returns
+
+    def _on_send_progress(self, event):
+        if not self._thinking_bubble:
+            return
+        etype = event.get("type")
+        label = None
+        if etype == "thinking":
+            label = "Buddy is thinking…"
+        elif etype == "plan":
+            label = "Working on it…"
+        elif etype == "tool_call":
+            label = f"Using {event.get('name', 'a tool')}…"
+        elif etype == "refining":
+            label = "Refining the plan…"
+        elif etype == "malformed_retry":
+            label = "Retrying…"
+        if label and hasattr(self._thinking_bubble, 'layout'):
+            # Find the thinking label inside the bubble and update it
+            for child in self._thinking_bubble.findChildren(QLabel):
+                if child.text().startswith("Buddy is thinking") or child.text() in (
+                    "Working on it…", "Refining the plan…", "Retrying…"
+                ) or child.text().startswith("Using "):
+                    child.setText(label)
+                    break
+
+    def _remove_thinking_bubble(self):
+        if self._thinking_bubble:
+            self.chat_layout.removeWidget(self._thinking_bubble)
+            self._thinking_bubble.deleteLater()
+            self._thinking_bubble = None
+
+    def _on_send_result(self, result):
+        self._is_sending = False
+        self._send_worker = None
+        self._set_send_button_stop_mode(False)
+        self._remove_thinking_bubble()
+        self._set_input_enabled(True)
         self.input_box.setFocus()
 
         reply = result.get("reply", "")
         if reply:
             self.message_history.append({"role": "assistant", "content": reply})
+            conv_id = self.current_conversation_id
+
+            def make_redo(captured_reply=reply, captured_conv=conv_id):
+                def do_redo():
+                    self._trigger_redo_for_bubble(captured_conv, captured_reply, self._last_assistant_bubble)
+                return do_redo
+
+            msg_id = result.get("message_id")
             assistant_bubble = ChatBubble(
                 text=reply,
                 is_user=False,
                 plan_text=result.get("plan_text"),
                 tools_used=result.get("tools_used"),
                 stats=result.get("stats"),
+                message_id=msg_id,
                 callbacks={
                     'copy': lambda text=reply: QApplication.clipboard().setText(text),
-                    'like': lambda: None,
-                    'dislike': lambda: None,
-                    'redo': lambda: None,
+                    'like': lambda active, mid=msg_id: self._set_feedback(mid, 'like', active),
+                    'dislike': lambda active, mid=msg_id: self._set_feedback(mid, 'dislike', active),
+                    'redo': make_redo(),
                 }
             )
+            self._last_assistant_bubble = assistant_bubble
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, assistant_bubble)
             self._scroll_to_bottom()
 
         if result.get("chat_title"):
             self._set_conversation_title(result["chat_title"])
             self.sidebar.refresh_recents(on_chat_click=self.load_chat, on_delete_chat=self.delete_chat)
+
+    def _on_send_error(self, error_msg):
+        self._is_sending = False
+        self._send_worker = None
+        self._set_send_button_stop_mode(False)
+        self._remove_thinking_bubble()
+        self._set_input_enabled(True)
+        self.input_box.setFocus()
+        self._insert_error_bubble(error_msg)
+        self._scroll_to_bottom()
+
+    def _classify_error(self, error_msg):
+        msg = (error_msg or "").lower()
+        if "429" in msg or "rate limit" in msg or "too many" in msg:
+            return "Rate limited", "Buddy's model provider is being hit too fast. This is usually retryable."
+        if "permission" in msg or "unauthorized" in msg or "403" in msg:
+            return "Permission issue", "Buddy doesn't have permission to do that. Check API key / access."
+        if "500" in msg or "502" in msg or "503" in msg or "timeout" in msg:
+            return "Server error", "The model provider had a hiccup. Usually fine on retry."
+        if "error executing" in msg or "tool" in msg:
+            return "Tool error", "A tool call failed while running the task."
+        return "Something went wrong", error_msg
+
+    def _insert_error_bubble(self, error_msg):
+        title, detail = self._classify_error(error_msg)
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(8, 4, 8, 4)
+
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background-color: #fff2f0;
+                border: 1px solid #f3b8b0;
+                border-radius: 14px;
+            }
+        """)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(14, 10, 14, 10)
+        card_layout.setSpacing(4)
+
+        title_label = QLabel(f"⚠ {title}")
+        title_label.setStyleSheet("color: #b3261e; font-size: 12.5px; font-weight: 700; background: transparent;")
+        card_layout.addWidget(title_label)
+
+        detail_label = QLabel(detail)
+        detail_label.setWordWrap(True)
+        detail_label.setStyleSheet("color: #7a2c26; font-size: 12px; background: transparent;")
+        card_layout.addWidget(detail_label)
+
+        retry_btn = QPushButton("Retry")
+        retry_btn.setCursor(Qt.PointingHandCursor)
+        retry_btn.setStyleSheet("""
+            QPushButton {
+                background: #b3261e; color: white; border: none;
+                border-radius: 8px; padding: 4px 12px; font-size: 12px; font-weight: 600;
+                max-width: 70px;
+            }
+            QPushButton:hover { background: #931f19; }
+        """)
+        retry_btn.clicked.connect(self._retry_last_send)
+        card_layout.addWidget(retry_btn, alignment=Qt.AlignLeft)
+
+        card.setMaximumWidth(320)
+        row_layout.addWidget(card)
+        row_layout.addStretch()
+
+        self.chat_layout.insertWidget(self.chat_layout.count() - 1, row)
+
+    def _retry_last_send(self):
+        if getattr(self, '_last_send_text', None) is None or self._is_sending:
+            return
+        if getattr(self, '_last_send_attachments', None):
+            self.input_box.attached_files = list(self._last_send_attachments)
+        self.handle_send(forced_text=self._last_send_text)
+
+    def _trigger_redo_for_bubble(self, conversation_id, user_text, bubble):
+        """Kick off a redo in a background thread and push the new version into bubble."""
+        if not bubble or len(bubble.versions) >= 3:
+            return
+
+        bubble.text_label.setText("<i>Buddy is thinking…</i>")
+        if hasattr(bubble, 'redo_btn'):
+            bubble.redo_btn.setEnabled(False)
+
+        worker = RedoWorker(conversation_id, user_text)
+
+        def on_done(result):
+            bubble.versions.append({
+                "text": result["reply"],
+                "plan": result.get("plan_text"),
+                "tools": result.get("tools_used"),
+                "stats": result.get("stats"),
+            })
+            bubble.current_idx = len(bubble.versions) - 1
+            bubble._render_current_version()
+            if hasattr(bubble, 'redo_btn'):
+                bubble.redo_btn.setEnabled(len(bubble.versions) < 3)
+
+        def on_err(msg):
+            bubble.text_label.setText(f"<i>Redo failed: {msg}</i>")
+            if hasattr(bubble, 'redo_btn'):
+                bubble.redo_btn.setEnabled(True)
+
+        worker.finished.connect(on_done)
+        worker.error.connect(on_err)
+        # Keep a reference so the thread isn't GC'd
+        self._redo_worker = worker
+        worker.start()
         
     def _scroll_to_bottom(self):
         QApplication.processEvents()
