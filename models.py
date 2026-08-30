@@ -11,12 +11,37 @@ client = OpenRouter(
 
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2  # seconds; doubles each attempt
+REQUEST_TIMEOUT_MS = 30_000  # hard ceiling per network call — nothing hangs forever
+CANCEL_POLL_INTERVAL = 0.25  # seconds; how often we check cancel_check during backoff sleeps
 
 
-def _with_retry(fn):
-    """Call fn(), retrying on rate-limit (429) or transient errors."""
+class BuddyCancelled(Exception):
+    """Raised when cancel_check() returns True mid-retry, so callers can
+    distinguish 'user cancelled' from a real error."""
+    pass
+
+
+def _sleep_cancellable(seconds, cancel_check):
+    """Sleeps in small increments so a cancel is noticed quickly instead of
+    waiting out the full backoff delay."""
+    elapsed = 0.0
+    while elapsed < seconds:
+        if cancel_check and cancel_check():
+            raise BuddyCancelled()
+        chunk = min(CANCEL_POLL_INTERVAL, seconds - elapsed)
+        time.sleep(chunk)
+        elapsed += chunk
+
+
+def _with_retry(fn, cancel_check=None):
+    """Call fn(), retrying on rate-limit (429) or transient errors.
+    Every attempt is bounded by REQUEST_TIMEOUT_MS, so a stuck/silent
+    connection can no longer hang forever. If cancel_check() becomes True
+    between attempts, raises BuddyCancelled immediately."""
     last_exc = None
     for attempt in range(MAX_RETRIES):
+        if cancel_check and cancel_check():
+            raise BuddyCancelled()
         try:
             return fn()
         except Exception as e:
@@ -26,25 +51,51 @@ def _with_retry(fn):
             is_transient = "500" in msg or "502" in msg or "503" in msg or "timeout" in msg
             if (is_rate_limit or is_transient) and attempt < MAX_RETRIES - 1:
                 delay = RETRY_BASE_DELAY * (2 ** attempt)
-                time.sleep(delay)
+                _sleep_cancellable(delay, cancel_check)
                 continue
             raise
     raise last_exc
 
 
-def run_manager_step(model, message_history, max_tokens):
-    return _with_retry(lambda: client.chat.send(
-        model=model,
-        messages=message_history,
-        max_tokens=max_tokens,
-        reasoning={"enabled": False}
-    ))
+EMBED_MODEL = "openai/text-embedding-3-small"
 
 
-def run_action_step(model, message_history, max_tokens, tools):
-    return _with_retry(lambda: client.chat.send(
-        model=model,
-        messages=message_history,
-        max_tokens=max_tokens,
-        tools=tools
-    ))
+def embed_texts(texts, cancel_check=None):
+    """Returns a list of embedding vectors for the given texts.
+    NOTE: assumes an OpenAI-compatible embeddings endpoint
+    (client.embeddings.create -> response.data[i].embedding).
+    If Hack AI's OpenRouter SDK exposes this differently, this is the
+    only function that needs to change — nothing else depends on the shape."""
+    if not texts:
+        return []
+    response = _with_retry(
+        lambda: client.embeddings.create(model=EMBED_MODEL, input=texts, timeout_ms=REQUEST_TIMEOUT_MS),
+        cancel_check=cancel_check,
+    )
+    return [item.embedding for item in response.data]
+
+
+def run_manager_step(model, message_history, max_tokens, cancel_check=None):
+    return _with_retry(
+        lambda: client.chat.send(
+            model=model,
+            messages=message_history,
+            max_tokens=max_tokens,
+            reasoning={"enabled": False},
+            timeout_ms=REQUEST_TIMEOUT_MS,
+        ),
+        cancel_check=cancel_check,
+    )
+
+
+def run_action_step(model, message_history, max_tokens, tools, cancel_check=None):
+    return _with_retry(
+        lambda: client.chat.send(
+            model=model,
+            messages=message_history,
+            max_tokens=max_tokens,
+            tools=tools,
+            timeout_ms=REQUEST_TIMEOUT_MS,
+        ),
+        cancel_check=cancel_check,
+    )

@@ -2,12 +2,12 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QLabel, QFrame, QMenu, QHBoxLayout
 )
 from PySide6.QtCore import Qt
-from .settings import (
+from .theme import (
     SIDEBAR_BG, BORDER_COLOR, HOVER_BG_COLOR, SIDEBAR_COLLAPSED_WIDTH,
      SIDEBAR_EXPANDED_WIDTH, ICON_SIZE, TEXT_COLOR_MUTED
 )
 
-from .utils import get_svg_icon, ICONS
+from .icons import get_svg_icon, ICONS
 
 class NavButton(QPushButton):
     def __init__(self, label, icon_path, small=False):
