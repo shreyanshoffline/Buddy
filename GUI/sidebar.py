@@ -107,6 +107,7 @@ class Sidebar(QFrame):
         # Main Navigation Buttons
         self.btn_new = NavButton("New chat", ICONS["plus"])
         self.btn_lib = NavButton("Library", ICONS["library"])
+        self.btn_billing = NavButton("Billing", ICONS["settings"])
         self.btn_settings = NavButton("Settings", ICONS["settings"])
         
         # Recent Chats Section Header
@@ -116,6 +117,7 @@ class Sidebar(QFrame):
 
         self.layout.addWidget(self.btn_new)
         self.layout.addWidget(self.btn_lib)
+        self.layout.addWidget(self.btn_billing)
         self.layout.addWidget(self.lbl_recents)
         
         # Vertical box to hold dynamic recent chat buttons
@@ -196,6 +198,7 @@ class Sidebar(QFrame):
             self.lbl_recents.setVisible(self.is_expanded)
             self.btn_new.set_collapsed(not self.is_expanded)
             self.btn_lib.set_collapsed(not self.is_expanded)
+            self.btn_billing.set_collapsed(not self.is_expanded)
             self.btn_settings.set_collapsed(not self.is_expanded)
             for row in self.recent_buttons:
                 row.setVisible(self.is_expanded)

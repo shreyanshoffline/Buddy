@@ -42,7 +42,7 @@ from .theme import (
     BORDER_COLOR, DANGER_COLOR, DANGER_SOFT_BG, DANGER_BORDER, INPUT_BG, CONTAINER_BG
 )
 from .sidebar import Sidebar
-from .pages import SettingsPage, LibraryPage
+from .pages import SettingsPage, LibraryPage, BillingPage
 
 class SendWorker(QThread):
     """Runs send_and_save_message off the main thread so the UI stays responsive."""
@@ -646,11 +646,14 @@ class BuddyWindow(QWidget):
  
         self.settings_page = SettingsPage(close_callback=self.hide, on_theme_changed=self.restart_app)
         self.library_page = LibraryPage(close_callback=self.hide, on_chat_selected=self._request_open_chat, on_delete_chat=self._delete_chat_from_library)
+        self.billing_page = BillingPage(close_callback=self.hide)
         self.content_stack.addWidget(self.settings_page)
         self.content_stack.addWidget(self.library_page)
+        self.content_stack.addWidget(self.billing_page)
  
         self.sidebar.btn_new.clicked.connect(self.show_chat_view)
         self.sidebar.btn_lib.clicked.connect(self.show_library_view)
+        self.sidebar.btn_billing.clicked.connect(self.show_billing_view)
         self.sidebar.btn_settings.clicked.connect(self.show_settings_view)
  
         self.show_chat_view()
@@ -771,21 +774,25 @@ class BuddyWindow(QWidget):
         self.content_stack.setCurrentWidget(self.settings_page)
         self._set_active_nav(self.sidebar.btn_settings)
  
+    def show_billing_view(self):
+        self.content_stack.setCurrentWidget(self.billing_page)
+        self._set_active_nav(self.sidebar.btn_billing)
+ 
     def show_library_view(self):
         self.library_page.refresh_chats()
         self.content_stack.setCurrentWidget(self.library_page)
         self._set_active_nav(self.sidebar.btn_lib)
-
-    def _set_active_nav(self, active_btn):
-        for btn in (self.sidebar.btn_new, self.sidebar.btn_lib, self.sidebar.btn_settings):
-            btn.set_active(btn is active_btn)
  
+    def _set_active_nav(self, active_btn):
+        for btn in (self.sidebar.btn_new, self.sidebar.btn_lib, self.sidebar.btn_billing, self.sidebar.btn_settings):
+            btn.set_active(btn is active_btn)
+
     def _request_open_chat(self, conversation_id):
         """Gate in front of load_chat: real chats open immediately, but a
-        private chat always requires a deliberate confirm — a PIN if one's
+        private chat always requires a deliberate confirm - a PIN if one's
         been set in Settings, otherwise an explicit 'this isn't protected,
         open anyway?' warning. This is the ONLY path that should ever open
-        a chat — sidebar clicks, library clicks, and search results all
+        a chat - sidebar clicks, library clicks, and search results all
         route through here."""
         if not core.get_conversation_is_private(conversation_id):
             self.load_chat(conversation_id)
@@ -805,7 +812,7 @@ class BuddyWindow(QWidget):
         else:
             choice = QMessageBox.warning(
                 self, "Private Chat",
-                "This chat is marked private, but no PIN is set — anyone using "
+                "This chat is marked private, but no PIN is set - anyone using "
                 "Buddy can open it. Set a Privacy PIN in Settings for real "
                 "protection.\n\nOpen it anyway?",
                 QMessageBox.Open | QMessageBox.Cancel,

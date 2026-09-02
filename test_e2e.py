@@ -62,6 +62,7 @@ with patch('core.agent.run_manager_step') as mock_manager, \
     w = BuddyWindow()
     w.show_chat_view()
     w.show_library_view()
+    w.show_billing_view()
     w.show_settings_view()
     print(f"✓ BuddyWindow created and all pages accessible")
 
