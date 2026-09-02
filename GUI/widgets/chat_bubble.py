@@ -11,6 +11,11 @@ from PySide6.QtGui import (
 )
 
 from ..icons import get_svg_icon, ICONS
+from ..theme import (
+    HOVER_BG_COLOR, PRESSED_BG_COLOR, PRIMARY_COLOR, PRIMARY_COLOR_DARK, DANGER_COLOR, DANGER_SOFT_BG,
+    TEXT_COLOR_SUBTITLE, TEXT_COLOR_MUTED, BORDER_COLOR,
+    CHAT_BUBBLE_USER, CHAT_BUBBLE_USER_TEXT, CHAT_BUBBLE_AGENT, CHAT_BUBBLE_AGENT_TEXT,
+)
 
 class BuddyPawLoader(QWidget):
     """Compact animated thinking indicator featuring bear paw prints walking upward."""
@@ -204,20 +209,31 @@ class ChatBubble(QWidget):
         self.bubble_layout.setSpacing(6)
 
         if self.is_thinking:
-            # Thinking state with animated bear paw loader
-            thinking_row = QHBoxLayout()
-            thinking_row.setContentsMargins(0, 0, 0, 0)
-            thinking_row.setSpacing(8)
+            # Accumulating "thinking" transcript: completed steps stack up as
+            # small muted lines above, the current step stays next to the
+            # animated paw loader — similar to how Claude shows its work.
+            self.thinking_container = QVBoxLayout()
+            self.thinking_container.setContentsMargins(0, 0, 0, 0)
+            self.thinking_container.setSpacing(2)
 
+            self.thinking_history_layout = QVBoxLayout()
+            self.thinking_history_layout.setContentsMargins(0, 0, 0, 0)
+            self.thinking_history_layout.setSpacing(2)
+            self.thinking_container.addLayout(self.thinking_history_layout)
+
+            current_row = QHBoxLayout()
+            current_row.setContentsMargins(0, 0, 0, 0)
+            current_row.setSpacing(8)
             self.paw_loader = BuddyPawLoader()
-            thinking_row.addWidget(self.paw_loader)
+            current_row.addWidget(self.paw_loader)
 
-            thinking_label = QLabel("Buddy is thinking...")
-            thinking_label.setStyleSheet("color: #6b7280; font-size: 13px; font-weight: 500; font-style: italic; background: transparent;")
-            thinking_row.addWidget(thinking_label)
-            thinking_row.addStretch()
+            self.thinking_current_label = QLabel("Buddy is thinking...")
+            self.thinking_current_label.setStyleSheet(f"color: {TEXT_COLOR_MUTED}; font-size: 13px; font-weight: 500; font-style: italic; background: transparent; border: none;")
+            current_row.addWidget(self.thinking_current_label)
+            current_row.addStretch()
+            self.thinking_container.addLayout(current_row)
 
-            self.bubble_layout.addLayout(thinking_row)
+            self.bubble_layout.addLayout(self.thinking_container)
         else:
             self.text_label = QLabel()
             self.text_label.setWordWrap(True)
@@ -227,43 +243,43 @@ class ChatBubble(QWidget):
             self.bubble_layout.addWidget(self.text_label)
 
         if self.is_user:
-            self.bubble_container.setStyleSheet("""
-                QFrame {
-                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2b7ff0, stop:1 #1c6ad9);
+            self.bubble_container.setStyleSheet(f"""
+                QFrame {{
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {CHAT_BUBBLE_USER}, stop:1 {PRIMARY_COLOR_DARK});
                     border-radius: 18px;
                     border-bottom-right-radius: 4px;
-                }
-                QLabel {
-                    color: #ffffff;
+                }}
+                QLabel {{
+                    color: {CHAT_BUBBLE_USER_TEXT};
                     font-size: 13.5px;
                     line-height: 1.4;
-                }
-                QLabel a { color: #d0e2ff; text-decoration: underline; }
+                }}
+                QLabel a {{ color: {CHAT_BUBBLE_USER_TEXT}; text-decoration: underline; }}
             """)
             self.layout.addStretch()
             self.layout.addWidget(self.bubble_container)
         else:
-            self.bubble_container.setStyleSheet("""
-                QFrame {
-                    background-color: #f7f9fc;
-                    border: 1px solid rgba(0, 0, 0, 0.07);
+            self.bubble_container.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {CHAT_BUBBLE_AGENT};
+                    border: 1px solid {BORDER_COLOR};
                     border-radius: 18px;
                     border-bottom-left-radius: 4px;
-                }
-                QLabel {
-                    color: #1a202c;
+                }}
+                QLabel {{
+                    color: {CHAT_BUBBLE_AGENT_TEXT};
                     font-size: 13.5px;
                     line-height: 1.4;
-                }
-                QLabel a { color: #2b7ff0; text-decoration: none; font-weight: 600; }
-                QLabel pre {
-                    background-color: #e2e8f0;
-                    color: #1a202c;
+                }}
+                QLabel a {{ color: {PRIMARY_COLOR}; text-decoration: none; font-weight: 600; }}
+                QLabel pre {{
+                    background-color: {HOVER_BG_COLOR};
+                    color: {CHAT_BUBBLE_AGENT_TEXT};
                     padding: 8px 10px;
                     border-radius: 8px;
                     font-family: 'Consolas', 'Courier New', monospace;
                     font-size: 12px;
-                }
+                }}
             """)
 
             if not self.is_thinking:
@@ -294,62 +310,68 @@ class ChatBubble(QWidget):
         self.footer_layout = QHBoxLayout()
         self.footer_layout.setContentsMargins(0, 4, 0, 0)
 
-        btn_style = """
-            QPushButton { background: transparent; border: none; padding: 4px; border-radius: 4px; }
-            QPushButton:hover { background: rgba(0,0,0,0.05); }
-            QPushButton:pressed { background: rgba(43,127,240,0.1); }
+        btn_style = f"""
+            QPushButton {{ background: transparent; border: none; padding: 4px; border-radius: 4px; }}
+            QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+            QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
         """
 
-        def set_active_button(button, active, active_color, inactive_color="#555"):
+        def set_active_button(button, active, active_color, inactive_color=TEXT_COLOR_SUBTITLE):
             button.setIcon(get_svg_icon(button.property("icon_key"), active_color if active else inactive_color))
             button.setProperty("active", active)
-            button.setStyleSheet(btn_style + ("QPushButton[active=true] { background: rgba(43,127,240,0.12); }" if active_color == "#2b7ff0" else "QPushButton[active=true] { background: rgba(244,67,54,0.12); }" if active_color == "#f44336" else ""))
+            button.setStyleSheet(btn_style)
 
-        self.copy_btn = QPushButton(icon=get_svg_icon(ICONS["copy"], "#555"))
+        self.copy_btn = QPushButton(icon=get_svg_icon(ICONS["copy"], TEXT_COLOR_SUBTITLE))
         self.copy_btn.setProperty("icon_key", "copy")
         self.copy_btn.setStyleSheet(btn_style)
         self.copy_btn.setCursor(Qt.PointingHandCursor)
-        self.copy_btn.clicked.connect(lambda: (self.callbacks.get('copy', lambda t: None)(self.versions[self.current_idx]["text"]), set_active_button(self.copy_btn, True, "#2b7ff0")))
+        self.copy_btn.setToolTip("Copy this reply")
+        self.copy_btn.clicked.connect(lambda: (self.callbacks.get('copy', lambda t: None)(self.versions[self.current_idx]["text"]), set_active_button(self.copy_btn, True, PRIMARY_COLOR)))
         self.footer_layout.addWidget(self.copy_btn)
 
-        self.like_btn = QPushButton(icon=get_svg_icon(ICONS["like"], "#555"))
+        self.like_btn = QPushButton(icon=get_svg_icon(ICONS["like"], TEXT_COLOR_SUBTITLE))
         self.like_btn.setProperty("icon_key", "like")
         self.like_btn.setStyleSheet(btn_style)
         self.like_btn.setCursor(Qt.PointingHandCursor)
+        self.like_btn.setToolTip("Good response")
         self.like_btn.clicked.connect(self._toggle_like)
         self.footer_layout.addWidget(self.like_btn)
 
-        self.dislike_btn = QPushButton(icon=get_svg_icon(ICONS["dislike"], "#555"))
+        self.dislike_btn = QPushButton(icon=get_svg_icon(ICONS["dislike"], TEXT_COLOR_SUBTITLE))
         self.dislike_btn.setProperty("icon_key", "dislike")
         self.dislike_btn.setStyleSheet(btn_style)
         self.dislike_btn.setCursor(Qt.PointingHandCursor)
+        self.dislike_btn.setToolTip("Bad response")
         self.dislike_btn.clicked.connect(self._toggle_dislike)
         self.footer_layout.addWidget(self.dislike_btn)
 
         self.footer_layout.addStretch()
 
-        self.prev_btn = QPushButton(icon=get_svg_icon(ICONS["left"], "#555"))
+        self.prev_btn = QPushButton(icon=get_svg_icon(ICONS["left"], TEXT_COLOR_SUBTITLE))
         self.prev_btn.setFixedSize(20, 20)
         self.prev_btn.setStyleSheet(btn_style)
         self.prev_btn.setCursor(Qt.PointingHandCursor)
+        self.prev_btn.setToolTip("Previous version")
         self.prev_btn.clicked.connect(lambda: self._switch_page(-1))
         self.footer_layout.addWidget(self.prev_btn)
 
         self.page_label = QLabel("1/1")
-        self.page_label.setStyleSheet("color: #888; font-size: 11px; font-weight: bold; background: transparent;")
+        self.page_label.setStyleSheet(f"color: {TEXT_COLOR_MUTED}; font-size: 11px; font-weight: bold; background: transparent; border: none;")
         self.footer_layout.addWidget(self.page_label)
 
-        self.next_btn = QPushButton(icon=get_svg_icon(ICONS["right"], "#555"))
+        self.next_btn = QPushButton(icon=get_svg_icon(ICONS["right"], TEXT_COLOR_SUBTITLE))
         self.next_btn.setFixedSize(20, 20)
         self.next_btn.setStyleSheet(btn_style)
         self.next_btn.setCursor(Qt.PointingHandCursor)
+        self.next_btn.setToolTip("Next version")
         self.next_btn.clicked.connect(lambda: self._switch_page(1))
         self.footer_layout.addWidget(self.next_btn)
 
-        self.redo_btn = QPushButton(icon=get_svg_icon(ICONS["redo"], "#555"))
+        self.redo_btn = QPushButton(icon=get_svg_icon(ICONS["redo"], TEXT_COLOR_SUBTITLE))
         self.redo_btn.setProperty("icon_key", "redo")
         self.redo_btn.setStyleSheet(btn_style)
         self.redo_btn.setCursor(Qt.PointingHandCursor)
+        self.redo_btn.setToolTip("Regenerate this response (up to 3 times)")
         self.redo_btn.clicked.connect(self._trigger_redo)
         self.footer_layout.addWidget(self.redo_btn)
 
@@ -357,38 +379,38 @@ class ChatBubble(QWidget):
 
         if self.initial_feedback == "like":
             self.like_btn.setProperty('active', True)
-            self.like_btn.setIcon(get_svg_icon(ICONS['like'], '#2b7ff0'))
+            self.like_btn.setIcon(get_svg_icon(ICONS['like'], PRIMARY_COLOR))
         elif self.initial_feedback == "dislike":
             self.dislike_btn.setProperty('active', True)
-            self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], '#f44336'))
+            self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], DANGER_COLOR))
 
     def _toggle_like(self):
         is_active = self.like_btn.property('active')
         if is_active:
             self.like_btn.setProperty('active', False)
-            self.like_btn.setIcon(get_svg_icon(ICONS['like'], '#555'))
-            self.like_btn.setStyleSheet("""
-                QPushButton { background: transparent; border: none; padding: 4px; border-radius: 4px; }
-                QPushButton:hover { background: rgba(0,0,0,0.05); }
-                QPushButton:pressed { background: rgba(43,127,240,0.1); }
+            self.like_btn.setIcon(get_svg_icon(ICONS['like'], TEXT_COLOR_SUBTITLE))
+            self.like_btn.setStyleSheet(f"""
+                QPushButton {{ background: transparent; border: none; padding: 4px; border-radius: 4px; }}
+                QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+                QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
             """)
             self.callbacks.get('like', lambda active: None)(False)
             return
 
         self.like_btn.setProperty('active', True)
-        self.like_btn.setIcon(get_svg_icon(ICONS['like'], '#2b7ff0'))
-        self.like_btn.setStyleSheet("""
-            QPushButton { background: rgba(43,127,240,0.12); border: none; padding: 4px; border-radius: 4px; }
-            QPushButton:hover { background: rgba(43,127,240,0.18); }
-            QPushButton:pressed { background: rgba(43,127,240,0.25); }
+        self.like_btn.setIcon(get_svg_icon(ICONS['like'], PRIMARY_COLOR))
+        self.like_btn.setStyleSheet(f"""
+            QPushButton {{ background: {HOVER_BG_COLOR}; border: none; padding: 4px; border-radius: 4px; }}
+            QPushButton:hover {{ background: {PRESSED_BG_COLOR}; }}
+            QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
         """)
         if hasattr(self, 'dislike_btn'):
             self.dislike_btn.setProperty('active', False)
-            self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], '#555'))
-            self.dislike_btn.setStyleSheet("""
-                QPushButton { background: transparent; border: none; padding: 4px; border-radius: 4px; }
-                QPushButton:hover { background: rgba(0,0,0,0.05); }
-                QPushButton:pressed { background: rgba(244,67,54,0.1); }
+            self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], TEXT_COLOR_SUBTITLE))
+            self.dislike_btn.setStyleSheet(f"""
+                QPushButton {{ background: transparent; border: none; padding: 4px; border-radius: 4px; }}
+                QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+                QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
             """)
         self.callbacks.get('like', lambda active: None)(True)
 
@@ -396,29 +418,31 @@ class ChatBubble(QWidget):
         is_active = self.dislike_btn.property('active')
         if is_active:
             self.dislike_btn.setProperty('active', False)
-            self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], '#555'))
-            self.dislike_btn.setStyleSheet("""
-                QPushButton { background: transparent; border: none; padding: 4px; border-radius: 4px; }
-                QPushButton:hover { background: rgba(0,0,0,0.05); }
-                QPushButton:pressed { background: rgba(244,67,54,0.1); }
+            self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], TEXT_COLOR_SUBTITLE))
+            self.dislike_btn.setStyleSheet(f"""
+                QPushButton {{ background: transparent; border: none; padding: 4px; border-radius: 4px; }}
+                QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+                QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
             """)
             self.callbacks.get('dislike', lambda active: None)(False)
             return
 
+        # Dislike stays a fixed semantic red regardless of the chosen theme —
+        # a negative signal shouldn't visually blend in as "just the theme color".
         self.dislike_btn.setProperty('active', True)
-        self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], '#f44336'))
-        self.dislike_btn.setStyleSheet("""
-            QPushButton { background: rgba(244,67,54,0.12); border: none; padding: 4px; border-radius: 4px; }
-            QPushButton:hover { background: rgba(244,67,54,0.18); }
-            QPushButton:pressed { background: rgba(244,67,54,0.25); }
+        self.dislike_btn.setIcon(get_svg_icon(ICONS['dislike'], DANGER_COLOR))
+        self.dislike_btn.setStyleSheet(f"""
+            QPushButton {{ background: {DANGER_SOFT_BG}; border: none; padding: 4px; border-radius: 4px; }}
+            QPushButton:hover {{ background: {DANGER_SOFT_BG}; }}
+            QPushButton:pressed {{ background: {DANGER_SOFT_BG}; }}
         """)
         if hasattr(self, 'like_btn'):
             self.like_btn.setProperty('active', False)
-            self.like_btn.setIcon(get_svg_icon(ICONS['like'], '#555'))
-            self.like_btn.setStyleSheet("""
-                QPushButton { background: transparent; border: none; padding: 4px; border-radius: 4px; }
-                QPushButton:hover { background: rgba(0,0,0,0.05); }
-                QPushButton:pressed { background: rgba(43,127,240,0.1); }
+            self.like_btn.setIcon(get_svg_icon(ICONS['like'], TEXT_COLOR_SUBTITLE))
+            self.like_btn.setStyleSheet(f"""
+                QPushButton {{ background: transparent; border: none; padding: 4px; border-radius: 4px; }}
+                QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+                QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
             """)
         self.callbacks.get('dislike', lambda active: None)(True)
 
@@ -430,6 +454,24 @@ class ChatBubble(QWidget):
 
     def _trigger_redo(self):
         self.callbacks.get('redo', lambda: None)()
+
+    def add_progress_step(self, text, max_history=4):
+        """Pushes the current 'thinking' status into the transcript as a
+        completed step, then shows the new text as the active step. Older
+        steps are capped so a long-running task doesn't grow the bubble
+        forever."""
+        if not self.is_thinking or not hasattr(self, 'thinking_current_label'):
+            return
+        prev_text = self.thinking_current_label.text().rstrip("…").rstrip(".")
+        if prev_text and text != self.thinking_current_label.text():
+            done_label = QLabel(f"✓  {prev_text}")
+            done_label.setStyleSheet(f"color: {TEXT_COLOR_MUTED}; font-size: 11px; background: transparent; border: none; padding-left: 24px;")
+            self.thinking_history_layout.addWidget(done_label)
+            while self.thinking_history_layout.count() > max_history:
+                old_item = self.thinking_history_layout.takeAt(0)
+                if old_item.widget():
+                    old_item.widget().deleteLater()
+        self.thinking_current_label.setText(text)
 
     def _render_current_version(self):
         v = self.versions[self.current_idx]
@@ -453,5 +495,3 @@ class ChatBubble(QWidget):
             self.page_label.setText(f"{self.current_idx + 1}/{len(self.versions)}")
             self.prev_btn.setEnabled(self.current_idx > 0)
             self.next_btn.setEnabled(self.current_idx < len(self.versions) - 1)
-
-

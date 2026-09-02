@@ -10,6 +10,7 @@ import os
 import json
 import time
 import math
+import hashlib
 from pathlib import Path
 from contextlib import contextmanager
 import re
@@ -76,6 +77,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL DEFAULT 'New chat',
             is_private INTEGER NOT NULL DEFAULT 0,
+            is_favorite INTEGER NOT NULL DEFAULT 0,
+            is_archived INTEGER NOT NULL DEFAULT 0,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         );
@@ -114,17 +117,34 @@ def init_db():
             theme_color TEXT DEFAULT 'blue',
             dark_mode INTEGER DEFAULT 0,
             subscription_tier TEXT DEFAULT 'free',
-            byo_api_key TEXT
+            byo_api_key TEXT,
+            privacy_pin_hash TEXT,             -- sha256 hex digest; NULL = no PIN set
+            has_seen_intro_tip INTEGER DEFAULT 0,
+            favorite_apps TEXT,                -- comma-separated, user's own "usual apps"
+            quick_links TEXT                   -- comma-separated "Name: URL" pairs
         );
         """)
         # migration: add email column for older dbs created before this existed
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(user_profile)")]
         if "email" not in cols:
             conn.execute("ALTER TABLE user_profile ADD COLUMN email TEXT")
+        if "privacy_pin_hash" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN privacy_pin_hash TEXT")
+        if "has_seen_intro_tip" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN has_seen_intro_tip INTEGER DEFAULT 0")
+        if "favorite_apps" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN favorite_apps TEXT")
+        if "quick_links" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN quick_links TEXT")
         # migration: add is_private column for older dbs
         conv_cols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)")]
         if "is_private" not in conv_cols:
             conn.execute("ALTER TABLE conversations ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0")
+        conv_cols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)")]
+        if "is_favorite" not in conv_cols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0")
+        if "is_archived" not in conv_cols:
+            conn.execute("ALTER TABLE conversations ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0")
         # migration: add feedback column for older dbs
         msg_cols = [r["name"] for r in conn.execute("PRAGMA table_info(messages)")]
         if "feedback" not in msg_cols:
@@ -197,30 +217,57 @@ def touch_conversation(conversation_id, title=None):
             )
 
 
-def list_conversations(limit=30):
+def list_conversations(limit=30, exclude_private=False, filter_mode="all"):
+    """filter_mode: 'all' (excludes archived), 'favorites' (favorited,
+    non-archived), or 'archived' (archived only)."""
     with _connect() as conn:
-        rows = conn.execute(
-            "SELECT id, title, created_at, updated_at, is_private FROM conversations "
-            "ORDER BY updated_at DESC LIMIT ?",
-            (limit,)
-        ).fetchall()
+        query = "SELECT id, title, created_at, updated_at, is_private, is_favorite, is_archived FROM conversations WHERE 1=1 "
+        if exclude_private:
+            query += "AND is_private = 0 "
+        if filter_mode == "favorites":
+            query += "AND is_favorite = 1 AND is_archived = 0 "
+        elif filter_mode == "archived":
+            query += "AND is_archived = 1 "
+        else:
+            query += "AND is_archived = 0 "
+        query += "ORDER BY updated_at DESC LIMIT ?"
+        rows = conn.execute(query, (limit,)).fetchall()
         return [dict(r) for r in rows]
 
 
-def search_conversations(query, limit=50):
+def set_conversation_favorite(conversation_id, is_favorite):
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE conversations SET is_favorite = ? WHERE id = ?",
+            (1 if is_favorite else 0, conversation_id)
+        )
+
+
+def set_conversation_archived(conversation_id, is_archived):
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE conversations SET is_archived = ? WHERE id = ?",
+            (1 if is_archived else 0, conversation_id)
+        )
+
+
+def search_conversations(query, limit=50, filter_mode="all"):
     """Matches on chat title OR any message content in the chat."""
     like = f"%{query}%"
     with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT c.id, c.title, c.created_at, c.updated_at, c.is_private
+        sql = """
+            SELECT DISTINCT c.id, c.title, c.created_at, c.updated_at, c.is_private, c.is_favorite, c.is_archived
             FROM conversations c
             LEFT JOIN messages m ON m.conversation_id = c.id
-            WHERE c.title LIKE ? OR m.content LIKE ?
-            ORDER BY c.updated_at DESC LIMIT ?
-            """,
-            (like, like, limit)
-        ).fetchall()
+            WHERE (c.title LIKE ? OR m.content LIKE ?) """
+        if filter_mode == "favorites":
+            sql += "AND c.is_favorite = 1 AND c.is_archived = 0 "
+        elif filter_mode == "archived":
+            sql += "AND c.is_archived = 1 "
+        else:
+            sql += "AND c.is_archived = 0 "
+        sql += "ORDER BY c.updated_at DESC LIMIT ?"
+        rows = conn.execute(sql, (like, like, limit)).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -349,17 +396,26 @@ def auto_title_from_first_message(text, max_len=40):
 def get_profile():
     with _connect() as conn:
         row = conn.execute("SELECT * FROM user_profile WHERE id = 1").fetchone()
-        return dict(row) if row else {}
+        profile = dict(row) if row else {}
+        # Never leak the raw hash to callers — presence is exposed via has_privacy_pin()
+        profile.pop("privacy_pin_hash", None)
+        return profile
 
 
 def update_profile(**fields):
-    """update_profile(name='Shrey', age=14, theme_color='purple', dark_mode=True)"""
+    """update_profile(name='Alex', age=14, theme_color='purple', dark_mode=True)"""
     if not fields:
         return
-    allowed = {"name", "age", "bio", "email", "theme_color", "dark_mode", "subscription_tier", "byo_api_key"}
+    allowed = {
+        "name", "age", "bio", "email", "theme_color", "dark_mode",
+        "subscription_tier", "byo_api_key", "has_seen_intro_tip",
+        "favorite_apps", "quick_links",
+    }
     fields = {k: v for k, v in fields.items() if k in allowed}
     if "dark_mode" in fields:
         fields["dark_mode"] = 1 if fields["dark_mode"] else 0
+    if "has_seen_intro_tip" in fields:
+        fields["has_seen_intro_tip"] = 1 if fields["has_seen_intro_tip"] else 0
     if not fields:
         return
 
@@ -367,6 +423,31 @@ def update_profile(**fields):
     values = list(fields.values()) + [1]
     with _connect() as conn:
         conn.execute(f"UPDATE user_profile SET {set_clause} WHERE id = ?", values)
+
+
+def _hash_pin(pin):
+    return hashlib.sha256(pin.encode("utf-8")).hexdigest()
+
+
+def set_privacy_pin(pin):
+    """Set (or clear, if pin is falsy) the PIN required to open private chats."""
+    pin_hash = _hash_pin(pin) if pin else None
+    with _connect() as conn:
+        conn.execute("UPDATE user_profile SET privacy_pin_hash = ? WHERE id = 1", (pin_hash,))
+
+
+def has_privacy_pin():
+    with _connect() as conn:
+        row = conn.execute("SELECT privacy_pin_hash FROM user_profile WHERE id = 1").fetchone()
+        return bool(row and row["privacy_pin_hash"])
+
+
+def verify_privacy_pin(pin):
+    with _connect() as conn:
+        row = conn.execute("SELECT privacy_pin_hash FROM user_profile WHERE id = 1").fetchone()
+        if not row or not row["privacy_pin_hash"]:
+            return False
+        return _hash_pin(pin or "") == row["privacy_pin_hash"]
 
 # --- Long-term task memory (POC: keyword overlap, no embeddings yet) ---
 

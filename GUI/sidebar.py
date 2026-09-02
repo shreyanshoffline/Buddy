@@ -3,8 +3,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 from .theme import (
-    SIDEBAR_BG, BORDER_COLOR, HOVER_BG_COLOR, SIDEBAR_COLLAPSED_WIDTH,
-     SIDEBAR_EXPANDED_WIDTH, ICON_SIZE, TEXT_COLOR_MUTED
+    SIDEBAR_BG, BORDER_COLOR, HOVER_BG_COLOR, PRESSED_BG_COLOR, ACTIVE_BG_COLOR, PRIMARY_COLOR,
+    SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_EXPANDED_WIDTH, ICON_SIZE, TEXT_COLOR_MUTED, TEXT_COLOR_DARK
 )
 
 from .icons import get_svg_icon, ICONS
@@ -15,14 +15,22 @@ class NavButton(QPushButton):
         self.label_text = label
         self.icon_path = icon_path
         self.small = small
+        self.is_active = False
         self.setIcon(get_svg_icon(icon_path, size=ICON_SIZE if not small else 14))
         self.setIconSize(self.iconSize())
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(32)
         self.set_collapsed(True)
 
+    def set_active(self, active: bool):
+        self.is_active = active
+        self.set_collapsed(not self._expanded if hasattr(self, '_expanded') else True)
+
     def set_collapsed(self, collapsed: bool):
-        
+        self._expanded = not collapsed
+        active_bg = f"background: {ACTIVE_BG_COLOR};" if self.is_active else "background: transparent;"
+        active_border = f"border-left: 2px solid {PRIMARY_COLOR};" if self.is_active else "border-left: 2px solid transparent;"
+
         if collapsed:
             self.setText("")
             self.setToolTip(self.label_text)
@@ -31,28 +39,31 @@ class NavButton(QPushButton):
                     text-align: center;
                     padding: 0px;
                     border-radius: 8px;
-                    border: none;
-                    background: transparent;
+                    {active_border}
+                    {active_bg}
                     font-size: {"12px" if self.small else "13px"};
-                    color: #444;
+                    font-weight: {"600" if self.is_active else ("normal" if self.small else "500")};
+                    color: {PRIMARY_COLOR if self.is_active else TEXT_COLOR_DARK};
                 }}
                 QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+                QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
             """)
         else:
             self.setText(f"  {self.label_text}")
-            self.setToolTip("")
+            self.setToolTip(self.label_text)
             self.setStyleSheet(f"""
                 QPushButton {{
                     text-align: left;
                     padding: 0px 8px;
                     border-radius: 8px;
-                    border: none;
-                    background: transparent;
+                    {active_border}
+                    {active_bg}
                     font-size: {"12px" if self.small else "13px"};
-                    font-weight: {"normal" if self.small else "500"};
-                    color: #444;
+                    font-weight: {"600" if self.is_active else ("normal" if self.small else "500")};
+                    color: {PRIMARY_COLOR if self.is_active else TEXT_COLOR_DARK};
                 }}
                 QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+                QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
             """)
 
 
@@ -79,16 +90,16 @@ class Sidebar(QFrame):
                 text-align: left; 
                 padding: 6px 5px; 
                 border-radius: 8px; 
-                color: #444; 
+                color: {TEXT_COLOR_DARK}; 
                 font-size: 13px; 
                 font-weight: 500; 
                 border: none; 
                 background: transparent; 
             }}
             QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+            QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
         """)
-        
-        self.setFixedWidth(SIDEBAR_COLLAPSED_WIDTH)
+        self.setToolTip("Click to expand/collapse")
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(5, 14, 5, 14)
         self.layout.setSpacing(6)
@@ -100,7 +111,7 @@ class Sidebar(QFrame):
         
         # Recent Chats Section Header
         self.lbl_recents = QLabel("Recents")
-        self.lbl_recents.setStyleSheet(f"color: {TEXT_COLOR_MUTED}; font-size: 11px; font-weight: bold; margin-top: 8px; margin-bottom: 2px;")
+        self.lbl_recents.setStyleSheet(f"color: {TEXT_COLOR_MUTED}; font-size: 11px; font-weight: bold; background: transparent; border: none; margin-top: 8px; margin-bottom: 2px;")
         self.lbl_recents.hide()
 
         self.layout.addWidget(self.btn_new)
@@ -133,7 +144,7 @@ class Sidebar(QFrame):
 
         # 2. Fetch current conversations via core.py
         import core
-        chats = core.get_recent_conversations(limit=5)
+        chats = core.get_recent_conversations(limit=5, exclude_private=True)
 
         # 3. Render a row for each chat
         for chat in chats:
@@ -148,6 +159,7 @@ class Sidebar(QFrame):
             btn = QPushButton(title)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setContextMenuPolicy(Qt.CustomContextMenu)
+            btn.setToolTip(f"{title}\n(right-click to delete)")
             btn.setStyleSheet(f"""
                 QPushButton {{
                     font-weight: normal;
@@ -156,8 +168,10 @@ class Sidebar(QFrame):
                     text-align: left;
                     border: none;
                     background: transparent;
+                    color: {TEXT_COLOR_DARK};
                 }}
                 QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+                QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
             """)
             if self.on_chat_click_callback:
                 btn.clicked.connect(lambda checked=False, cid=chat_id: self.on_chat_click_callback(cid))

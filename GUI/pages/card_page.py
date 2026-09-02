@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt
 from ..theme import (
     CARD_TEXT_COLOR, CARD_TEXT_SIZE, CARD_TEXT_WEIGHT,
     CARD_SUBTITLE_COLOR, CARD_SUBTITLE_SIZE,
+    CARD_BG_TOP, CARD_BG_MID, CARD_BG_BOTTOM,
 )
 
 class CardPage(QWidget):
@@ -13,23 +14,23 @@ class CardPage(QWidget):
         self.setObjectName("CardPage")
         
         # 1. Added QScrollArea and ScrollContent transparency to your existing stylesheet
-        self.setStyleSheet("""
-            QWidget#CardPage {
+        self.setStyleSheet(f"""
+            QWidget#CardPage {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:1,
-                    stop:0.0 #ffffff,
-                    stop:0.7 #f3f7fd,
-                    stop:1.0 #edf3ff
+                    stop:0.0 {CARD_BG_TOP},
+                    stop:0.7 {CARD_BG_MID},
+                    stop:1.0 {CARD_BG_BOTTOM}
                 );
-                border-radius: 14px; /* Slightly tighter curves */
-            }
-            QScrollArea {
+                border-radius: 14px;
+            }}
+            QScrollArea {{
                 background: transparent;
                 border: none;
-            }
-            QWidget#ScrollContent {
+            }}
+            QWidget#ScrollContent {{
                 background: transparent;
-            }
+            }}
         """)
         
         # 2. Setup a base layout for the card itself
@@ -39,6 +40,7 @@ class CardPage(QWidget):
         # 3. Create the Scroll Area
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         # 4. Create the inner container that holds your actual widgets
         self.scroll_content = QWidget()
@@ -62,6 +64,7 @@ class CardPage(QWidget):
                 font-size: {CARD_TEXT_SIZE}px;
                 font-weight: {CARD_TEXT_WEIGHT};
                 background: transparent;
+                border: none;
             }}
         """)
         self.main_layout.addWidget(title_label)
@@ -74,7 +77,7 @@ class CardPage(QWidget):
                     color: {CARD_SUBTITLE_COLOR};
                     font-size: {CARD_SUBTITLE_SIZE}px;
                     background: transparent;
+                    border: none;
                 }}
             """)
             self.main_layout.addWidget(subtitle_label)
- 

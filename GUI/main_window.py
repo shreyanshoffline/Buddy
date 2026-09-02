@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QSystemTrayIcon, QMenu, QGraphicsDropShadowEffect, QSizeGrip,
     QDialog, QRadioButton, QButtonGroup, QSizePolicy, QGraphicsOpacityEffect,
-    QStackedWidget, QLineEdit
+    QStackedWidget, QLineEdit, QInputDialog, QMessageBox
 )
 from PySide6.QtCore import (
     Qt, QEvent, QPoint, QVariantAnimation, QEasingCurve,
@@ -35,8 +35,11 @@ from .theme import (
     PAGE_BG_TOP, PAGE_BG_MID, PAGE_BG_BOTTOM, CARD_TEXT_COLOR, CARD_TEXT_SIZE,
     CARD_TEXT_WEIGHT, CARD_SUBTITLE_COLOR, CARD_SUBTITLE_SIZE, GREETING_FONT_SIZE,
     GREETING_COLOR, SUBTITLE_FONT_SIZE, SEND_BUTTON_SIZE, INPUT_CONTAINER_HEIGHT,
-    PRIMARY_COLOR, PRIMARY_COLOR_DARK, CHAT_BUBBLE_USER, CHAT_BUBBLE_USER_TEXT,
-    CHAT_BUBBLE_AGENT, CHAT_BUBBLE_AGENT_TEXT, SIZE_GRIP_SIZE, TEXT_COLOR_SUBTITLE, HOVER_BG_COLOR
+    PRIMARY_COLOR, PRIMARY_COLOR_DARK, PRIMARY_COLOR_PRESSED, ON_PRIMARY_TEXT,
+    CHAT_BUBBLE_USER, CHAT_BUBBLE_USER_TEXT,
+    CHAT_BUBBLE_AGENT, CHAT_BUBBLE_AGENT_TEXT, SIZE_GRIP_SIZE, TEXT_COLOR_SUBTITLE,
+    TEXT_COLOR_MUTED, TEXT_COLOR_DARK, HOVER_BG_COLOR, PRESSED_BG_COLOR, ACTIVE_BG_COLOR,
+    BORDER_COLOR, DANGER_COLOR, DANGER_SOFT_BG, DANGER_BORDER, INPUT_BG, CONTAINER_BG
 )
 from .sidebar import Sidebar
 from .pages import SettingsPage, LibraryPage
@@ -130,6 +133,33 @@ class BuddyWindow(QWidget):
         self._build_ui()
         self._setup_tray_icon()
  
+    def restart_app(self):
+        """Fully restarts the Buddy process to apply a new theme. A real
+        restart is slower than an in-place live swap, but it's 100%
+        reliable — module hot-reloading proved fragile in real use (it
+        passed in testing but didn't consistently apply for real), so this
+        is the honest, dependable choice instead."""
+        import os
+        import sys
+        self._shutdown_workers()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    def _fix_sidebar_layout(self):
+        """Forces the sidebar back to its correct collapsed width and a real
+        layout recalculation. The first paint of a frameless/translucent
+        window can settle with the sidebar narrower than intended; this
+        re-asserts the actual constant (not whatever width() currently
+        reports, which can itself be the wrong value) and invalidates the
+        parent layout so Qt actually redraws it correctly."""
+        from .theme import SIDEBAR_COLLAPSED_WIDTH
+        if not self.sidebar.is_expanded:
+            self.sidebar.setFixedWidth(SIDEBAR_COLLAPSED_WIDTH)
+        self.sidebar.updateGeometry()
+        self.h_wrapper.invalidate()
+        self.h_wrapper.activate()
+        self.container.updateGeometry()
+        self.update()
+
     def _shutdown_workers(self):
         """Called on app quit — signals any in-flight send/redo to stop and
         gives it a moment to unwind cleanly instead of letting Qt destroy a
@@ -152,6 +182,7 @@ class BuddyWindow(QWidget):
                 font-size: {title_size}px;
                 font-weight: {WINDOW_TITLE_WEIGHT};
                 background: transparent;
+                border: none;
             }}
         """)
  
@@ -212,7 +243,28 @@ class BuddyWindow(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
- 
+        self._maybe_show_intro_tip()
+
+    def _maybe_show_intro_tip(self):
+        """The header has a few icon-only buttons (incognito glasses, private
+        lock) that aren't self-explanatory at a glance. Explain them once,
+        the first time the app is ever shown, rather than relying purely on
+        hover tooltips nobody finds."""
+        profile = core.get_profile()
+        if profile.get("has_seen_intro_tip"):
+            return
+        core.update_profile(has_seen_intro_tip=True)
+        QMessageBox.information(
+            self, "Welcome to Buddy",
+            "Two quick things about the icons in the header:\n\n"
+            "🕶️  Incognito — starts a chat that's never saved anywhere. "
+            "Nothing you say in it is written to disk.\n\n"
+            "🔒  Private — marks the current chat as private. It won't show up "
+            "in the sidebar, and opening it later requires confirmation (or a "
+            "PIN, if you set one in Settings).\n\n"
+            "You can always hover either icon for a reminder."
+        )
+
     def position_tray_popover(self):
         screen = QApplication.primaryScreen().availableGeometry()
         tray_geo = self.tray_icon.geometry()
@@ -256,13 +308,19 @@ class BuddyWindow(QWidget):
         self.h_wrapper.setSpacing(0)
  
         self.sidebar = Sidebar(
-            on_chat_click_callback=self.load_chat,
+            on_chat_click_callback=self._request_open_chat,
             on_new_chat_callback=self._new_chat,
             on_delete_chat_callback=self.delete_chat
         )
         self.h_wrapper.addWidget(self.sidebar)
  
-        self.sidebar.refresh_recents(on_chat_click=self.load_chat, on_delete_chat=self.delete_chat)
+        self.sidebar.refresh_recents(on_chat_click=self._request_open_chat, on_delete_chat=self.delete_chat)
+        # Qt sometimes paints the sidebar's first frame before the layout has
+        # settled, looking squeezed until you click it once. Forcing the
+        # same width re-assert that a manual toggle does fixes that.
+        self._fix_sidebar_layout()
+        QTimer.singleShot(0, self._fix_sidebar_layout)
+        QTimer.singleShot(60, self._fix_sidebar_layout)
  
         self.content_area = QWidget()
         self.content_area_layout = QVBoxLayout(self.content_area)
@@ -292,6 +350,7 @@ class BuddyWindow(QWidget):
                 font-size: {WINDOW_TITLE_SIZE}px;
                 font-weight: {WINDOW_TITLE_WEIGHT};
                 background: transparent;
+                border: none;
             }}
         """)
  
@@ -318,7 +377,11 @@ class BuddyWindow(QWidget):
         self.privacy_btn.setFlat(True)
         self.privacy_btn.setCursor(Qt.PointingHandCursor)
         self.privacy_btn.setToolTip("Mark this chat as private")
-        self.privacy_btn.setStyleSheet("QPushButton { border: none; background: transparent; font-size: 14px; }")
+        self.privacy_btn.setStyleSheet(f"""
+            QPushButton {{ border: none; background: transparent; border-radius: 6px; font-size: 14px; padding: 4px; }}
+            QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+            QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
+        """)
         self.privacy_btn.clicked.connect(self._toggle_current_chat_private)
         self.privacy_btn.setVisible(False)
 
@@ -326,7 +389,11 @@ class BuddyWindow(QWidget):
         self.incognito_btn.setFlat(True)
         self.incognito_btn.setCursor(Qt.PointingHandCursor)
         self.incognito_btn.setToolTip("Start an incognito chat (nothing is saved)")
-        self.incognito_btn.setStyleSheet("QPushButton { border: none; background: transparent; font-size: 14px; }")
+        self.incognito_btn.setStyleSheet(f"""
+            QPushButton {{ border: none; background: transparent; border-radius: 6px; font-size: 14px; padding: 4px; }}
+            QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+            QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
+        """)
         self.incognito_btn.clicked.connect(self._toggle_incognito_mode)
 
         self.header_layout.addWidget(self.title_label)
@@ -359,19 +426,12 @@ class BuddyWindow(QWidget):
  
         self.content_stack.addWidget(self.chat_page)
  
-        greetings = [
-            "Hi Shrey, what's on your mind?",
-            "Hi, how can I help you Shrey?",
-            "Let's dive in, Shrey",
-            "Welcome back, Shrey!",
-            "Ready when you are"
-        ]
-        self.greeting = QLabel(random.choice(greetings))
+        self.greeting = QLabel(self._random_greeting())
         self.greeting.setAlignment(Qt.AlignCenter)
         self.greeting.setWordWrap(True)
         self.greeting.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         self.greeting.setMinimumHeight(60)
-        self.greeting.setStyleSheet(f"color: {GREETING_COLOR}; background: transparent;")
+        self.greeting.setStyleSheet(f"color: {GREETING_COLOR}; background: transparent; border: none;")
         self.greeting.setFont(QFont(".AppleSystemUIFont", GREETING_FONT_SIZE, QFont.Medium))
  
         self.scroll_area = QScrollArea()
@@ -406,7 +466,7 @@ class BuddyWindow(QWidget):
         self.scroll_area.setVisible(False)
  
         self.chat_container = QWidget()
-        self.chat_container.setStyleSheet("background: transparent;")
+        self.chat_container.setStyleSheet("background: transparent; border: none;")
         self.chat_layout = QVBoxLayout(self.chat_container)
         self.chat_layout.setContentsMargins(0, 0, 0, 12)
         self.chat_layout.setSpacing(8)
@@ -414,15 +474,15 @@ class BuddyWindow(QWidget):
         self.chat_layout.addStretch()
         self.scroll_area.setWidget(self.chat_container)
  
-        # --- Unified composer box: white rounded frame holding tray + input row ---
+        # --- Unified composer box: rounded frame holding tray + input row ---
         self.input_container = QFrame()
         self.input_container.setObjectName("InputContainer")
-        self.input_container.setStyleSheet("""
-            QFrame#InputContainer {
-                background: white;
-                border: 1px solid rgba(0,0,0,0.06);
+        self.input_container.setStyleSheet(f"""
+            QFrame#InputContainer {{
+                background: {INPUT_BG};
+                border: 1px solid {BORDER_COLOR};
                 border-radius: 20px;
-            }
+            }}
         """)
         input_outer = QVBoxLayout(self.input_container)
         input_outer.setContentsMargins(0, 6, 0, 6)
@@ -441,32 +501,35 @@ class BuddyWindow(QWidget):
         self.attach_button = QPushButton()
         self.attach_button.setFixedSize(28, 28)
         self.attach_button.setCursor(Qt.PointingHandCursor)
-        self.attach_button.setToolTip("Attach files")
-        self.attach_button.setIcon(get_svg_icon(ICONS["plus"], "#6B7280", 16))
+        self.attach_button.setToolTip("Attach a file")
+        self.attach_button.setIcon(get_svg_icon(ICONS["plus"], TEXT_COLOR_SUBTITLE, 16))
         self.attach_button.setIconSize(QSize(16, 16))
-        self.attach_button.setStyleSheet("""
-            QPushButton { background: transparent; border: none; border-radius: 14px; }
-            QPushButton:hover { background: rgba(0,0,0,0.06); }
+        self.attach_button.setStyleSheet(f"""
+            QPushButton {{ background: transparent; border: none; border-radius: 14px; }}
+            QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+            QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
         """)
         self.attach_button.clicked.connect(lambda: self.input_box.open_file_picker())
 
         self.input_box = ChatInput(self.handle_send, tray_ref=self.attachment_tray)
-        self.input_box.setStyleSheet("""
-            QTextEdit {
+        self.input_box.setStyleSheet(f"""
+            QTextEdit {{
                 background: transparent;
                 border: none;
                 padding: 4px 4px;
                 font-size: 14px;
-                color: #333;
-            }
+                color: {TEXT_COLOR_DARK};
+            }}
         """)
 
         self.send_button = QPushButton("➤")
         self.send_button.setFixedSize(SEND_BUTTON_SIZE, SEND_BUTTON_SIZE)
         self.send_button.setCursor(Qt.PointingHandCursor)
+        self.send_button.setToolTip("Send message (Enter)")
         self.send_button.setStyleSheet(f"""
-            QPushButton {{ background: {PRIMARY_COLOR}; color: {CHAT_BUBBLE_USER_TEXT}; border: none; border-radius: {SEND_BUTTON_SIZE // 2}px; font-size: 15px; }}
+            QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none; border-radius: {SEND_BUTTON_SIZE // 2}px; font-size: 15px; }}
             QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
+            QPushButton:pressed {{ background: {PRIMARY_COLOR_PRESSED}; }}
         """)
         self.send_button.clicked.connect(self.handle_send)
 
@@ -491,12 +554,12 @@ class BuddyWindow(QWidget):
  
         self.preview_panel = QFrame(self.preview_overlay)
         self.preview_panel.setObjectName("PreviewPanel")
-        self.preview_panel.setStyleSheet("""
-            QFrame#PreviewPanel {
-                background: rgba(255,255,255,0.96);
+        self.preview_panel.setStyleSheet(f"""
+            QFrame#PreviewPanel {{
+                background: {CONTAINER_BG};
                 border-radius: 18px;
-                border: 1px solid rgba(0,0,0,0.08);
-            }
+                border: 1px solid {BORDER_COLOR};
+            }}
         """)
         self.preview_layout = QVBoxLayout(self.preview_panel)
         self.preview_layout.setContentsMargins(14, 12, 14, 14)
@@ -504,23 +567,27 @@ class BuddyWindow(QWidget):
  
         self.preview_header = QHBoxLayout()
         self.preview_title = QLabel("Preview")
-        self.preview_title.setStyleSheet("font-size: 15px; font-weight: 600; color: #2d2d2d;")
+        self.preview_title.setStyleSheet(f"font-size: 15px; font-weight: 600; color: {TEXT_COLOR_DARK};")
         self.preview_header.addWidget(self.preview_title)
         self.preview_header.addStretch()
         self.preview_close_btn = QPushButton("✕")
         self.preview_close_btn.setFixedSize(28, 28)
         self.preview_close_btn.setCursor(Qt.PointingHandCursor)
-        self.preview_close_btn.setStyleSheet("""
-            QPushButton {
+        self.preview_close_btn.setToolTip("Close preview")
+        self.preview_close_btn.setStyleSheet(f"""
+            QPushButton {{
                 background: transparent;
-                color: #666;
+                color: {TEXT_COLOR_SUBTITLE};
                 border: none;
                 border-radius: 14px;
                 font-size: 16px;
-            }
-            QPushButton:hover {
-                background: rgba(0,0,0,0.06);
-            }
+            }}
+            QPushButton:hover {{
+                background: {HOVER_BG_COLOR};
+            }}
+            QPushButton:pressed {{
+                background: {PRESSED_BG_COLOR};
+            }}
         """)
         self.preview_close_btn.clicked.connect(self._hide_attachment_preview)
         self.preview_header.addWidget(self.preview_close_btn)
@@ -528,15 +595,15 @@ class BuddyWindow(QWidget):
  
         self.preview_text = QTextEdit()
         self.preview_text.setReadOnly(True)
-        self.preview_text.setStyleSheet("""
-            QTextEdit {
-                background: rgba(245,247,250,0.95);
-                border: 1px solid rgba(0,0,0,0.06);
+        self.preview_text.setStyleSheet(f"""
+            QTextEdit {{
+                background: {INPUT_BG};
+                border: 1px solid {BORDER_COLOR};
                 border-radius: 12px;
-                color: #333;
+                color: {TEXT_COLOR_DARK};
                 font-size: 12px;
                 padding: 10px;
-            }
+            }}
         """)
         self.preview_layout.addWidget(self.preview_text)
     
@@ -553,13 +620,13 @@ class BuddyWindow(QWidget):
         self.main_layout.addWidget(self.greeting_spacer_bottom, stretch=1)
         self.subtitle_label = QLabel("")
         self.subtitle_label.setAlignment(Qt.AlignCenter)
-        self.subtitle_label.setStyleSheet(f"color: {TEXT_COLOR_SUBTITLE}; font-size: {SUBTITLE_FONT_SIZE}px; background: transparent;")
+        self.subtitle_label.setStyleSheet(f"color: {TEXT_COLOR_SUBTITLE}; font-size: {SUBTITLE_FONT_SIZE}px; background: transparent; border: none;")
         self.subtitle_label.setVisible(False)
         self.main_layout.addWidget(self.subtitle_label)
         self.main_layout.addWidget(self.scroll_area, stretch=1)
 
         self.composer = QWidget()
-        self.composer.setStyleSheet("background: transparent;")
+        self.composer.setStyleSheet("background: transparent; border: none;")
         composer_layout = QVBoxLayout(self.composer)
         composer_layout.setContentsMargins(0, 0, 0, 0)
         composer_layout.setSpacing(0)
@@ -577,8 +644,8 @@ class BuddyWindow(QWidget):
  
         self.main_layout.addLayout(footer_layout)
  
-        self.settings_page = SettingsPage(close_callback=self.hide)
-        self.library_page = LibraryPage(close_callback=self.hide, on_chat_selected=self.load_chat, on_delete_chat=self._delete_chat_from_library)
+        self.settings_page = SettingsPage(close_callback=self.hide, on_theme_changed=self.restart_app)
+        self.library_page = LibraryPage(close_callback=self.hide, on_chat_selected=self._request_open_chat, on_delete_chat=self._delete_chat_from_library)
         self.content_stack.addWidget(self.settings_page)
         self.content_stack.addWidget(self.library_page)
  
@@ -698,14 +765,55 @@ class BuddyWindow(QWidget):
  
     def show_chat_view(self):
         self.content_stack.setCurrentWidget(self.chat_page)
+        self._set_active_nav(self.sidebar.btn_new)
  
     def show_settings_view(self):
         self.content_stack.setCurrentWidget(self.settings_page)
+        self._set_active_nav(self.sidebar.btn_settings)
  
     def show_library_view(self):
         self.library_page.refresh_chats()
         self.content_stack.setCurrentWidget(self.library_page)
+        self._set_active_nav(self.sidebar.btn_lib)
+
+    def _set_active_nav(self, active_btn):
+        for btn in (self.sidebar.btn_new, self.sidebar.btn_lib, self.sidebar.btn_settings):
+            btn.set_active(btn is active_btn)
  
+    def _request_open_chat(self, conversation_id):
+        """Gate in front of load_chat: real chats open immediately, but a
+        private chat always requires a deliberate confirm — a PIN if one's
+        been set in Settings, otherwise an explicit 'this isn't protected,
+        open anyway?' warning. This is the ONLY path that should ever open
+        a chat — sidebar clicks, library clicks, and search results all
+        route through here."""
+        if not core.get_conversation_is_private(conversation_id):
+            self.load_chat(conversation_id)
+            return
+
+        if core.has_privacy_pin():
+            pin, ok = QInputDialog.getText(
+                self, "Private Chat", "Enter your PIN to open this chat:",
+                QLineEdit.Password
+            )
+            if not ok:
+                return
+            if not core.verify_privacy_pin(pin):
+                QMessageBox.warning(self, "Incorrect PIN", "That PIN doesn't match. Chat stays locked.")
+                return
+            self.load_chat(conversation_id)
+        else:
+            choice = QMessageBox.warning(
+                self, "Private Chat",
+                "This chat is marked private, but no PIN is set — anyone using "
+                "Buddy can open it. Set a Privacy PIN in Settings for real "
+                "protection.\n\nOpen it anyway?",
+                QMessageBox.Open | QMessageBox.Cancel,
+                QMessageBox.Cancel
+            )
+            if choice == QMessageBox.Open:
+                self.load_chat(conversation_id)
+
     def load_chat(self, conversation_id):
         self.show_chat_view()
         self.current_conversation_id = conversation_id
@@ -727,12 +835,16 @@ class BuddyWindow(QWidget):
             return
         self.incognito_mode = not self.incognito_mode
         if self.incognito_mode:
-            self.incognito_btn.setStyleSheet("QPushButton { border: none; background: rgba(43,127,240,0.15); border-radius: 6px; font-size: 14px; }")
+            self.incognito_btn.setStyleSheet(f"QPushButton {{ border: none; background: {ACTIVE_BG_COLOR}; border-radius: 6px; font-size: 14px; padding: 4px; }}")
             self.incognito_btn.setToolTip("Incognito ON — nothing in this chat will be saved")
             self.subtitle_label.setText("🕶️ Incognito — nothing here is saved")
             self.subtitle_label.setVisible(True)
         else:
-            self.incognito_btn.setStyleSheet("QPushButton { border: none; background: transparent; font-size: 14px; }")
+            self.incognito_btn.setStyleSheet(f"""
+                QPushButton {{ border: none; background: transparent; border-radius: 6px; font-size: 14px; padding: 4px; }}
+                QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+                QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
+            """)
             self.incognito_btn.setToolTip("Start an incognito chat (nothing is saved)")
             self.subtitle_label.setVisible(False)
 
@@ -763,12 +875,32 @@ class BuddyWindow(QWidget):
             self.greeting.setVisible(True)
             self.greeting_spacer.setVisible(True)
             self.greeting_spacer_bottom.setVisible(True)
-        self.sidebar.refresh_recents(on_chat_click=self.load_chat, on_delete_chat=self.delete_chat)
+        self.sidebar.refresh_recents(on_chat_click=self._request_open_chat, on_delete_chat=self.delete_chat)
 
     def _delete_chat_from_library(self, conversation_id):
         self.delete_chat(conversation_id)
         self.library_page.refresh_chats()
  
+    def _random_greeting(self):
+        """Personalizes the greeting with the user's saved name, if any —
+        falls back to a friendly generic greeting for a fresh install."""
+        name = (core.get_profile().get("name") or "").strip()
+        if name:
+            return random.choice([
+                f"Hi {name}, what's on your mind?",
+                f"Hi, how can I help you {name}?",
+                f"Let's dive in, {name}",
+                f"Welcome back, {name}!",
+                "Ready when you are",
+            ])
+        return random.choice([
+            "Hi there, what's on your mind?",
+            "Hi, how can I help you today?",
+            "Let's dive in",
+            "Welcome back!",
+            "Ready when you are",
+        ])
+
     def _new_chat(self):
         self.current_conversation_id = None
         self.current_chat_title = None
@@ -779,6 +911,7 @@ class BuddyWindow(QWidget):
             self._toggle_incognito_mode()
         self._clear_chat_history()
         self.scroll_area.setVisible(False)
+        self.greeting.setText(self._random_greeting())
         self.greeting.setVisible(True)
         self.greeting_spacer.setVisible(True)
         self.greeting_spacer_bottom.setVisible(True)
@@ -870,7 +1003,7 @@ class BuddyWindow(QWidget):
             self.send_button.clicked.connect(self._cancel_current_send)
         else:
             self.send_button.setText("➤")
-            self.send_button.setToolTip("")
+            self.send_button.setToolTip("Send message (Enter)")
             try:
                 self.send_button.clicked.disconnect()
             except TypeError:
@@ -900,14 +1033,8 @@ class BuddyWindow(QWidget):
             label = "Refining the plan…"
         elif etype == "malformed_retry":
             label = "Retrying…"
-        if label and hasattr(self._thinking_bubble, 'layout'):
-            # Find the thinking label inside the bubble and update it
-            for child in self._thinking_bubble.findChildren(QLabel):
-                if child.text().startswith("Buddy is thinking") or child.text() in (
-                    "Working on it…", "Refining the plan…", "Retrying…"
-                ) or child.text().startswith("Using "):
-                    child.setText(label)
-                    break
+        if label:
+            self._thinking_bubble.add_progress_step(label)
 
     def _remove_thinking_bubble(self):
         if self._thinking_bubble:
@@ -956,7 +1083,7 @@ class BuddyWindow(QWidget):
 
         if result.get("chat_title"):
             self._set_conversation_title(result["chat_title"])
-            self.sidebar.refresh_recents(on_chat_click=self.load_chat, on_delete_chat=self.delete_chat)
+            self.sidebar.refresh_recents(on_chat_click=self._request_open_chat, on_delete_chat=self.delete_chat)
 
     def _on_send_error(self, error_msg):
         self._is_sending = False
@@ -988,35 +1115,36 @@ class BuddyWindow(QWidget):
         row_layout.setContentsMargins(8, 4, 8, 4)
 
         card = QFrame()
-        card.setStyleSheet("""
-            QFrame {
-                background-color: #fff2f0;
-                border: 1px solid #f3b8b0;
+        card.setStyleSheet(f"""
+            QFrame {{
+                background-color: {DANGER_SOFT_BG};
+                border: 1px solid {DANGER_BORDER};
                 border-radius: 14px;
-            }
+            }}
         """)
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(14, 10, 14, 10)
         card_layout.setSpacing(4)
 
         title_label = QLabel(f"⚠ {title}")
-        title_label.setStyleSheet("color: #b3261e; font-size: 12.5px; font-weight: 700; background: transparent;")
+        title_label.setStyleSheet(f"color: {DANGER_COLOR}; font-size: 12.5px; font-weight: 700; background: transparent; border: none;")
         card_layout.addWidget(title_label)
 
         detail_label = QLabel(detail)
         detail_label.setWordWrap(True)
-        detail_label.setStyleSheet("color: #7a2c26; font-size: 12px; background: transparent;")
+        detail_label.setStyleSheet(f"color: {DANGER_COLOR}; font-size: 12px; background: transparent; border: none;")
         card_layout.addWidget(detail_label)
 
         retry_btn = QPushButton("Retry")
         retry_btn.setCursor(Qt.PointingHandCursor)
-        retry_btn.setStyleSheet("""
-            QPushButton {
-                background: #b3261e; color: white; border: none;
+        retry_btn.setToolTip("Send that message again")
+        retry_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {DANGER_COLOR}; color: white; border: none;
                 border-radius: 8px; padding: 4px 12px; font-size: 12px; font-weight: 600;
                 max-width: 70px;
-            }
-            QPushButton:hover { background: #931f19; }
+            }}
+            QPushButton:hover {{ background: {DANGER_BORDER}; }}
         """)
         retry_btn.clicked.connect(self._retry_last_send)
         card_layout.addWidget(retry_btn, alignment=Qt.AlignLeft)

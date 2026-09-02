@@ -13,6 +13,7 @@ from PySide6.QtGui import QKeyEvent, QDragEnterEvent, QDropEvent, QFontMetrics
 from pypdf import PdfReader
 
 from ..icons import get_svg_icon, ICONS
+from ..theme import HOVER_BG_COLOR, PRESSED_BG_COLOR, PRIMARY_COLOR, PRIMARY_COLOR_DARK, PRIMARY_COLOR_PRESSED, ON_PRIMARY_TEXT, TEXT_COLOR_SUBTITLE, TEXT_COLOR_DARK
 
 TEXT_EXTS = {
     ".txt", ".md", ".json", ".csv", ".py", ".js", ".ts",
@@ -156,8 +157,11 @@ class AttachmentPill(QFrame):
                 padding: 0px;
             }}
             QPushButton:hover {{
-                background: rgba(0, 0, 0, 0.08);
-                color: #1f2933;
+                background: {HOVER_BG_COLOR};
+                color: {TEXT_COLOR_DARK};
+            }}
+            QPushButton:pressed {{
+                background: {PRESSED_BG_COLOR};
             }}
         """)
         close_btn.clicked.connect(lambda: self.removed.emit(self.file_path))

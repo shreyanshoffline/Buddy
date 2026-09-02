@@ -1,67 +1,145 @@
-# Buddy — Refactored Structure
+# Buddy — Refactored + De-personalized (HackyBuddy-ready)
 
-This is a full reorganization of the codebase. Structure:
-
+## Structure
 ```
 buddy/
-├── main.py                # NEW entry point (was gui_main.py's __main__ block)
-├── models.py               # LLM client + embeddings (shared, top-level on purpose —
-│                            #   both core/ and storage/ depend on it; keeping it
-│                            #   outside both avoids a circular package dependency)
-├── core/                   # the "brain" — orchestration only
-│   ├── agent.py             # Manager/Worker pipeline (was most of core.py)
-│   ├── conversations.py     # db-facing orchestration (was the rest of core.py)
-│   └── instruction.py       # unchanged
-├── storage/
-│   └── db.py                # was storage.py
-├── tools/
-│   ├── tools.py              # renamed from mac_tools.py
-│   ├── tools_schema.py       # renamed from mac_tools_schema.py
-│   └── gmail_tools.py        # ⚠️ STUB — was never uploaded, core/agent.py imports
-│                              #   get_recent_emails/get_unread_emails/create_draft/
-│                              #   list_drafts/modify_draft from it. Replace this file.
-└── gui/                     # PySide6 + other gui/ files + `core` ONLY. No storage,
-    │                        # no tools, no models imports anywhere in here now.
-    ├── main_window.py        # BuddyWindow, SendWorker, RedoWorker (was gui_main.py)
-    ├── theme.py               # was settings.py
-    ├── icons.py               # was utils.py
-    ├── sidebar.py
-    ├── pages/                 # NEW home for page classes
-    │   ├── card_page.py, settings_page.py, library_page.py
-    └── widgets/               # NEW home for reusable chat widgets
-        ├── chat_bubble.py, chat_input.py, feedback_dialog.py
+├── main.py                # entry point
+├── models.py               # LLM client + embeddings; now supports BYOK
+├── core/
+│   ├── agent.py              # Manager/Worker pipeline
+│   ├── conversations.py      # db-facing orchestration
+│   └── instruction.py        # NOW a template system, not a static string
+├── storage/db.py
+├── tools/ (tools.py, tools_schema.py, gmail_tools.py stub)
+└── gui/ (main_window.py, theme.py, icons.py, sidebar.py, pages/, widgets/)
 ```
 
-## What changed behaviorally (bug fixes found while testing this)
-1. **`init_db()` ordering bug** (pre-existing, not introduced by this refactor):
-   the migration step tried to `ALTER TABLE attachment_chunks` before that
-   table was created, on a fresh database. Fixed by moving the migration
-   check after the `CREATE TABLE` calls. This same fix was ported back to
-   your existing flat `storage.py` too, in case you're not switching to this
-   structure right away.
-2. `SettingsPage` no longer imports `storage` directly — added
-   `core.get_profile()` / `core.update_profile()` wrappers so **every** GUI
-   file now only imports PySide6, other `gui/` files, and `core`. Verified
-   with a grep pass — zero `storage`/`tools`/`models` imports left in `gui/`.
+## This session's fixes (in order)
 
-## How `import core` still works unchanged
-`core/__init__.py` re-exports every public function
-(`core.process_message`, `core.send_and_save_message`, etc.) so `gui/`
-code didn't need any call-site rewrites beyond the file moves themselves.
+### 1. "Buddy thinking forever" / can't pause — FIXED
+Root cause: zero timeout on any OpenRouter call. A stuck connection blocked
+the worker thread forever, and Stop could only interrupt between calls, not
+during one. Added a 30s hard timeout to every model/embedding call, made
+retry backoff cancellable (polls every 0.25s), and threaded cancel_check
+through send AND redo (redo had no cancel support at all before).
 
-## To run
-```
-cd buddy
-pip install -r requirements.txt   # PySide6, pypdf, python-dotenv, openrouter
-python main.py
-```
+### 2. Dead code from the original file split — FIXED
+A full duplicate of FlowLayout's methods had leaked into chat_bubble.py
+(orphaned, no class wrapper — harmless at runtime but a landmine). Removed.
+Swept every other split file for the same pattern; nowhere else affected.
 
-## Tested (offscreen, mocked model calls — see conversation for exact commands)
-- Full package import chain (`import core`, `from gui import BuddyWindow`)
-- BuddyWindow construction + page switching (chat/library/settings)
-- Incognito pipeline (in-memory, verified nothing hits the db)
-- Full db round trip: create conversation → send message → get message_id →
-  set feedback → verify persisted → search by content → toggle privacy
-- NOT tested: actual PySide6 rendering/visual layout (no display in this
-  sandbox), actual OpenRouter/embeddings network calls (mocked), tools.py's
-  real OS-level functions (pyautogui etc. — these need a real Mac to test)
+### 3. Redo was silently broken — FIXED
+Clicking redo fed the assistant's own previous reply back in as the "user"
+message instead of re-asking the original question — every redo, the whole
+time. Also: redo was completely dead after closing and reopening a chat
+(hardcoded `lambda: None`). Both fixed and tested against the real GUI
+thread, not just unit-level.
+
+### 4. No thread cleanup on quit — FIXED
+Quitting while a send/redo was in flight could crash (`QThread: Destroyed
+while thread still running`). Added a shutdown hook that signals the
+worker and waits up to 3s. Verified under a real Qt event loop with a
+deliberately slow in-flight call.
+
+### 5. Tool execution log — ADDED
+DevChamber now shows a full per-call breakdown (name, args, result,
+duration), not just a flat list of tool names. Falls back gracefully for
+old saved messages that predate this.
+
+### 6. Private chat lock did nothing — FIXED
+Was a cosmetic flag; clicking a "locked" chat opened it anyway. Now:
+- Sidebar Recents fully excludes private chats.
+- Opening one always requires confirmation — a PIN if you've set one in
+  Settings (SHA-256 hashed, never exposed back out), otherwise an honest
+  "this isn't actually protected, open anyway?" warning.
+- Tested all 6 branches directly against the real dialog classes.
+
+### 7. Nobody knew what the glasses/lock icons did — FIXED
+Added a one-time "Welcome to Buddy" explainer shown on first-ever launch
+(tracked via has_seen_intro_tip in the profile), plus the tooltips that
+were already there. Verified it fires exactly once.
+
+### 8. Settings fields didn't do anything — FIXED
+- **API key**: was saved to the db and never read anywhere. Now models.py
+  checks the user's own key first, falls back to the app default, rebuilds
+  the client only when the key actually changes.
+- Added **Favorite Apps** and **Quick Links** fields that feed directly
+  into the system prompt's "open my usual stuff" behavior — omitted
+  entirely if unset, never invented.
+- Added a real **Privacy PIN** control (set/clear, tested both ways).
+- Added a real **Clear All Chat History** button (destructive, confirmed,
+  tested that Cancel actually preserves data).
+
+### 9. Hardcoded to "Shrey" everywhere — FIXED (the big one)
+core/instruction.py was a static string with Shrey's real age, birthday,
+location, and personal Hack Club bookmarks baked in — every user's Buddy
+would introduce itself with someone else's biography. Converted to
+`build_manager_instruction(profile)` / `build_action_instruction(profile)`:
+- Only mentions age/bio if the current user actually filled them in.
+- Only shows App Defaults / Quick Links if the current user configured
+  them — never leaks or invents another person's setup.
+- Fixed gendered pronouns throughout.
+- Kept "Creator: Shreyansh Patra" as a permanent, honest attribution —
+  that's just true regardless of who's using it.
+- Greeting on the chat screen now uses the real saved name, with a
+  friendly generic fallback for a fresh install.
+
+Tested against both an empty profile (fresh HackyBuddy install — verified
+zero personal-info leakage, nothing invented) and a fully populated one.
+
+## Known remaining gaps (not fixed this session, flagged honestly)
+- `tools/gmail_tools.py` is still a stub.
+- No real macOS-level testing of tools.py's pyautogui/AppleScript calls
+  (needs a real Mac).
+- Age field isn't validated as numeric — stored as whatever text is typed.
+- Memory bank UI and embedding-model migration are still not started.
+
+## Tested this session (real execution, not just syntax checks)
+11-point full regression suite covering: GUI construction, incognito,
+send+feedback, redo (fresh AND after reload), search, cancellation,
+private-chat gate (both outcomes), sidebar exclusion, BYOK, and
+personalization — all passing. Settings page has its own 7-point suite
+covering every new field and the two destructive actions.
+
+## Session 3: crash fix + theming + polish
+
+### Crash fixed
+`age` was stored as a real SQLite int; `QLineEdit.setText()` requires a
+string. Reproduced your exact crash and confirmed it's gone.
+
+### Full theme engine (gui/theme.py)
+- All 8 official Hack Club colors as selectable accents, each with light
+  AND dark mode.
+- Every hover/pressed/soft-tint color is mathematically derived from one
+  hero accent, not hand-picked — so switching themes stays coherent.
+- Real WCAG contrast math decides text color per accent (yellow/green/
+  cyan/blue/orange/muted need dark text; red/purple need white) — verified
+  with actual contrast ratio calculations, not eyeballing.
+- Settings → Appearance: dark mode checkbox + 8 swatches, real "restart
+  now?" prompt that actually restarts the process.
+- Swept every widget file (chat bubbles, sidebar, library, settings,
+  composer, error cards, preview panel) replacing hardcoded ad-hoc colors
+  with shared theme tokens — tested building the full GUI under 5 different
+  theme combinations including dark mode.
+
+### Overall 2.5-minute abandon timeout
+Previously a single retry could be bounded (~30s) but a full multi-step
+worker run had no overall ceiling — could theoretically run for many
+minutes. Added a wall-clock deadline spanning the whole turn (manager
+retries + all worker steps), tested with an artificially-expired deadline
+(confirms zero network calls happen once past deadline) and a full
+process_message run.
+
+### Accumulating "thinking" transcript
+Previously only showed the current step and overwrote it each time.
+Now keeps a real scrolling history (capped at 4 lines) of completed steps
+above the current one, closer to how Claude shows its work. Tested the
+accumulation and the cap directly.
+
+### Misc fixes found while sweeping
+- Send button tooltip was being cleared to empty string on reset — fixed.
+- Chat bubble user/agent colors were completely hardcoded (would've looked
+  broken in dark mode) — now theme-derived.
+- Added tooltips throughout: sidebar nav, recent chat rows (with delete
+  hint), attach/send buttons, preview close, retry button, PIN/Clear
+  buttons, theme swatches.

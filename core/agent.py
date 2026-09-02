@@ -10,16 +10,16 @@ import time
 import tools.tools as tools
 import tools.gmail_tools as gmail_tools
 from tools.tools_schema import tools_schema
-from core.instruction import Manager_instruction, Action_instruction
+from core.instruction import build_action_instruction
 from models import run_manager_step, run_action_step, BuddyCancelled
 from storage import db
 
-MANAGER_MODEL = "qwen/qwen3.7-flash"
+MANAGER_MODEL = "qwen/qwen3.8-flash"
 DEFAULT_WORKER_MODEL = "google/gemini-2.5-flash-lite"
  
 WORKER_MODELS = {
-    "simple_task": "google/gemini-2.5-flash-lite",
-    "moderate_task": "google/gemini-3.5-flash-lite",
+    "simple_task": "google/gemini-3.5-flash-lite",
+    "moderate_task": "google/gemini-3.7-flash",
     "heavy_task": "~anthropic/claude-haiku-latest"
 }
  
@@ -27,6 +27,8 @@ MANAGER_MAX_TOKENS = 600
 WORKER_MAX_TOKENS = 500
 MAX_PLAN_RETRIES = 1
 MAX_WORKER_STEPS = 8
+OVERALL_TIMEOUT_SECONDS = 150  # 2.5 min hard ceiling on a whole turn, no matter
+                                # how many manager/worker steps or retries happen
 MEMORY_RETRIEVAL_MIN_OVERLAP = 2
 MEMORY_RETRIEVAL_LIMIT = 2
 
@@ -154,9 +156,9 @@ def execute_tool(tool_name, tool_args):
     return f"Error: Tool '{tool_name}' not found."
  
  
-def run_worker(plan_text, worker_model, on_event=None, cancel_check=None):
+def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadline=None):
     action_history = [
-        {"role": "system", "content": Action_instruction},
+        {"role": "system", "content": build_action_instruction(db.get_profile())},
         {"role": "user", "content": f"Execute this plan:\n{plan_text}"}
     ]
     step_count = 0
@@ -167,6 +169,8 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None):
     while step_count < MAX_WORKER_STEPS:
         if cancel_check and cancel_check():
             return {"status": "cancelled", "message": "Cancelled by user.", "step_count": step_count, **stats}
+        if deadline and time.time() > deadline:
+            return {"status": "timeout", "message": "This is taking longer than expected, so I stopped. Want me to try again?", "step_count": step_count, **stats}
         step_count += 1
         try:
             action_response = run_action_step(worker_model, action_history, WORKER_MAX_TOKENS, tools_schema, cancel_check=cancel_check)
@@ -257,12 +261,19 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
             message_history.append({"role": "system", "content": memory_note})
         # --- end retrieval ---
 
+    deadline = start_time + OVERALL_TIMEOUT_SECONDS
+
     attempt = 0
     while attempt <= MAX_PLAN_RETRIES:
         attempt += 1
  
         if cancel_check and cancel_check():
             reply = "Cancelled."
+            message_history.append({"role": "assistant", "content": reply})
+            return format_response(reply, metrics, start_time)
+
+        if time.time() > deadline:
+            reply = "This is taking longer than expected, so I stopped after a couple of minutes. Want me to try again?"
             message_history.append({"role": "assistant", "content": reply})
             return format_response(reply, metrics, start_time)
 
@@ -307,7 +318,7 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         if on_event:
             on_event({"type": "plan", "model": worker_model, "plan": plan_text})
  
-        outcome = run_worker(plan_text, worker_model, on_event=on_event, cancel_check=cancel_check)
+        outcome = run_worker(plan_text, worker_model, on_event=on_event, cancel_check=cancel_check, deadline=deadline)
  
         # Merge worker metrics
         metrics["requests"] += outcome.get("requests", 0)
@@ -332,7 +343,7 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
                 response["chat_title"] = response_title
             return response
  
-        elif outcome["status"] in ("incomplete", "cancelled"):
+        elif outcome["status"] in ("incomplete", "cancelled", "timeout"):
             reply = outcome["message"]
             message_history.append({"role": "assistant", "content": reply})
             response = format_response(reply, metrics, start_time)

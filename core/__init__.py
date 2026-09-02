@@ -22,6 +22,11 @@ from core.conversations import (
     new_message_history,
     get_profile,
     update_profile,
+    set_privacy_pin,
+    has_privacy_pin,
+    verify_privacy_pin,
+    set_conversation_favorite,
+    set_conversation_archived,
 )
 
 __all__ = [
@@ -33,4 +38,6 @@ __all__ = [
     "delete_conversation", "get_conversation_history",
     "set_message_feedback", "create_conversation_from_title",
     "new_message_history", "get_profile", "update_profile",
+    "set_privacy_pin", "has_privacy_pin", "verify_privacy_pin",
+    "set_conversation_favorite", "set_conversation_archived",
 ]
