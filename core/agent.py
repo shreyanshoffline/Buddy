@@ -14,13 +14,15 @@ from core.instruction import build_action_instruction
 from models import run_manager_step, run_action_step, BuddyCancelled
 from storage import db
 
-MANAGER_MODEL = "qwen/qwen3.8-flash"
-DEFAULT_WORKER_MODEL = "google/gemini-2.5-flash-lite"
+MANAGER_MODEL = "google/gemini-3.5-flash-lite"
+DEFAULT_WORKER_MODEL = "google/gemini-3.5-flash-lite"
  
 WORKER_MODELS = {
     "simple_task": "google/gemini-3.5-flash-lite",
-    "moderate_task": "google/gemini-3.7-flash",
-    "heavy_task": "~anthropic/claude-haiku-latest"
+    "moderate_task": "google/gemini-3.5-flash-lite",
+    "heavy_task": "google/gemini-3.8-flash",
+    "vision_task": "google/gemini-3.8-flash",
+    "creation_task": "google/gemini-3.1-flash-lite-image"
 }
  
 MANAGER_MAX_TOKENS = 600
