@@ -2,6 +2,8 @@ from openrouter import OpenRouter
 from dotenv import load_dotenv
 import os
 import time
+import base64
+import mimetypes
 
 load_dotenv()
 
@@ -108,6 +110,46 @@ def run_manager_step(model, message_history, max_tokens, cancel_check=None):
         ),
         cancel_check=cancel_check,
     )
+
+
+def image_data_url(path):
+    """Encode a local image as an OpenAI-compatible data URL."""
+    mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    with open(path, "rb") as image_file:
+        encoded = base64.b64encode(image_file.read()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def extract_image_urls(message):
+    """Collect image URLs from common OpenAI/OpenRouter response shapes."""
+    found = []
+    candidates = [getattr(message, "images", None), getattr(message, "content", None)]
+    for candidate in candidates:
+        items = candidate if isinstance(candidate, list) else [candidate]
+        for item in items:
+            if isinstance(item, str):
+                continue
+            if not isinstance(item, dict):
+                continue
+            image_url = item.get("image_url") or item.get("image")
+            if isinstance(image_url, dict):
+                image_url = image_url.get("url")
+            if isinstance(image_url, str) and image_url not in found:
+                found.append(image_url)
+    return found
+
+
+def message_text(message):
+    """Normalize text content from string or multimodal response parts."""
+    content = getattr(message, "content", "") or ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            part.get("text", "") for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        ).strip()
+    return str(content)
 
 
 def run_action_step(model, message_history, max_tokens, tools, cancel_check=None):

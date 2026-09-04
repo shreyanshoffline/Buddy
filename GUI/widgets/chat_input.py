@@ -2,6 +2,7 @@
 pill/tray widgets, and the auto-growing ChatInput text box."""
 import os
 import sys
+import mimetypes
 from pathlib import Path
 from PySide6.QtWidgets import (
     QTextEdit, QWidget, QVBoxLayout, QPushButton, QFrame,
@@ -310,11 +311,20 @@ class ChatInput(QTextEdit):
             if str(file_path) in existing:
                 continue
             try:
+                mime_type = mimetypes.guess_type(str(file_path))[0] or ""
+                data_url = None
+                if mime_type.startswith("image/"):
+                    import base64
+                    encoded = base64.b64encode(file_path.read_bytes()).decode("ascii")
+                    data_url = f"{mime_type};base64,{encoded}"
+                    data_url = "data:" + data_url
                 self.attached_files.append({
                     "name": file_path.name,
                     "extension": file_path.suffix,
                     "contents": self._extract_file_text(file_path),
                     "path": str(file_path),
+                    "mime_type": mime_type,
+                    "data_url": data_url,
                 })
             except Exception:
                 continue
@@ -325,7 +335,7 @@ class ChatInput(QTextEdit):
             self,
             "Attach files",
             "",
-            "Documents (*.txt *.md *.py *.js *.ts *.json *.csv *.yaml *.yml *.html *.css *.pdf);;All files (*)",
+            "Images and documents (*.png *.jpg *.jpeg *.gif *.webp *.bmp *.txt *.md *.py *.js *.ts *.json *.csv *.yaml *.yml *.html *.css *.pdf);;All files (*)",
         )
         if paths:
             self._add_file_attachments([Path(p) for p in paths])

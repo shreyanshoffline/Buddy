@@ -42,7 +42,7 @@ from .theme import (
     BORDER_COLOR, DANGER_COLOR, DANGER_SOFT_BG, DANGER_BORDER, INPUT_BG, CONTAINER_BG
 )
 from .sidebar import Sidebar
-from .pages import SettingsPage, LibraryPage, BillingPage
+from .pages import SettingsPage, LibraryPage, BillingPage, ArtifactsPage
 
 class SendWorker(QThread):
     """Runs send_and_save_message off the main thread so the UI stays responsive."""
@@ -67,6 +67,7 @@ class SendWorker(QThread):
                     self.history,
                     on_event=lambda e: self.progress.emit(e),
                     cancel_check=self.cancel_event.is_set,
+                    image_attachments=[item for item in (self.attachments or []) if item.get("mime_type", "").startswith("image/")],
                 )
             else:
                 result = core.send_and_save_message(
@@ -647,12 +648,15 @@ class BuddyWindow(QWidget):
         self.settings_page = SettingsPage(close_callback=self.hide, on_theme_changed=self.restart_app)
         self.library_page = LibraryPage(close_callback=self.hide, on_chat_selected=self._request_open_chat, on_delete_chat=self._delete_chat_from_library)
         self.billing_page = BillingPage(close_callback=self.hide)
+        self.artifacts_page = ArtifactsPage(close_callback=self.hide)
         self.content_stack.addWidget(self.settings_page)
         self.content_stack.addWidget(self.library_page)
         self.content_stack.addWidget(self.billing_page)
+        self.content_stack.addWidget(self.artifacts_page)
  
         self.sidebar.btn_new.clicked.connect(self.show_chat_view)
         self.sidebar.btn_lib.clicked.connect(self.show_library_view)
+        self.sidebar.btn_artifacts.clicked.connect(self.show_artifacts_view)
         self.sidebar.btn_billing.clicked.connect(self.show_billing_view)
         self.sidebar.btn_settings.clicked.connect(self.show_settings_view)
  
@@ -747,7 +751,8 @@ class BuddyWindow(QWidget):
                         'like': lambda active, mid=msg_id: self._set_feedback(mid, 'like', active),
                         'dislike': lambda active, mid=msg_id: self._set_feedback(mid, 'dislike', active),
                         'redo': make_history_redo() if last_user_text is not None else (lambda: None)
-                    }
+                        },
+                        images=metadata.get("images", []),
                 )
                 self._last_assistant_bubble = bubble
                 self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
@@ -782,9 +787,14 @@ class BuddyWindow(QWidget):
         self.library_page.refresh_chats()
         self.content_stack.setCurrentWidget(self.library_page)
         self._set_active_nav(self.sidebar.btn_lib)
+
+    def show_artifacts_view(self):
+        self.artifacts_page.refresh_artifacts()
+        self.content_stack.setCurrentWidget(self.artifacts_page)
+        self._set_active_nav(self.sidebar.btn_artifacts)
  
     def _set_active_nav(self, active_btn):
-        for btn in (self.sidebar.btn_new, self.sidebar.btn_lib, self.sidebar.btn_billing, self.sidebar.btn_settings):
+        for btn in (self.sidebar.btn_new, self.sidebar.btn_lib, self.sidebar.btn_artifacts, self.sidebar.btn_billing, self.sidebar.btn_settings):
             btn.set_active(btn is active_btn)
 
     def _request_open_chat(self, conversation_id):
@@ -1076,6 +1086,7 @@ class BuddyWindow(QWidget):
                 tools_used=result.get("tools_used"),
                 tool_log=result.get("tool_log"),
                 stats=result.get("stats"),
+                images=result.get("images", []),
                 message_id=msg_id,
                 callbacks={
                     'copy': lambda text=reply: QApplication.clipboard().setText(text),
@@ -1104,6 +1115,8 @@ class BuddyWindow(QWidget):
 
     def _classify_error(self, error_msg):
         msg = (error_msg or "").lower()
+        if "insufficient credits" in msg or "paymentrequired" in msg or "credits" in msg:
+            return "API credits needed", "Buddy's AI provider rejected this request because the API account has no credits. Add credits to the account linked to API_KEY, or add your own key in Settings."
         if "429" in msg or "rate limit" in msg or "too many" in msg:
             return "Rate limited", "Buddy's model provider is being hit too fast. This is usually retryable."
         if "permission" in msg or "unauthorized" in msg or "403" in msg:

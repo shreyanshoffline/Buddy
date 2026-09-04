@@ -2,13 +2,11 @@
 main ChatBubble widget (user/assistant messages, feedback footer, redo)."""
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFrame,
-    QLabel, QHBoxLayout, QApplication, QSizePolicy,
+    QLabel, QHBoxLayout, QApplication, QSizePolicy, QFileDialog,
 )
 from PySide6.QtCore import Qt, Signal, QSize, QTimer, QRectF
-from PySide6.QtGui import (
-    QKeyEvent, QTextDocument, QFontMetrics,
-    QPainter, QColor, QPainterPath
-)
+from PySide6.QtGui import QKeyEvent, QTextDocument, QFontMetrics, QPainter, QColor, QPainterPath, QPixmap
+import base64
 
 from ..icons import get_svg_icon, ICONS
 from ..theme import (
@@ -186,7 +184,7 @@ class DevChamber(QWidget):
 
 
 class ChatBubble(QWidget):
-    def __init__(self, text="", is_user=True, plan_text=None, tools_used=None, stats=None, tool_log=None, callbacks=None, is_thinking=False, message_id=None, initial_feedback=None):
+    def __init__(self, text="", is_user=True, plan_text=None, tools_used=None, stats=None, tool_log=None, callbacks=None, is_thinking=False, message_id=None, initial_feedback=None, images=None):
         super().__init__()
         self.is_user = is_user
         self.is_thinking = is_thinking
@@ -195,7 +193,7 @@ class ChatBubble(QWidget):
         self.initial_feedback = initial_feedback
         self.dev_chamber_container = None
 
-        self.versions = [{"text": text, "plan": plan_text, "tools": tools_used, "tool_log": tool_log, "stats": stats}]
+        self.versions = [{"text": text, "plan": plan_text, "tools": tools_used, "tool_log": tool_log, "stats": stats, "images": images or []}]
         self.current_idx = 0
 
         self.layout = QHBoxLayout(self)
@@ -328,6 +326,21 @@ class ChatBubble(QWidget):
         self.copy_btn.setToolTip("Copy this reply")
         self.copy_btn.clicked.connect(lambda: (self.callbacks.get('copy', lambda t: None)(self.versions[self.current_idx]["text"]), set_active_button(self.copy_btn, True, PRIMARY_COLOR)))
         self.footer_layout.addWidget(self.copy_btn)
+
+        if self.versions[self.current_idx].get("images"):
+            image_copy_btn = QPushButton("Copy image")
+            image_copy_btn.setCursor(Qt.PointingHandCursor)
+            image_copy_btn.setToolTip("Copy the created image")
+            image_copy_btn.setStyleSheet(btn_style)
+            image_copy_btn.clicked.connect(self._copy_image)
+            self.footer_layout.addWidget(image_copy_btn)
+
+            image_download_btn = QPushButton("Download")
+            image_download_btn.setCursor(Qt.PointingHandCursor)
+            image_download_btn.setToolTip("Save the created image")
+            image_download_btn.setStyleSheet(btn_style)
+            image_download_btn.clicked.connect(self._download_image)
+            self.footer_layout.addWidget(image_download_btn)
 
         self.like_btn = QPushButton(icon=get_svg_icon(ICONS["like"], TEXT_COLOR_SUBTITLE))
         self.like_btn.setProperty("icon_key", "like")
@@ -476,6 +489,24 @@ class ChatBubble(QWidget):
     def _render_current_version(self):
         v = self.versions[self.current_idx]
 
+        if hasattr(self, "image_label"):
+            self.image_label.deleteLater()
+        self.image_label = None
+        if v.get("images"):
+            for image_url in v["images"][:3]:
+                pixmap = QPixmap()
+                if image_url.startswith("data:"):
+                    _, encoded = image_url.split(",", 1)
+                    pixmap.loadFromData(base64.b64decode(encoded))
+                elif image_url.startswith("/"):
+                    pixmap.load(image_url)
+                if not pixmap.isNull():
+                    self.image_label = QLabel()
+                    self.image_label.setPixmap(pixmap.scaled(320, 320, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    self.image_label.setStyleSheet("background: transparent; border: none;")
+                    self.bubble_layout.insertWidget(0, self.image_label)
+                    break
+
         doc = QTextDocument()
         doc.setMarkdown(v["text"])
         self.text_label.setText(doc.toHtml())
@@ -490,6 +521,31 @@ class ChatBubble(QWidget):
             if has_chamber_data:
                 chamber = DevChamber(plan_text=v.get("plan"), tools_used=v.get("tools"), stats=v.get("stats"), tool_log=v.get("tool_log"))
                 self.dev_chamber_container.addWidget(chamber)
+
+    def _image_pixmap(self):
+        images = self.versions[self.current_idx].get("images") or []
+        if not images:
+            return QPixmap()
+        image_url = images[0]
+        pixmap = QPixmap()
+        if image_url.startswith("data:"):
+            pixmap.loadFromData(base64.b64decode(image_url.split(",", 1)[1]))
+        elif image_url.startswith("/"):
+            pixmap.load(image_url)
+        return pixmap
+
+    def _copy_image(self):
+        pixmap = self._image_pixmap()
+        if not pixmap.isNull():
+            QApplication.clipboard().setPixmap(pixmap)
+
+    def _download_image(self):
+        pixmap = self._image_pixmap()
+        if pixmap.isNull():
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Save image", "buddy-image.png", "PNG image (*.png)")
+        if path:
+            pixmap.save(path, "PNG")
 
         if hasattr(self, 'page_label'):
             self.page_label.setText(f"{self.current_idx + 1}/{len(self.versions)}")

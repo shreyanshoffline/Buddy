@@ -2,3 +2,7 @@ PySide6
 pypdf
 python-dotenv
 openrouter
+requests
+Flask
+stripe
+gunicorn

@@ -117,11 +117,22 @@ def init_db():
             theme_color TEXT DEFAULT 'blue',
             dark_mode INTEGER DEFAULT 0,
             subscription_tier TEXT DEFAULT 'free',
+            buddy_user_id TEXT,
             byo_api_key TEXT,
             privacy_pin_hash TEXT,             -- sha256 hex digest; NULL = no PIN set
             has_seen_intro_tip INTEGER DEFAULT 0,
             favorite_apps TEXT,                -- comma-separated, user's own "usual apps"
             quick_links TEXT                   -- comma-separated "Name: URL" pairs
+        );
+
+        CREATE TABLE IF NOT EXISTS artifacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'image',
+            content TEXT NOT NULL,
+            conversation_id INTEGER,
+            created_at REAL NOT NULL,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
         );
         """)
         # migration: add email column for older dbs created before this existed
@@ -136,6 +147,8 @@ def init_db():
             conn.execute("ALTER TABLE user_profile ADD COLUMN favorite_apps TEXT")
         if "quick_links" not in cols:
             conn.execute("ALTER TABLE user_profile ADD COLUMN quick_links TEXT")
+        if "buddy_user_id" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN buddy_user_id TEXT")
         # migration: add is_private column for older dbs
         conv_cols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)")]
         if "is_private" not in conv_cols:
@@ -334,6 +347,29 @@ def save_message(conversation_id, role, content=None, tool_calls=None, tool_call
     return message_id
 
 
+def save_artifact(title, content, kind="image", conversation_id=None):
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO artifacts (title, kind, content, conversation_id, created_at) VALUES (?, ?, ?, ?, ?)",
+            (title or "Untitled artifact", kind, content, conversation_id, time.time()),
+        )
+        return cur.lastrowid
+
+
+def list_artifacts(limit=100):
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, title, kind, content, conversation_id, created_at FROM artifacts ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def delete_artifact(artifact_id):
+    with _connect() as conn:
+        conn.execute("DELETE FROM artifacts WHERE id = ?", (artifact_id,))
+
+
 def set_message_feedback(message_id, feedback):
     """feedback: 'like' / 'dislike' / None (clears it)."""
     with _connect() as conn:
@@ -402,6 +438,20 @@ def get_profile():
         return profile
 
 
+def get_or_create_buddy_user_id():
+    """Stable anonymous ID identifying this Buddy install to the billing
+    backend — generated once, stored locally, never tied to real identity
+    beyond what Stripe Checkout itself collects (email, card)."""
+    import uuid
+    profile = get_profile()
+    uid = profile.get("buddy_user_id")
+    if uid:
+        return uid
+    uid = uuid.uuid4().hex
+    update_profile(buddy_user_id=uid)
+    return uid
+
+
 def update_profile(**fields):
     """update_profile(name='Alex', age=14, theme_color='purple', dark_mode=True)"""
     if not fields:
@@ -409,7 +459,7 @@ def update_profile(**fields):
     allowed = {
         "name", "age", "bio", "email", "theme_color", "dark_mode",
         "subscription_tier", "byo_api_key", "has_seen_intro_tip",
-        "favorite_apps", "quick_links",
+        "favorite_apps", "quick_links", "buddy_user_id",
     }
     fields = {k: v for k, v in fields.items() if k in allowed}
     if "dark_mode" in fields:

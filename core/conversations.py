@@ -45,7 +45,8 @@ def send_and_save_message(conversation_id, user_text, on_event=None, attachments
     excerpts = db.find_relevant_chunks(conversation_id, user_text, limit=6)
     file_context = format_attachment_context(excerpts)
 
-    result = process_message(user_text, history, on_event=on_event, file_context=file_context, cancel_check=cancel_check)
+    image_attachments = [item for item in (attachments or []) if item.get("mime_type", "").startswith("image/")]
+    result = process_message(user_text, history, on_event=on_event, file_context=file_context, cancel_check=cancel_check, image_attachments=image_attachments)
 
     assistant_metadata = None
     if result.get("plan_text") or result.get("tools_used") or result.get("stats"):
@@ -53,7 +54,8 @@ def send_and_save_message(conversation_id, user_text, on_event=None, attachments
             "plan_text": result.get("plan_text"),
             "tools_used": result.get("tools_used"),
             "tool_log": result.get("tool_log"),
-            "stats": result.get("stats")
+            "stats": result.get("stats"),
+            "images": result.get("images", []),
         }
 
     result["message_id"] = db.save_message(
@@ -62,6 +64,8 @@ def send_and_save_message(conversation_id, user_text, on_event=None, attachments
         content=result["reply"],
         metadata=assistant_metadata
     )
+    for index, image_url in enumerate(result.get("images", []), start=1):
+        db.save_artifact(f"Buddy creation {index}", image_url, "image", conversation_id)
 
     title = _ensure_conversation_title(conversation_id, user_text, result.get("chat_title"))
     if title:
@@ -176,3 +180,11 @@ def has_privacy_pin():
 
 def verify_privacy_pin(pin):
     return db.verify_privacy_pin(pin)
+
+
+def list_artifacts(limit=100):
+    return db.list_artifacts(limit)
+
+
+def delete_artifact(artifact_id):
+    return db.delete_artifact(artifact_id)

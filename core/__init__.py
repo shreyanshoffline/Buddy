@@ -27,7 +27,11 @@ from core.conversations import (
     verify_privacy_pin,
     set_conversation_favorite,
     set_conversation_archived,
+    list_artifacts,
+    delete_artifact,
 )
+
+get_or_create_buddy_user_id = _db.get_or_create_buddy_user_id
 
 __all__ = [
     "process_message", "process_message_incognito",
@@ -40,4 +44,6 @@ __all__ = [
     "new_message_history", "get_profile", "update_profile",
     "set_privacy_pin", "has_privacy_pin", "verify_privacy_pin",
     "set_conversation_favorite", "set_conversation_archived",
+    "get_or_create_buddy_user_id",
+    "list_artifacts", "delete_artifact",
 ]

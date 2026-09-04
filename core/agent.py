@@ -11,7 +11,7 @@ import tools.tools as tools
 import tools.gmail_tools as gmail_tools
 from tools.tools_schema import tools_schema
 from core.instruction import build_action_instruction
-from models import run_manager_step, run_action_step, BuddyCancelled
+from models import run_manager_step, run_action_step, BuddyCancelled, extract_image_urls, message_text
 from storage import db
 
 MANAGER_MODEL = "google/gemini-3.5-flash-lite"
@@ -75,13 +75,13 @@ def generate_conversation_title(user_input: str) -> str:
         return db.auto_title_from_first_message(user_input)
  
  
-def get_manager_output(message_history, cancel_check=None):
-    plan_response = run_manager_step(MANAGER_MODEL, message_history, MANAGER_MAX_TOKENS, cancel_check=cancel_check)
+def get_manager_output(message_history, cancel_check=None, model=MANAGER_MODEL):
+    plan_response = run_manager_step(model, message_history, MANAGER_MAX_TOKENS, cancel_check=cancel_check)
     manager_message = plan_response.choices[0].message
  
     # Safely extract token usage if the LLM provider returns it
     usage = getattr(plan_response, 'usage', None)
-    return (manager_message.content or "").strip(), usage
+    return message_text(manager_message).strip(), usage
  
  
 def parse_manager_output(manager_output):
@@ -186,7 +186,16 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
             stats["tokens_in"] += getattr(action_response.usage, 'prompt_tokens', 0)
             stats["tokens_out"] += getattr(action_response.usage, 'completion_tokens', 0)
  
+        generated_images = extract_image_urls(action_msg)
         if not getattr(action_msg, "tool_calls", None):
+            if generated_images:
+                return {
+                    "status": "success",
+                    "summary": message_text(action_msg) or "I created that image for you.",
+                    "images": generated_images,
+                    "step_count": step_count,
+                    **stats,
+                }
             if step_count == 1:
                 return {"status": "rejected", "complaint": action_msg.content or "No reason given.", "step_count": step_count, **stats}
             else:
@@ -229,7 +238,7 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
     return {"status": "incomplete", "message": "Reached max steps without finishing.", "step_count": step_count, **stats}
  
  
-def process_message(user_input, message_history, on_event=None, file_context=None, cancel_check=None, incognito=False):
+def process_message(user_input, message_history, on_event=None, file_context=None, cancel_check=None, incognito=False, image_attachments=None):
     """Pure model-facing turn: takes a message + history, talks to the
     Manager/Worker pipeline, returns a result dict. Knows nothing about
     conversation_id or the database — that's send_and_save_message's job.
@@ -242,13 +251,25 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         "requests": 0,
         "tools_executed": [],
         "tool_log": [],
-        "final_plan": None
+        "final_plan": None,
+        "generated_images": [],
     }
 
-    message_history.append({"role": "user", "content": user_input})
+    user_message = {"role": "user", "content": user_input}
+    message_history.append(user_message)
 
     if file_context:
         message_history.append({"role": "system", "content": file_context})
+
+    image_attachments = [
+        item for item in (image_attachments or [])
+        if item.get("mime_type", "").startswith("image/") and item.get("data_url")
+    ]
+    if image_attachments:
+        user_message["content"] = [
+            {"type": "text", "text": user_input},
+            *({"type": "image_url", "image_url": {"url": item["data_url"]}} for item in image_attachments),
+        ]
 
     if not incognito:
         # --- Long-term memory retrieval (POC) ---
@@ -283,7 +304,8 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
             on_event({"type": "thinking"})
  
         try:
-            manager_output, usage = get_manager_output(message_history, cancel_check=cancel_check)
+            manager_model = "google/gemini-3.8-flash" if image_attachments else MANAGER_MODEL
+            manager_output, usage = get_manager_output(message_history, cancel_check=cancel_check, model=manager_model)
         except BuddyCancelled:
             reply = "Cancelled."
             message_history.append({"role": "assistant", "content": reply})
@@ -328,6 +350,7 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         metrics["tokens_out"] += outcome.get("tokens_out", 0)
         metrics["tools_executed"].extend(outcome.get("tools", []))
         metrics["tool_log"].extend(outcome.get("tool_log", []))
+        metrics["generated_images"] = outcome.get("images", [])
  
         if outcome["status"] == "success":
             reply = outcome["summary"]
@@ -341,6 +364,7 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
                 )
 
             response = format_response(reply, metrics, start_time)
+            response["images"] = outcome.get("images", [])
             if response_title:
                 response["chat_title"] = response_title
             return response
@@ -372,12 +396,12 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
     return format_response(reply, metrics, start_time)
  
 
-def process_message_incognito(user_text, message_history, on_event=None, cancel_check=None):
+def process_message_incognito(user_text, message_history, on_event=None, cancel_check=None, image_attachments=None):
     """Runs the full Manager/Worker pipeline entirely in-memory: no message
     save, no title generation, no long-term memory read/write, no attachment
     storage. `message_history` must be the running list the caller owns —
     this appends to it in place, same contract as process_message."""
-    return process_message(user_text, message_history, on_event=on_event, cancel_check=cancel_check, incognito=True)
+    return process_message(user_text, message_history, on_event=on_event, cancel_check=cancel_check, incognito=True, image_attachments=image_attachments)
 
 
 

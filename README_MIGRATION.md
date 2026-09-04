@@ -143,3 +143,27 @@ accumulation and the cap directly.
 - Added tooltips throughout: sidebar nav, recent chat rows (with delete
   hint), attach/send buttons, preview close, retry button, PIN/Clear
   buttons, theme swatches.
+
+## Billing setup
+
+Billing uses Stripe Checkout, so Buddy never handles card numbers. Deploy
+`backend.app:app` to a server with persistent storage, then configure these
+server environment variables:
+
+```text
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+PRICE_ID_PRO_MONTHLY=price_...
+PRICE_ID_PRO_YEARLY=price_...       # optional
+PRICE_ID_MAX_MONTHLY=price_...
+PRICE_ID_MAX_YEARLY=price_...       # optional
+BILLING_DB_PATH=/var/data/billing.db
+```
+
+Use `gunicorn backend.app:app` as the server command. In Stripe Dashboard,
+register `https://your-domain.example/webhook` for `checkout.session.completed`,
+`customer.subscription.updated`, and `customer.subscription.deleted`. Set
+`BUDDY_BILLING_URL` and the matching public price IDs in Buddy's local `.env`.
+The current placeholder values are not usable for a payment; use Stripe test
+keys and test cards first, then switch both server and desktop configuration
+together. Never commit `.env` or Stripe secrets.
