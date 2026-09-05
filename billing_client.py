@@ -33,11 +33,18 @@ class BillingNotConfigured(Exception):
 def start_checkout(buddy_user_id, price_key):
     """Opens Stripe Checkout in the user's default browser. Returns True
     if the request succeeded and a browser tab was opened."""
-    if not BACKEND_URL:
-        raise BillingNotConfigured("BUDDY_BILLING_URL is not set.")
     price_id = PRICE_IDS.get(price_key)
     if not price_id:
         raise BillingNotConfigured(f"No price_id configured for '{price_key}'.")
+
+    # Stripe Payment Links can be used directly while the billing backend is
+    # being deployed. Price IDs continue through the secure backend flow.
+    if price_id.startswith(("https://", "http://")):
+        webbrowser.open(price_id)
+        return True
+
+    if not BACKEND_URL:
+        raise BillingNotConfigured("BUDDY_BILLING_URL is not set.")
 
     resp = requests.post(
         f"{BACKEND_URL}/create-checkout-session",

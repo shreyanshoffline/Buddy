@@ -191,13 +191,19 @@ class SettingsPage(CardPage):
             self.inputs[key] = text_edit
 
         api_label = self._field_label("API Key (overrides the default)")
+        if not self.profile.get("hackclub_verified"):
+            api_label.setText("API Key (Hack Club verification required)")
         layout.addWidget(api_label)
         api_field = QLineEdit()
         raw_key = self.profile.get("byo_api_key")
         api_field.setText(str(raw_key) if raw_key else "")
         api_field.setPlaceholderText("Enter your own OpenRouter API key...")
         api_field.setEchoMode(QLineEdit.Password)
-        api_field.setReadOnly(True)
+        api_field.setReadOnly(not bool(self.profile.get("hackclub_verified")))
+        api_field.setProperty("requires_hackclub", True)
+        if not self.profile.get("hackclub_verified"):
+            api_field.setPlaceholderText("Sign in with a verified Hack Club account first")
+            api_field.setToolTip("Only verified Hack Club members can configure a custom API key")
         api_field.setCursor(Qt.CursorShape.PointingHandCursor)
         api_field.setStyleSheet(FIELD_STYLE)
         api_field.mousePressEvent = lambda event, le=api_field: self.on_box_clicked(event, le)
@@ -219,6 +225,13 @@ class SettingsPage(CardPage):
             self._flash_saved(label_widget)
 
     def on_box_clicked(self, event, line_edit):
+        if line_edit.property("requires_hackclub") and not self.profile.get("hackclub_verified"):
+            QMessageBox.information(
+                self,
+                "Hack Club verification required",
+                "Sign in with Hack Club and complete verification before adding an API key.",
+            )
+            return
         if line_edit.isReadOnly():
             line_edit.setReadOnly(False)
             line_edit.setCursor(Qt.CursorShape.IBeamCursor)

@@ -1,5 +1,5 @@
 """Base scrollable card layout shared by Settings and Library pages."""
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QPushButton, QHBoxLayout, QFrame
 from PySide6.QtCore import Qt
 
 from ..theme import (
@@ -69,6 +69,27 @@ class CardPage(QWidget):
         """)
         self.main_layout.addWidget(title_label)
 
+        profile = self._account_profile()
+        if profile.get("auth_provider") and profile.get("name"):
+            account = QFrame()
+            account.setStyleSheet("QFrame { background: rgba(51, 142, 218, 0.10); border: 1px solid rgba(51, 142, 218, 0.24); border-radius: 10px; }")
+            account_layout = QVBoxLayout(account)
+            account_layout.setContentsMargins(10, 7, 10, 7)
+            account_layout.setSpacing(1)
+            account_name = QLabel(str(profile["name"]))
+            account_name.setStyleSheet("color: #1f2937; font-size: 12px; font-weight: 700; background: transparent; border: none;")
+            account_layout.addWidget(account_name)
+            account_status = QLabel("Logged in")
+            account_status.setStyleSheet("color: #338eda; font-size: 10px; background: transparent; border: none;")
+            account_layout.addWidget(account_status)
+            self.main_layout.addWidget(account, alignment=Qt.AlignmentFlag.AlignRight)
+        else:
+            account_button = QPushButton("Sign in / create account")
+            account_button.setCursor(Qt.PointingHandCursor)
+            account_button.setStyleSheet("QPushButton { background: transparent; border: none; color: #338eda; font-size: 11px; font-weight: 600; }")
+            account_button.clicked.connect(self._open_account_page)
+            self.main_layout.addWidget(account_button, alignment=Qt.AlignmentFlag.AlignRight)
+
         if subtitle:
             subtitle_label = QLabel(subtitle)
             subtitle_label.setWordWrap(True)
@@ -81,3 +102,16 @@ class CardPage(QWidget):
                 }}
             """)
             self.main_layout.addWidget(subtitle_label)
+
+    @staticmethod
+    def _account_profile():
+        try:
+            import core
+            return core.get_profile()
+        except Exception:
+            return {}
+
+    def _open_account_page(self):
+        window = self.window()
+        if hasattr(window, "show_onboarding_view"):
+            window.show_onboarding_view()

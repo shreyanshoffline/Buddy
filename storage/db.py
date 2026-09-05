@@ -123,6 +123,10 @@ def init_db():
             has_seen_intro_tip INTEGER DEFAULT 0,
             favorite_apps TEXT,                -- comma-separated, user's own "usual apps"
             quick_links TEXT                   -- comma-separated "Name: URL" pairs
+            ,auth_provider TEXT
+            ,hackclub_verified INTEGER DEFAULT 0
+            ,hackclub_verification_status TEXT
+            ,onboarding_complete INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS artifacts (
@@ -149,6 +153,14 @@ def init_db():
             conn.execute("ALTER TABLE user_profile ADD COLUMN quick_links TEXT")
         if "buddy_user_id" not in cols:
             conn.execute("ALTER TABLE user_profile ADD COLUMN buddy_user_id TEXT")
+        if "auth_provider" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN auth_provider TEXT")
+        if "hackclub_verified" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN hackclub_verified INTEGER DEFAULT 0")
+        if "hackclub_verification_status" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN hackclub_verification_status TEXT")
+        if "onboarding_complete" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN onboarding_complete INTEGER DEFAULT 0")
         # migration: add is_private column for older dbs
         conv_cols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)")]
         if "is_private" not in conv_cols:
@@ -460,12 +472,18 @@ def update_profile(**fields):
         "name", "age", "bio", "email", "theme_color", "dark_mode",
         "subscription_tier", "byo_api_key", "has_seen_intro_tip",
         "favorite_apps", "quick_links", "buddy_user_id",
+        "auth_provider", "hackclub_verified", "hackclub_verification_status",
+        "onboarding_complete",
     }
     fields = {k: v for k, v in fields.items() if k in allowed}
     if "dark_mode" in fields:
         fields["dark_mode"] = 1 if fields["dark_mode"] else 0
     if "has_seen_intro_tip" in fields:
         fields["has_seen_intro_tip"] = 1 if fields["has_seen_intro_tip"] else 0
+    if "hackclub_verified" in fields:
+        fields["hackclub_verified"] = 1 if fields["hackclub_verified"] else 0
+    if "onboarding_complete" in fields:
+        fields["onboarding_complete"] = 1 if fields["onboarding_complete"] else 0
     if not fields:
         return
 

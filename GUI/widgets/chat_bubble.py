@@ -204,7 +204,12 @@ class ChatBubble(QWidget):
         self.bubble_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         self.bubble_layout = QVBoxLayout(self.bubble_container)
         self.bubble_layout.setContentsMargins(14, 10, 14, 10)
-        self.bubble_layout.setSpacing(6)
+        self.bubble_layout.setSpacing(8)
+
+        self.content_layout = QVBoxLayout()
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(8)
+        self.bubble_layout.addLayout(self.content_layout)
 
         if self.is_thinking:
             # Accumulating "thinking" transcript: completed steps stack up as
@@ -231,14 +236,14 @@ class ChatBubble(QWidget):
             current_row.addStretch()
             self.thinking_container.addLayout(current_row)
 
-            self.bubble_layout.addLayout(self.thinking_container)
+            self.content_layout.addLayout(self.thinking_container)
         else:
             self.text_label = QLabel()
             self.text_label.setWordWrap(True)
             self.text_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
             self.text_label.setOpenExternalLinks(True)
             self.text_label.setStyleSheet("background: transparent; border: none;")
-            self.bubble_layout.addWidget(self.text_label)
+            self.content_layout.addWidget(self.text_label)
 
         if self.is_user:
             self.bubble_container.setStyleSheet(f"""
@@ -282,7 +287,7 @@ class ChatBubble(QWidget):
 
             if not self.is_thinking:
                 self.dev_chamber_container = QVBoxLayout()
-                self.bubble_layout.addLayout(self.dev_chamber_container)
+                self.content_layout.addLayout(self.dev_chamber_container)
                 self._build_footer()
 
             self.layout.addWidget(self.bubble_container)
@@ -306,7 +311,7 @@ class ChatBubble(QWidget):
 
     def _build_footer(self):
         self.footer_layout = QHBoxLayout()
-        self.footer_layout.setContentsMargins(0, 4, 0, 0)
+        self.footer_layout.setContentsMargins(0, 8, 0, 0)
 
         btn_style = f"""
             QPushButton {{ background: transparent; border: none; padding: 4px; border-radius: 4px; }}
@@ -504,7 +509,7 @@ class ChatBubble(QWidget):
                     self.image_label = QLabel()
                     self.image_label.setPixmap(pixmap.scaled(320, 320, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                     self.image_label.setStyleSheet("background: transparent; border: none;")
-                    self.bubble_layout.insertWidget(0, self.image_label)
+                    self.content_layout.insertWidget(0, self.image_label)
                     break
 
         doc = QTextDocument()

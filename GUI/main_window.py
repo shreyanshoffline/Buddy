@@ -42,7 +42,7 @@ from .theme import (
     BORDER_COLOR, DANGER_COLOR, DANGER_SOFT_BG, DANGER_BORDER, INPUT_BG, CONTAINER_BG
 )
 from .sidebar import Sidebar
-from .pages import SettingsPage, LibraryPage, BillingPage, ArtifactsPage
+from .pages import SettingsPage, LibraryPage, BillingPage, ArtifactsPage, OnboardingPage
 
 class SendWorker(QThread):
     """Runs send_and_save_message off the main thread so the UI stays responsive."""
@@ -649,10 +649,12 @@ class BuddyWindow(QWidget):
         self.library_page = LibraryPage(close_callback=self.hide, on_chat_selected=self._request_open_chat, on_delete_chat=self._delete_chat_from_library)
         self.billing_page = BillingPage(close_callback=self.hide)
         self.artifacts_page = ArtifactsPage(close_callback=self.hide)
+        self.onboarding_page = OnboardingPage(close_callback=self.hide, on_complete=self.show_chat_view)
         self.content_stack.addWidget(self.settings_page)
         self.content_stack.addWidget(self.library_page)
         self.content_stack.addWidget(self.billing_page)
         self.content_stack.addWidget(self.artifacts_page)
+        self.content_stack.addWidget(self.onboarding_page)
  
         self.sidebar.btn_new.clicked.connect(self.show_chat_view)
         self.sidebar.btn_lib.clicked.connect(self.show_library_view)
@@ -661,6 +663,8 @@ class BuddyWindow(QWidget):
         self.sidebar.btn_settings.clicked.connect(self.show_settings_view)
  
         self.show_chat_view()
+        if not core.get_profile().get("onboarding_complete"):
+            self.show_onboarding_view()
         window_layout.addWidget(self.container)
  
     def _update_attachment_controls(self):
@@ -792,6 +796,10 @@ class BuddyWindow(QWidget):
         self.artifacts_page.refresh_artifacts()
         self.content_stack.setCurrentWidget(self.artifacts_page)
         self._set_active_nav(self.sidebar.btn_artifacts)
+
+    def show_onboarding_view(self):
+        self.content_stack.setCurrentWidget(self.onboarding_page)
+        self._set_active_nav(None)
  
     def _set_active_nav(self, active_btn):
         for btn in (self.sidebar.btn_new, self.sidebar.btn_lib, self.sidebar.btn_artifacts, self.sidebar.btn_billing, self.sidebar.btn_settings):

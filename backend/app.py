@@ -15,8 +15,14 @@ later if you outgrow it — nothing else needs to change.
 import os
 import sqlite3
 import time
+import secrets
+from urllib.parse import urlencode
 import stripe
+import requests
 from flask import Flask, request, jsonify, redirect
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 
@@ -36,6 +42,13 @@ PRICE_TO_TIER = {
 }
 
 DB_PATH = os.environ.get("BILLING_DB_PATH", "billing.db")
+HACKCLUB_CLIENT_ID = os.environ.get("HACKCLUB_CLIENT_ID", "")
+HACKCLUB_CLIENT_SECRET = os.environ.get("HACKCLUB_CLIENT_SECRET", "")
+HACKCLUB_REDIRECT_URI = os.environ.get(
+    "HACKCLUB_REDIRECT_URI", "http://localhost:5000/auth/hackclub/callback"
+)
+_oauth_states = set()
+_oauth_state_users = {}
 
 
 def _connect():
@@ -64,6 +77,87 @@ init_db()
 @app.route("/health")
 def health():
     return jsonify({"ok": True})
+
+
+@app.route("/auth/hackclub/start")
+def hackclub_start():
+    """Start Hack Club OAuth using a registered local development callback."""
+    if not HACKCLUB_CLIENT_ID:
+        return "Set HACKCLUB_CLIENT_ID on the backend first.", 503
+    state = secrets.token_urlsafe(32)
+    buddy_user_id = request.args.get("buddy_user_id", "")
+    _oauth_states.add(state)
+    params = urlencode({
+        "client_id": HACKCLUB_CLIENT_ID,
+        "redirect_uri": HACKCLUB_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid email name profile verification_status slack_id",
+        "state": state,
+    })
+    _oauth_state_users[state] = buddy_user_id
+    return redirect(f"https://auth.hackclub.com/oauth/authorize?{params}")
+
+
+@app.route("/auth/hackclub/callback")
+def hackclub_callback():
+    """Receive OAuth's code and show the verified Hack Club account status."""
+    error = request.args.get("error")
+    if error:
+        return f"Hack Club sign-in was cancelled: {error}", 400
+
+    state = request.args.get("state", "")
+    if not state or state not in _oauth_states:
+        return "Invalid or expired Hack Club sign-in request.", 400
+    _oauth_states.remove(state)
+    buddy_user_id = _oauth_state_users.pop(state, "")
+
+    code = request.args.get("code")
+    if not code or not HACKCLUB_CLIENT_SECRET:
+        return "Set HACKCLUB_CLIENT_SECRET on the backend first.", 503
+
+    token_response = requests.post(
+        "https://auth.hackclub.com/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": HACKCLUB_REDIRECT_URI,
+            "client_id": HACKCLUB_CLIENT_ID,
+            "client_secret": HACKCLUB_CLIENT_SECRET,
+        },
+        timeout=10,
+    )
+    token_response.raise_for_status()
+    access_token = token_response.json().get("access_token")
+    if not access_token:
+        return "Hack Club did not return an access token.", 502
+
+    user_response = requests.get(
+        "https://auth.hackclub.com/api/v1/me",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=10,
+    )
+    user_response.raise_for_status()
+    profile = user_response.json()
+    verification = profile.get("verification_status", "unknown")
+    if buddy_user_id:
+        try:
+            from storage import db as local_db
+            local_db.init_db()
+            local_db.update_profile(
+                email=profile.get("email"),
+                name=profile.get("name") or profile.get("nickname"),
+                auth_provider="hackclub",
+                hackclub_verified=verification.lower() in ("verified", "active", "approved"),
+                hackclub_verification_status=verification,
+            )
+        except Exception:
+            # OAuth succeeds even if a separately deployed backend cannot see
+            # the desktop app's local database.
+            pass
+    return (
+        "Hack Club sign-in complete. Verification status: "
+        f"{verification}. You can close this tab and return to Buddy."
+    ), 200
 
 
 @app.route("/create-checkout-session", methods=["POST"])

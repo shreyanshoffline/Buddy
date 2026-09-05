@@ -107,8 +107,8 @@ class Sidebar(QFrame):
         # Main Navigation Buttons
         self.btn_new = NavButton("New chat", ICONS["plus"])
         self.btn_lib = NavButton("Library", ICONS["library"])
-        self.btn_artifacts = NavButton("Artifacts", ICONS["library"])
-        self.btn_billing = NavButton("Billing", ICONS["settings"])
+        self.btn_artifacts = NavButton("Artifacts", ICONS["artifacts"])
+        self.btn_billing = NavButton("Pricing", ICONS["pricing"])
         self.btn_settings = NavButton("Settings", ICONS["settings"])
         
         # Recent Chats Section Header
