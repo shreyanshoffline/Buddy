@@ -2,7 +2,10 @@
 import sys
 from PySide6.QtWidgets import QApplication
 
-from gui import BuddyWindow
+try:
+    from gui.main_window import BuddyWindow
+except ImportError:
+    from gui import BuddyWindow
 
 
 def main():

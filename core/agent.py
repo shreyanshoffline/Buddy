@@ -14,14 +14,16 @@ from core.instruction import build_action_instruction
 from models import run_manager_step, run_action_step, BuddyCancelled, extract_image_urls, message_text
 from storage import db
 
+GREETER_MODEL = "google/gemini-2.5-flash-lite"
 MANAGER_MODEL = "google/gemini-3.5-flash-lite"
 DEFAULT_WORKER_MODEL = "google/gemini-3.5-flash-lite"
+DEEP_CHAT_MODEL = "google/gemini-3.5-flash-lite"
  
 WORKER_MODELS = {
     "simple_task": "google/gemini-3.5-flash-lite",
     "moderate_task": "google/gemini-3.5-flash-lite",
     "heavy_task": "google/gemini-3.8-flash",
-    "vision_task": "google/gemini-3.8-flash",
+    "vision_task": "google/gemini-3.5-flash-lite",
     "creation_task": "google/gemini-3.1-flash-lite-image"
 }
  
@@ -75,6 +77,63 @@ def generate_conversation_title(user_input: str) -> str:
         return db.auto_title_from_first_message(user_input)
  
  
+GREETER_INSTRUCTION = """You are Buddy's first-pass model. Be a helpful friend.
+Decide one of these formats and output NOTHING else:
+
+SAY:
+<your full reply to the user>
+
+HAND_OFF: chat
+<one short sentence the user should see first>
+
+HAND_OFF: action
+<one short sentence the user should see first, starting the work>
+
+Use SAY for greetings, jokes, short facts, and simple chat you can finish yourself.
+Use HAND_OFF: chat when the topic is bigger: homework, long explanations, coding help, advice, planning in words only.
+Use HAND_OFF: action when the user wants the computer to do something: open apps, files, email, messages, browser, system settings, running commands.
+Always include that first user-facing sentence on HAND_OFF so they hear from you before any work starts.
+"""
+
+
+_TASK_HINTS = (
+    "open ", "close ", "quit ", "launch ", "screenshot", "email", "gmail",
+    "imessage", "i message", "text ", "remind", "calendar", "create ",
+    "delete ", "move ", "copy ", "play ", "pause ", "volume", "click ",
+    "type ", "search ", "find ", "download ", "install ", "run ", "kill ",
+    "lock ", "sleep ", "note ", "draft ", "folder", "file ", "chrome",
+    "safari", "spotify", "workspace",
+)
+
+
+def looks_like_task(user_input):
+    text = (user_input or "").lower()
+    return any(hint in text for hint in _TASK_HINTS)
+
+
+def route_first_pass(user_input, cancel_check=None):
+    """Cheap model decides: answer now, deeper chat, or action pipeline."""
+    if looks_like_task(user_input):
+        return "action", "On it.", None
+    history = [
+        {"role": "system", "content": GREETER_INSTRUCTION},
+        {"role": "user", "content": user_input},
+    ]
+    response = run_manager_step(GREETER_MODEL, history, 350, cancel_check=cancel_check)
+    raw = message_text(response.choices[0].message).strip()
+    usage = getattr(response, "usage", None)
+    upper = raw
+    if upper.startswith("HAND_OFF: action") or "\nHAND_OFF: action" in upper:
+        preview = raw.split("action", 1)[-1].strip().lstrip(":").strip()
+        return "action", preview or "I'll take care of that.", usage
+    if upper.startswith("HAND_OFF: chat") or "\nHAND_OFF: chat" in upper:
+        preview = raw.split("chat", 1)[-1].strip().lstrip(":").strip()
+        return "chat", preview or "Let me think that through.", usage
+    if raw.startswith("SAY:"):
+        return "say", raw.split("SAY:", 1)[1].strip(), usage
+    return "say", raw, usage
+
+
 def get_manager_output(message_history, cancel_check=None, model=MANAGER_MODEL):
     plan_response = run_manager_step(model, message_history, MANAGER_MAX_TOKENS, cancel_check=cancel_check)
     manager_message = plan_response.choices[0].message
@@ -247,6 +306,11 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
     conversation_id or the database — that's send_and_save_message's job.
     If incognito=True, never reads or writes long-term memory / db."""
     start_time = time.time()
+    try:
+        from core.conversations import refresh_history_profile
+        refresh_history_profile(message_history)
+    except Exception:
+        pass
 
     metrics = {
         "tokens_in": 0,
@@ -288,6 +352,46 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         # --- end retrieval ---
 
     deadline = start_time + OVERALL_TIMEOUT_SECONDS
+
+    if not image_attachments:
+        try:
+            if on_event:
+                on_event({"type": "thinking"})
+            route_kind, first_text, greet_usage = route_first_pass(user_input, cancel_check=cancel_check)
+            metrics["requests"] += 1
+            if greet_usage:
+                metrics["tokens_in"] += getattr(greet_usage, "prompt_tokens", 0)
+                metrics["tokens_out"] += getattr(greet_usage, "completion_tokens", 0)
+            if route_kind == "say":
+                message_history.append({"role": "assistant", "content": first_text})
+                return format_response(first_text, metrics, start_time)
+            if on_event and first_text:
+                on_event({"type": "status", "text": first_text})
+            if first_text and route_kind == "action":
+                if on_event:
+                    on_event({"type": "status", "text": first_text})
+            if route_kind == "chat":
+                deep_history = list(message_history) + [
+                    {"role": "system", "content": "Give a complete, careful reply. No tools. No PLAN tags."}
+                ]
+                deep_out, deep_usage = get_manager_output(deep_history, cancel_check=cancel_check, model=DEEP_CHAT_MODEL)
+                metrics["requests"] += 1
+                if deep_usage:
+                    metrics["tokens_in"] += getattr(deep_usage, "prompt_tokens", 0)
+                    metrics["tokens_out"] += getattr(deep_usage, "completion_tokens", 0)
+                reply = deep_out
+                if reply.startswith("Response:"):
+                    reply = reply.split("Response:", 1)[1].strip()
+                if first_text and first_text not in reply:
+                    reply = f"{first_text}\n\n{reply}"
+                message_history.append({"role": "assistant", "content": reply})
+                return format_response(reply, metrics, start_time)
+        except BuddyCancelled:
+            reply = "Cancelled."
+            message_history.append({"role": "assistant", "content": reply})
+            return format_response(reply, metrics, start_time)
+        except Exception:
+            pass
 
     attempt = 0
     while attempt <= MAX_PLAN_RETRIES:

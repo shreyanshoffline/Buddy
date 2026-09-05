@@ -162,6 +162,18 @@ def new_message_history():
     return [{"role": "system", "content": build_manager_instruction(db.get_profile())}]
 
 
+def refresh_history_profile(message_history):
+    """Replace the system prompt so a Settings name/apps change applies now."""
+    prompt = build_manager_instruction(db.get_profile())
+    if not message_history:
+        return [{"role": "system", "content": prompt}]
+    if message_history[0].get("role") == "system":
+        message_history[0]["content"] = prompt
+    else:
+        message_history.insert(0, {"role": "system", "content": prompt})
+    return message_history
+
+
 def get_profile():
     return db.get_profile()
 

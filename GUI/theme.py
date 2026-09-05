@@ -184,7 +184,7 @@ CURRENT_DARK_MODE = _dark_mode
 _T = get_theme(_accent_key, _dark_mode)
 
 # --- Typography (same scale regardless of color theme) ---
-FONT_FAMILY = ".AppleSystemUIFont"
+FONT_FAMILY = "Segoe UI"
 FONT_FAMILY_FALLBACK = "Helvetica Neue"
 
 WINDOW_TITLE_TEXT = "Buddy v1.0.0"
@@ -273,10 +273,10 @@ CHAT_BUBBLE_AGENT_TEXT = _T["chat_bubble_agent_text"]
 GREETING_COLOR = _T["text_primary"]
 
 # --- Window sizing ---
-WINDOW_MIN_WIDTH = 420
-WINDOW_MIN_HEIGHT = 560
-WINDOW_DEFAULT_WIDTH = 560
-WINDOW_DEFAULT_HEIGHT = 720
+WINDOW_MIN_WIDTH = 380
+WINDOW_MIN_HEIGHT = 520
+WINDOW_DEFAULT_WIDTH = 420
+WINDOW_DEFAULT_HEIGHT = 640
 
 # --- Control sizing ---
 SEND_BUTTON_SIZE = 36

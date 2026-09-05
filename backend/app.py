@@ -23,6 +23,10 @@ import requests
 from flask import Flask, request, jsonify, redirect
 from dotenv import load_dotenv
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.abspath(os.path.join(_HERE, ".."))
+load_dotenv(os.path.join(_ROOT, ".env"))
+load_dotenv(os.path.join(_HERE, ".env"))
 load_dotenv()
 
 app = Flask(__name__)
@@ -42,7 +46,7 @@ PRICE_TO_TIER = {
     if price_id
 }
 
-DB_PATH = os.environ.get("BILLING_DB_PATH", "billing.db")
+DB_PATH = os.environ.get("BILLING_DB_PATH") or os.path.join(_ROOT, "billing.db")
 HACKCLUB_CLIENT_ID = os.environ.get("HACKCLUB_CLIENT_ID", "")
 HACKCLUB_CLIENT_SECRET = os.environ.get("HACKCLUB_CLIENT_SECRET", "")
 HACKCLUB_REDIRECT_URI = os.environ.get(
@@ -116,7 +120,12 @@ init_db()
 
 @app.route("/health")
 def health():
-    return jsonify({"ok": True})
+    return jsonify({
+        "ok": True,
+        "hackclub_client_id_set": bool(HACKCLUB_CLIENT_ID),
+        "hackclub_secret_set": bool(HACKCLUB_CLIENT_SECRET),
+        "redirect_uri": HACKCLUB_REDIRECT_URI,
+    })
 
 
 @app.route("/")
@@ -213,8 +222,8 @@ def _exchange_hackclub_code(code):
     }
     last_error = None
     for kwargs in (
-        {"json": payload},
-        {"data": payload},
+        {"json": payload, "headers": {"Accept": "application/json"}},
+        {"data": payload, "headers": {"Accept": "application/json"}},
     ):
         try:
             response = requests.post("https://auth.hackclub.com/oauth/token", timeout=15, **kwargs)
@@ -583,4 +592,4 @@ def _set_tier_by_customer(customer_id, tier):
 
 
 if __name__ == "__main__":
-    app.run(port=int(os.environ.get("PORT", 5000)))
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", 5000)), debug=False)

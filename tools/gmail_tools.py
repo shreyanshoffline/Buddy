@@ -3,10 +3,16 @@ import re
 import base64
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
+
+try:
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+    HAS_GMAIL = True
+except ImportError:
+    HAS_GMAIL = False
+    Request = Credentials = InstalledAppFlow = build = None
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -17,6 +23,10 @@ CREDS_PATH = os.path.expanduser("~/Buddy/credentials.json")
 
 
 def _get_service():
+    if not HAS_GMAIL:
+        raise RuntimeError(
+            "Gmail libraries are not installed. Run: pip install google-api-python-client google-auth-oauthlib"
+        )
     creds = None
     if os.path.exists(TOKEN_PATH):
         creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)

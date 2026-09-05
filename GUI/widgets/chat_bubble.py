@@ -197,7 +197,8 @@ class ChatBubble(QWidget):
         self.current_idx = 0
 
         self.layout = QHBoxLayout(self)
-        self.layout.setContentsMargins(8, 4, 8, 4)
+        self.layout.setContentsMargins(4, 2, 4, 2)
+        self.layout.setSpacing(0)
         self.layout.setAlignment(Qt.AlignTop)
 
         self.bubble_container = QFrame()
@@ -259,8 +260,11 @@ class ChatBubble(QWidget):
                 }}
                 QLabel a {{ color: {CHAT_BUBBLE_USER_TEXT}; text-decoration: underline; }}
             """)
-            self.layout.addStretch()
-            self.layout.addWidget(self.bubble_container)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addStretch()
+            row.addWidget(self.bubble_container, 0)
+            self.layout.addLayout(row)
         else:
             self.bubble_container.setStyleSheet(f"""
                 QFrame {{
@@ -290,8 +294,11 @@ class ChatBubble(QWidget):
                 self.content_layout.addLayout(self.dev_chamber_container)
                 self._build_footer()
 
-            self.layout.addWidget(self.bubble_container)
-            self.layout.addStretch()
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(self.bubble_container, 0)
+            row.addStretch()
+            self.layout.addLayout(row)
 
         if not self.is_thinking:
             self._render_current_version()
@@ -302,12 +309,15 @@ class ChatBubble(QWidget):
 
     def _update_responsive_width(self):
         """Ensures bubble stretches up to slightly less than halfway (~46%) when window expands."""
-        parent_w = self.width()
+        parent = self.parentWidget()
+        parent_w = parent.width() if parent else self.width()
         if parent_w > 0:
-            # Sizing constraint: Max width is ~46% of window width so each side gets roughly half
-            calc_max = int(parent_w * 0.46)
-            target_max = max(240, calc_max)
+            target_max = max(220, min(int(parent_w * 0.82), parent_w - 24))
             self.bubble_container.setMaximumWidth(target_max)
+            self.bubble_container.setMinimumWidth(0)
+            if hasattr(self, "text_label"):
+                self.text_label.setMaximumWidth(max(180, target_max - 28))
+                self.text_label.setWordWrap(True)
 
     def _build_footer(self):
         self.footer_layout = QHBoxLayout()

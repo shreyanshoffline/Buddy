@@ -174,7 +174,7 @@ class BuddyWindow(QWidget):
         super().resizeEvent(event)
  
         base_width = 500.0
-        scale = max(0.85, min(self.width() / base_width, 1.2))
+        scale = max(0.85, min(self.width() / base_width, 2.2))
  
         title_size = max(14, int(WINDOW_TITLE_SIZE * scale))
         self.title_label.setStyleSheet(f"""
@@ -188,9 +188,8 @@ class BuddyWindow(QWidget):
         """)
  
         greeting_size = max(18, int(GREETING_FONT_SIZE * scale))
-        system_font = QFont(".AppleSystemUIFont", greeting_size, QFont.Medium)
+        system_font = QFont("Segoe UI", greeting_size, QFont.Medium)
         if not system_font.exactMatch():
-            print("Backup font used")
             system_font = QFont("Helvetica Neue", greeting_size, QFont.Medium)
         self.greeting.setFont(system_font)
         self.greeting.setAlignment(Qt.AlignCenter)
@@ -433,7 +432,7 @@ class BuddyWindow(QWidget):
         self.greeting.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         self.greeting.setMinimumHeight(60)
         self.greeting.setStyleSheet(f"color: {GREETING_COLOR}; background: transparent; border: none;")
-        self.greeting.setFont(QFont(".AppleSystemUIFont", GREETING_FONT_SIZE, QFont.Medium))
+        self.greeting.setFont(QFont("Helvetica Neue", GREETING_FONT_SIZE, QFont.Medium))
  
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -470,7 +469,7 @@ class BuddyWindow(QWidget):
         self.chat_container.setStyleSheet("background: transparent; border: none;")
         self.chat_layout = QVBoxLayout(self.chat_container)
         self.chat_layout.setContentsMargins(0, 0, 0, 12)
-        self.chat_layout.setSpacing(8)
+        self.chat_layout.setSpacing(6)
         self.chat_layout.setAlignment(Qt.AlignTop)
         self.chat_layout.addStretch()
         self.scroll_area.setWidget(self.chat_container)
@@ -779,7 +778,28 @@ class BuddyWindow(QWidget):
         self.content_stack.setCurrentWidget(self.chat_page)
         self._set_active_nav(self.sidebar.btn_new)
  
+    def apply_profile_changes(self):
+        """Settings just changed. Refresh greeting, login chip, and chat prompt."""
+        if hasattr(self, "greeting") and self.greeting.isVisible():
+            self.greeting.setText(self._random_greeting())
+        if hasattr(self, "message_history"):
+            try:
+                core.refresh_history_profile(self.message_history)
+            except Exception:
+                self.message_history = core.new_message_history()
+        for page in (
+            getattr(self, "settings_page", None),
+            getattr(self, "library_page", None),
+            getattr(self, "billing_page", None),
+            getattr(self, "artifacts_page", None),
+            getattr(self, "onboarding_page", None),
+        ):
+            if page is not None and hasattr(page, "refresh_account_header"):
+                page.refresh_account_header()
+
     def show_settings_view(self):
+        if hasattr(self.settings_page, "reload_from_db"):
+            self.settings_page.reload_from_db()
         self.content_stack.setCurrentWidget(self.settings_page)
         self._set_active_nav(self.sidebar.btn_settings)
  

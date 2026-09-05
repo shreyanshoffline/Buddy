@@ -31,6 +31,12 @@ from core.conversations import (
     delete_artifact,
 )
 
+try:
+    from core.conversations import refresh_history_profile
+except Exception:
+    def refresh_history_profile(message_history):
+        return message_history
+
 get_or_create_buddy_user_id = _db.get_or_create_buddy_user_id
 
 __all__ = [

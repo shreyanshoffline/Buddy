@@ -46,7 +46,7 @@ class OnboardingPage(CardPage):
         layout = QVBoxLayout(page)
         layout.setSpacing(10)
         heading = QLabel(title)
-        heading.setStyleSheet(f"color: {CARD_TEXT_COLOR}; font-size: 20px; font-weight: 700; background: transparent; border: none;")
+        heading.setStyleSheet(f"color: {CARD_TEXT_COLOR}; font-size: 16px; font-weight: 700; background: transparent; border: none;")
         layout.addWidget(heading)
         layout.addWidget(self._label(note))
         return page, layout
@@ -75,11 +75,13 @@ class OnboardingPage(CardPage):
         page, layout = self._step("About you", "Optional. This helps Buddy tailor replies to you.")
         self.name = self._field(self.profile.get("name"), "Your name")
         self.age = self._field(self.profile.get("age"), "Age")
-        self.pin = self._field("", "4-digit privacy PIN (optional)")
+        layout.addWidget(self._label("Name is what Buddy calls you. Age is optional."))
+        self.pin = self._field("", "Private-chat PIN, 4 digits — not your birth year")
         self.pin.setMaxLength(4)
         layout.addWidget(self.name)
         layout.addWidget(self.age)
         layout.addWidget(self.pin)
+        layout.addWidget(self._label("PIN is only if you want locked chats. Leave it blank if you are not sure."))
         self.pages.addWidget(page)
 
         page, layout = self._step("Your interests", "Optional. Add a little context so Buddy can make better suggestions.")
@@ -203,9 +205,27 @@ class OnboardingPage(CardPage):
             self.pages.setCurrentIndex(self.pages.currentIndex() + 1)
 
     def _finish(self):
-        if not self._save_current() and self.pages.currentIndex() == 0:
+        email = self.email.text().strip()
+        age = self.age.text().strip()
+        pin = self.pin.text().strip()
+        if pin and (len(pin) != 4 or not pin.isdigit()):
+            QMessageBox.warning(self, "PIN", "Leave the PIN blank, or use exactly 4 digits. It is not your birth year.")
+            self.pages.setCurrentIndex(1)
             return
-        core.update_profile(onboarding_complete=True)
+        core.update_profile(
+            email=email or None,
+            name=self.name.text().strip() or None,
+            age=int(age) if age.isdigit() else None,
+            auth_provider=self.profile.get("auth_provider") or ("email" if email else "local"),
+            bio=self.bio.toPlainText().strip(),
+            favorite_apps=self.favorite_apps.text().strip(),
+            quick_links=self.quick_links.text().strip(),
+            theme_color=THEME_OPTIONS[self.color.currentIndex()][0],
+            dark_mode=self.dark.currentIndex() == 1,
+            onboarding_complete=True,
+        )
+        if pin:
+            core.set_privacy_pin(pin)
         if self.on_complete:
             self.on_complete()
 

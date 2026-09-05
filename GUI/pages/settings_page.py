@@ -112,6 +112,35 @@ class SettingsPage(CardPage):
         self._build_danger_card()
         self.main_layout.addStretch()
 
+    def _broadcast_profile(self):
+        window = self.window()
+        if hasattr(window, "apply_profile_changes"):
+            window.apply_profile_changes()
+
+    def reload_from_db(self):
+        """Settings is built once at startup. Call this before showing the
+        page so values saved in onboarding actually appear."""
+        self.profile = core.get_profile()
+        mapping = {
+            "name": "name",
+            "age": "age",
+            "email": "email",
+            "bio": "bio",
+            "favorite_apps": "favorite_apps",
+            "quick_links": "quick_links",
+            "byo_api_key": "byo_api_key",
+        }
+        for key, profile_key in mapping.items():
+            widget = self.inputs.get(key)
+            if widget is None:
+                continue
+            value = self.profile.get(profile_key)
+            text = "" if value is None else str(value)
+            if hasattr(widget, "setPlainText"):
+                widget.setPlainText(text)
+            else:
+                widget.setText(text)
+
     # --- shared helpers -----------------------------------------------
     def _make_card(self, title):
         card = QFrame()
@@ -223,6 +252,7 @@ class SettingsPage(CardPage):
             core.update_profile(**{key: value})
             self.profile[key] = value
             self._flash_saved(label_widget)
+            self._broadcast_profile()
 
     def on_box_clicked(self, event, line_edit):
         if line_edit.property("requires_hackclub") and not self.profile.get("hackclub_verified"):
@@ -250,6 +280,7 @@ class SettingsPage(CardPage):
             if updated_value != existing_str:
                 core.update_profile(**{settings_key: updated_value})
                 self.profile[settings_key] = updated_value
+                self._broadcast_profile()
                 if settings_key == "byo_api_key":
                     self._start_api_key_validation(updated_value)
                 elif label_widget:
