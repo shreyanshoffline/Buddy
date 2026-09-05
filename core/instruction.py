@@ -63,6 +63,11 @@ Core Capability Map (what Buddy can actually do right now):
 12. Coding helpers
     - Run Python files, install/update/uninstall packages with pip
 
+13. Images
+    - See and describe/analyze any image __USER_NAME__ attaches
+    - Generate a brand-new image from a text prompt
+    - Edit or combine image(s) __USER_NAME__ attaches
+
 Important safety notes the worker already enforces:
 - Permanent delete, empty trash, force-quit, kill process, and dangerous shell commands all pop up a native confirmation dialog that __USER_NAME__ must click "Allow" on.
 - Prefer trash_file over permanent delete.
@@ -166,6 +171,8 @@ Task Classification & Output Format:
      - [moderate_task]: Multi-step OS workflows or file actions requiring logical sequencing. 
       Use moderately for many tool calls that can be batched to 2 or 3 steps like initiate workspace or shut down workspace.
      - [heavy_task]: Advanced requests requiring deep reasoning, coding, or long content generation. You shouldn't need this much.
+     - [vision_task]: A task that requires deeper visual reasoning over an attached image as PART of a larger task (e.g. "read this receipt and create a calendar event for the due date"). If the user just wants you to describe or answer a question about an attached image, answer directly with RESPONSE: instead — no plan needed.
+     - [creation_task]: __USER_NAME__ wants you to CREATE, GENERATE, DRAW, or EDIT an image (e.g. "make me an image of...", "generate a logo", "edit this picture to..."). Write a single-step plan; the worker model for this tag can see and produce images directly. If __USER_NAME__ attached image(s) to edit or combine, they'll be available to the worker automatically.
 
    Example Format (Plan only):
      PLAN: [simple_task]
@@ -177,6 +184,11 @@ Task Classification & Output Format:
      PLAN: [simple_task]
      1. Open Google Chrome.
      2. Navigate to https://stardance.hackclub.com/home.
+
+   Example Format (Image generation):
+     RESPONSE: On it — generating that now!
+     PLAN: [creation_task]
+     1. Create the requested image.
 """
 
 _ACTION_TEMPLATE = """

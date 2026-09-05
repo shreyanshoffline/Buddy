@@ -79,6 +79,31 @@ def health():
     return jsonify({"ok": True})
 
 
+@app.route("/")
+def home():
+    """Small local page so opening localhost:5000 is useful during setup."""
+    sign_in_url = "/auth/hackclub/start"
+    client_status = "configured" if HACKCLUB_CLIENT_ID else "not configured"
+    return f"""<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buddy account setup</title>
+<style>
+body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #eef6fc; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+main {{ width: min(440px, calc(100% - 40px)); padding: 32px; box-sizing: border-box; background: white; border: 1px solid #d7e2ec; border-radius: 16px; box-shadow: 0 12px 32px rgba(31, 41, 55, .10); }}
+h1 {{ margin: 0 0 8px; font-size: 26px; }} p {{ line-height: 1.5; color: #5f6b7a; }}
+a.button {{ display: inline-block; margin-top: 12px; padding: 11px 16px; border-radius: 9px; background: #338eda; color: white; text-decoration: none; font-weight: 700; }}
+code {{ overflow-wrap: anywhere; }}
+</style></head>
+<body><main>
+<h1>Buddy account setup</h1>
+<p>This local server handles Hack Club sign-in for Buddy.</p>
+<a class="button" href="{sign_in_url}">Sign in with Hack Club</a>
+<p>OAuth client: <strong>{client_status}</strong></p>
+<p>Callback URL:<br><code>{HACKCLUB_REDIRECT_URI}</code></p>
+</main></body></html>""", 200
+
+
 @app.route("/auth/hackclub/start")
 def hackclub_start():
     """Start Hack Club OAuth using a registered local development callback."""
@@ -91,7 +116,7 @@ def hackclub_start():
         "client_id": HACKCLUB_CLIENT_ID,
         "redirect_uri": HACKCLUB_REDIRECT_URI,
         "response_type": "code",
-        "scope": "openid email name profile verification_status slack_id",
+        "scope": "openid email name profile verification_status",
         "state": state,
     })
     _oauth_state_users[state] = buddy_user_id
@@ -106,10 +131,11 @@ def hackclub_callback():
         return f"Hack Club sign-in was cancelled: {error}", 400
 
     state = request.args.get("state", "")
-    if not state or state not in _oauth_states:
-        return "Invalid or expired Hack Club sign-in request.", 400
-    _oauth_states.remove(state)
-    buddy_user_id = _oauth_state_users.pop(state, "")
+    if state:
+        if state not in _oauth_states:
+            return "Invalid or expired Hack Club sign-in request.", 400
+        _oauth_states.remove(state)
+    buddy_user_id = _oauth_state_users.pop(state, "") if state else ""
 
     code = request.args.get("code")
     if not code or not HACKCLUB_CLIENT_SECRET:
@@ -138,22 +164,26 @@ def hackclub_callback():
     )
     user_response.raise_for_status()
     profile = user_response.json()
-    verification = profile.get("verification_status", "unknown")
-    if buddy_user_id:
-        try:
-            from storage import db as local_db
-            local_db.init_db()
-            local_db.update_profile(
-                email=profile.get("email"),
-                name=profile.get("name") or profile.get("nickname"),
-                auth_provider="hackclub",
-                hackclub_verified=verification.lower() in ("verified", "active", "approved"),
-                hackclub_verification_status=verification,
-            )
-        except Exception:
-            # OAuth succeeds even if a separately deployed backend cannot see
-            # the desktop app's local database.
-            pass
+    verification = profile.get("verification_status") or "unknown"
+    is_verified = (
+        str(verification).lower() in ("verified", "active", "approved")
+        or bool(profile.get("email_verified"))
+        or bool(profile.get("ysws_eligible"))
+    )
+    try:
+        from storage import db as local_db
+        local_db.init_db()
+        local_db.update_profile(
+            email=profile.get("email"),
+            name=profile.get("name") or profile.get("nickname"),
+            auth_provider="hackclub",
+            hackclub_verified=is_verified,
+            hackclub_verification_status=str(verification),
+        )
+    except Exception as error:
+        # OAuth succeeds even if a separately deployed backend cannot see
+        # the desktop app's local database.
+        app.logger.warning("Could not update local Buddy profile after OAuth: %s", error)
     return (
         "Hack Club sign-in complete. Verification status: "
         f"{verification}. You can close this tab and return to Buddy."

@@ -2,9 +2,9 @@
 from PySide6.QtWidgets import (
     QLabel, QVBoxLayout, QHBoxLayout, QFrame, QPushButton,
     QMessageBox, QStackedWidget, QWidget, QTableWidget, QTableWidgetItem,
-    QSizePolicy
+    QSizePolicy, QLineEdit
 )
-from PySide6.QtCore import Qt, QThread, Signal, QUrl, QUrlQuery
+from PySide6.QtCore import Qt, QThread, Signal, QUrl, QUrlQuery, QTimer
 from PySide6.QtGui import QDesktopServices
 
 import core
@@ -16,7 +16,7 @@ from ..theme import (
     ACTIVE_BG_COLOR, TEXT_COLOR_DARK,
 )
 
-TIER_LABELS = {"free": "Free Plan", "pro": "Buddy Pro", "max": "Buddy MAX"}
+TIER_LABELS = {"free": "Free Plan", "hacky": "Hacky Buddy Plan", "pro": "Buddy Pro", "max": "Buddy MAX"}
 
 
 class _StatusWorker(QThread):
@@ -38,6 +38,7 @@ class BillingPage(CardPage):
         super().__init__("Pricing", "Choose the Buddy plan that matches your workflow.", parent, close_callback)
         self.buddy_user_id = core.get_or_create_buddy_user_id()
         self._worker = None
+        self._auth_timer = None
         self.selected_plan = (core.get_profile().get("subscription_tier") or "free").lower()
 
         self.stack = QStackedWidget()
@@ -49,9 +50,16 @@ class BillingPage(CardPage):
         self.stack.addWidget(self.overview_page)
 
         self.plan_pages = {}
+        self.hacky_signin_button = None
+        self.hacky_api_field = None
+        self.hacky_api_save_button = None
         self._build_status_card()
         self._build_plan_grid()
         self._build_plan_detail_pages()
+        self._auth_timer = QTimer(self)
+        self._auth_timer.setInterval(1000)
+        self._auth_timer.timeout.connect(self._refresh_hacky_auth)
+        self._auth_timer.start()
         self.main_layout.addStretch()
         self.refresh_status()
 
@@ -170,12 +178,18 @@ class BillingPage(CardPage):
         self._worker.start()
 
     def _on_status_loaded(self, tier):
+        profile = core.get_profile()
+        local_hacky = bool(profile.get("hackclub_verified") and profile.get("byo_api_key"))
+        if local_hacky and (tier or "free").lower() == "free":
+            tier = "hacky"
         core.update_profile(subscription_tier=tier)
         self.selected_plan = (tier or "free").lower()
         self.status_label.setText(TIER_LABELS.get(self.selected_plan, "Free Plan"))
+        if hasattr(self, "plan_grid_layout"):
+            self._rebuild_plan_grid()
 
     def _build_plan_grid(self):
-        plans = [
+        self._plans = [
             {"key": "free", "title": "Free Plan", "price": "Free", "price_key": None,
              "subtitle": "Everyday AI access with daily resets",
              "details": "Access to good AI models but degrades down to free tier ones after usage limit runs out. It resets every day.",
@@ -194,9 +208,25 @@ class BillingPage(CardPage):
              "highlight": True, "badge": "Best Value"},
         ]
 
+        self.plan_grid_container = QWidget()
+        self.plan_grid_layout = QVBoxLayout(self.plan_grid_container)
+        self.plan_grid_layout.setContentsMargins(0, 0, 0, 0)
+        self.plan_grid_layout.setSpacing(12)
+        self.overview_layout.addWidget(self.plan_grid_container)
+        self._rebuild_plan_grid()
+
+    def _rebuild_plan_grid(self):
+        """Fully rebuilds the plan cards so button text/styles (Selected vs
+        Select plan) reflect the current tier — .update() alone only
+        repaints, it doesn't re-run the widget construction logic."""
+        while self.plan_grid_layout.count():
+            item = self.plan_grid_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
         row = QHBoxLayout()
         row.setSpacing(12)
-        for index, plan in enumerate(plans):
+        for index, plan in enumerate(self._plans):
             card = self._build_plan_card(plan)
             row.addWidget(card)
             if index % 2 == 1:
@@ -212,7 +242,7 @@ class BillingPage(CardPage):
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.addLayout(row)
-        self.overview_layout.addWidget(container)
+        self.plan_grid_layout.addWidget(container)
 
     def _build_plan_card(self, plan):
         frame = QFrame()
@@ -248,35 +278,27 @@ class BillingPage(CardPage):
         layout.addWidget(details_label)
         layout.addStretch()
 
-        button_row = QHBoxLayout()
-        button_row.setSpacing(8)
-
-        view_btn = QPushButton("View details")
-        view_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        view_btn.setStyleSheet(f"""
-            QPushButton {{ background: transparent; border: 1px solid {BORDER_COLOR}; color: {TEXT_COLOR_DARK};
-                border-radius: 8px; padding: 8px; font-size: 11px; font-weight: 600; }}
-            QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
-            QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
-        """)
-        view_btn.clicked.connect(lambda _, key=plan["key"]: self._open_plan_detail(key))
-        button_row.addWidget(view_btn)
-
+        action_btn = QPushButton()
+        action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         if plan["price_key"]:
-            subscribe_btn = QPushButton("Subscribe")
-            subscribe_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            subscribe_btn.setStyleSheet(f"""
+            action_btn.setText("Continue")
+            action_btn.setStyleSheet(f"""
                 QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none;
                     border-radius: 8px; padding: 8px; font-size: 11px; font-weight: 600; }}
                 QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
             """)
-            subscribe_btn.clicked.connect(lambda _, k=plan["price_key"], t=plan["title"]: self._subscribe(k, t))
-            button_row.addWidget(subscribe_btn)
+            action_btn.clicked.connect(lambda _, key=plan["key"]: self._open_plan_detail(key))
         else:
-            status_text = "Selected" if self.selected_plan == plan["key"] else "Select plan"
-            action_btn = QPushButton(status_text)
-            action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            if self.selected_plan == plan["key"]:
+            if plan["key"] in ("free", "hacky"):
+                action_btn.setText("Continue")
+                action_btn.setStyleSheet(f"""
+                    QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none;
+                        border-radius: 8px; padding: 8px; font-size: 11px; font-weight: 600; }}
+                    QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
+                """)
+                action_btn.clicked.connect(lambda _, key=plan["key"]: self._open_plan_detail(key))
+            elif self.selected_plan == plan["key"]:
+                action_btn.setText("Selected")
                 action_btn.setStyleSheet(f"""
                     QPushButton {{ background: {ACTIVE_BG_COLOR}; color: {PRIMARY_COLOR}; border: 1px solid {PRIMARY_COLOR};
                         border-radius: 8px; padding: 8px; font-size: 11px; font-weight: 700; }}
@@ -284,15 +306,14 @@ class BillingPage(CardPage):
                 """)
                 action_btn.clicked.connect(lambda _, key=plan["key"]: self._selected_plan_click(key))
             else:
+                action_btn.setText("Select plan")
                 action_btn.setStyleSheet(f"""
                     QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none;
                         border-radius: 8px; padding: 8px; font-size: 11px; font-weight: 600; }}
                     QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
                 """)
                 action_btn.clicked.connect(lambda _, key=plan["key"]: self._select_plan(key))
-            button_row.addWidget(action_btn)
-
-        layout.addLayout(button_row)
+        layout.addWidget(action_btn)
         return frame
 
     def _plan_frame_style(self, highlighted):
@@ -399,13 +420,31 @@ class BillingPage(CardPage):
 
         action_btn = QPushButton()
         if key == "hacky":
-            action_btn.setText("Sign in with Hack Club")
+            self.hacky_signin_button = action_btn
+            self._update_hacky_button()
             action_btn.setStyleSheet(f"""
                 QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none;
                     border-radius: 10px; padding: 10px 14px; font-size: 12px; font-weight: 700; }}
                 QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
             """)
             action_btn.clicked.connect(self._open_hackclub_signin)
+            self.hacky_api_field = QLineEdit()
+            self.hacky_api_field.setEchoMode(QLineEdit.Password)
+            self.hacky_api_field.setPlaceholderText("Hack Club AI API key")
+            self.hacky_api_field.setStyleSheet(f"QLineEdit {{ background: {SECTION_CARD_BG}; border: 1px solid {BORDER_COLOR}; border-radius: 8px; padding: 9px; color: {TEXT_COLOR_DARK}; }}")
+            self.hacky_api_field.setVisible(bool(core.get_profile().get("hackclub_verified")))
+            page_layout.addWidget(self.hacky_api_field)
+
+            self.hacky_api_save_button = QPushButton("Save API key")
+            self.hacky_api_save_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.hacky_api_save_button.setStyleSheet(f"""
+                QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none;
+                    border-radius: 8px; padding: 9px; font-size: 11px; font-weight: 700; }}
+                QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
+            """)
+            self.hacky_api_save_button.clicked.connect(self._save_hacky_api_key)
+            self.hacky_api_save_button.setVisible(bool(core.get_profile().get("hackclub_verified")))
+            page_layout.addWidget(self.hacky_api_save_button)
         else:
             is_selected = self.selected_plan == key
             action_btn.setText("Selected" if is_selected else "Select plan")
@@ -428,11 +467,45 @@ class BillingPage(CardPage):
         return page
 
     def _open_hackclub_signin(self):
-        url = QUrl("http://localhost:5000/auth/hackclub/start")
-        query = QUrlQuery()
-        query.addQueryItem("buddy_user_id", core.get_or_create_buddy_user_id())
-        url.setQuery(query)
-        QDesktopServices.openUrl(url)
+        try:
+            billing_client.open_hackclub_signin()
+        except billing_client.BillingNotConfigured as error:
+            QMessageBox.warning(self, "Hack Club setup", str(error))
+
+    def _update_hacky_button(self):
+        if not self.hacky_signin_button:
+            return
+        profile = core.get_profile()
+        verified = bool(profile.get("hackclub_verified"))
+        self.hacky_signin_button.setText("Signed in and verified" if verified else "Sign in with Hack Club")
+        self.hacky_signin_button.setEnabled(not verified)
+
+    def _refresh_hacky_auth(self):
+        profile = core.get_profile()
+        verified = bool(
+            profile.get("hackclub_verified")
+            and profile.get("auth_provider") == "hackclub"
+        )
+        if self.hacky_signin_button:
+            self._update_hacky_button()
+        if self.hacky_api_field:
+            self.hacky_api_field.setVisible(verified)
+        if self.hacky_api_save_button:
+            self.hacky_api_save_button.setVisible(verified)
+
+    def _save_hacky_api_key(self):
+        profile = core.get_profile()
+        if not profile.get("hackclub_verified"):
+            QMessageBox.warning(self, "Verification required", "Verify your Hack Club account before saving an API key.")
+            return
+        api_key = self.hacky_api_field.text().strip() if self.hacky_api_field else ""
+        if not api_key:
+            QMessageBox.warning(self, "API key required", "Enter your Hack Club AI API key first.")
+            return
+        core.update_profile(byo_api_key=api_key, subscription_tier="hacky")
+        self.selected_plan = "hacky"
+        self.status_label.setText("Hacky Buddy Plan")
+        QMessageBox.information(self, "Hacky Buddy enabled", "Your Hack Club API key was saved and Hacky Buddy is now active.")
 
     def _create_compare_page(self):
         page = QWidget()
@@ -488,8 +561,8 @@ class BillingPage(CardPage):
         button_layout.setSpacing(10)
 
         for plan_key, plan_title, monthly_key, annual_key, annual_label in [
-            ("pro", "Buddy Pro", "pro_monthly", "pro_annual", "Save 15% / best value"),
-            ("max", "Buddy MAX", "max_monthly", "max_annual", "Save 18% / best value"),
+            ("pro", "Buddy Pro", "pro_monthly", "pro_yearly", "Save 15% / best value"),
+            ("max", "Buddy MAX", "max_monthly", "max_yearly", "Save 18% / best value"),
         ]:
             group = QFrame()
             group.setStyleSheet(f"QFrame {{ background: transparent; border: 1px solid {BORDER_COLOR}; border-radius: 10px; }}")
@@ -530,21 +603,23 @@ class BillingPage(CardPage):
         self.selected_plan = plan_key
         core.update_profile(subscription_tier=plan_key)
         self.status_label.setText(TIER_LABELS.get(plan_key, "Free Plan"))
-        self._refresh_plan_buttons()
+        self._rebuild_plan_grid()
 
     def _selected_plan_click(self, plan_key):
-        QMessageBox.information(
-            self,
-            "Switch plans",
-            "Select another plan to switch plans."
+        if plan_key in ("free", "hacky"):
+            QMessageBox.information(
+                self, "Already on this plan",
+                "You're already on this plan. Pick Buddy Pro or MAX above to upgrade."
+            )
+            return
+        reply = QMessageBox.question(
+            self, "Manage subscription",
+            "You're currently on this plan. Open Stripe's billing portal to change your "
+            "payment method, switch plans, or cancel your subscription?",
+            QMessageBox.Yes | QMessageBox.No,
         )
-
-    def _refresh_plan_buttons(self):
-        for widget in self.stack.widgets():
-            if isinstance(widget, QWidget):
-                widget.update()
-        self.overview_page.update()
-        self.stack.setCurrentWidget(self.overview_page)
+        if reply == QMessageBox.Yes:
+            self._open_billing_portal()
 
     def _subscribe(self, price_key, plan_title):
         try:

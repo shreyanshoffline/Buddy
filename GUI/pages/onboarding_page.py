@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt, QUrl, QUrlQuery
 from PySide6.QtGui import QDesktopServices
 
 import core
+import billing_client
 from .card_page import CardPage
 from ..theme import (
     CARD_TEXT_COLOR, CARD_SUBTITLE_COLOR, PRIMARY_COLOR, PRIMARY_COLOR_DARK,
@@ -120,11 +121,10 @@ class OnboardingPage(CardPage):
         self._update_navigation(0)
 
     def _open_hackclub_signin(self):
-        url = QUrl("http://localhost:5000/auth/hackclub/start")
-        query = QUrlQuery()
-        query.addQueryItem("buddy_user_id", core.get_or_create_buddy_user_id())
-        url.setQuery(query)
-        QDesktopServices.openUrl(url)
+        try:
+            billing_client.open_hackclub_signin()
+        except billing_client.BillingNotConfigured as error:
+            QMessageBox.warning(self, "Hack Club setup", str(error))
 
     def _save_current(self):
         index = self.pages.currentIndex()

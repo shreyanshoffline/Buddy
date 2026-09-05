@@ -163,3 +163,23 @@ def run_action_step(model, message_history, max_tokens, tools, cancel_check=None
         ),
         cancel_check=cancel_check,
     )
+
+
+def run_image_generation(model, prompt, source_images=None, cancel_check=None):
+    """Generates (or edits, given source_images) an image via a Gemini
+    image model on OpenRouter. Returns a list of base64 data-URL strings."""
+    content = [{"type": "text", "text": prompt}]
+    for url in (source_images or []):
+        content.append({"type": "image_url", "image_url": {"url": url}})
+
+    response = _with_retry(
+        lambda: _get_client().chat.send(
+            model=model,
+            messages=[{"role": "user", "content": content}],
+            modalities=["image", "text"],
+            timeout_ms=REQUEST_TIMEOUT_MS,
+        ),
+        cancel_check=cancel_check,
+    )
+    message = response.choices[0].message
+    return extract_image_urls(message)

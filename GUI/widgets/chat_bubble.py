@@ -494,9 +494,10 @@ class ChatBubble(QWidget):
     def _render_current_version(self):
         v = self.versions[self.current_idx]
 
-        if hasattr(self, "image_label"):
-            self.image_label.deleteLater()
-        self.image_label = None
+        if hasattr(self, "image_labels"):
+            for old_label in self.image_labels:
+                old_label.deleteLater()
+        self.image_labels = []
         if v.get("images"):
             for image_url in v["images"][:3]:
                 pixmap = QPixmap()
@@ -506,11 +507,11 @@ class ChatBubble(QWidget):
                 elif image_url.startswith("/"):
                     pixmap.load(image_url)
                 if not pixmap.isNull():
-                    self.image_label = QLabel()
-                    self.image_label.setPixmap(pixmap.scaled(320, 320, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                    self.image_label.setStyleSheet("background: transparent; border: none;")
-                    self.content_layout.insertWidget(0, self.image_label)
-                    break
+                    label = QLabel()
+                    label.setPixmap(pixmap.scaled(320, 320, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    label.setStyleSheet("background: transparent; border: none;")
+                    self.content_layout.insertWidget(len(self.image_labels), label)
+                    self.image_labels.append(label)
 
         doc = QTextDocument()
         doc.setMarkdown(v["text"])

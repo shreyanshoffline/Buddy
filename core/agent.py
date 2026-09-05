@@ -212,7 +212,10 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
  
             if tool_name == "finish_task" or tool_name.endswith("finish_task"):
                 summary = tool_args.get("summary", "Task successfully completed.")
-                return {"status": "success", "summary": summary, "step_count": step_count, **stats}
+                result = {"status": "success", "summary": summary, "step_count": step_count, **stats}
+                if generated_images:
+                    result["images"] = generated_images
+                return result
  
             if on_event:
                 on_event({"type": "tool_call", "name": tool_name, "args": tool_args})

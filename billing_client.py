@@ -7,6 +7,7 @@ BUDDY_BILLING_URL=https://buddy-billing.onrender.com
 """
 import os
 import webbrowser
+from urllib.parse import urlencode
 
 import requests
 from dotenv import load_dotenv
@@ -14,6 +15,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BACKEND_URL = os.getenv("BUDDY_BILLING_URL", "").rstrip("/")
+HACKCLUB_CLIENT_ID = os.getenv("HACKCLUB_CLIENT_ID", "")
+HACKCLUB_REDIRECT_URI = os.getenv(
+    "HACKCLUB_REDIRECT_URI", "http://localhost:5000/auth/hackclub/callback"
+)
 
 # Price IDs from your Stripe Dashboard — set these once you've created
 # the Products/Prices there. Kept here (not secret) so the desktop app
@@ -28,6 +33,20 @@ PRICE_IDS = {
 
 class BillingNotConfigured(Exception):
     pass
+
+
+def open_hackclub_signin():
+    """Open Hack Club's authorization page directly in the browser."""
+    if not HACKCLUB_CLIENT_ID:
+        raise BillingNotConfigured("HACKCLUB_CLIENT_ID is not set.")
+    query = urlencode({
+        "client_id": HACKCLUB_CLIENT_ID,
+        "redirect_uri": HACKCLUB_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid email name profile verification_status",
+    })
+    webbrowser.open(f"https://auth.hackclub.com/oauth/authorize?{query}")
+    return True
 
 
 def start_checkout(buddy_user_id, price_key):
