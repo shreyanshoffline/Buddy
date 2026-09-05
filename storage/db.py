@@ -126,6 +126,9 @@ def init_db():
             ,auth_provider TEXT
             ,hackclub_verified INTEGER DEFAULT 0
             ,hackclub_verification_status TEXT
+            ,hackclub_identity_id TEXT
+            ,hackclub_slack_id TEXT
+            ,hackclub_ysws_eligible INTEGER DEFAULT 0
             ,onboarding_complete INTEGER DEFAULT 0
         );
 
@@ -159,6 +162,12 @@ def init_db():
             conn.execute("ALTER TABLE user_profile ADD COLUMN hackclub_verified INTEGER DEFAULT 0")
         if "hackclub_verification_status" not in cols:
             conn.execute("ALTER TABLE user_profile ADD COLUMN hackclub_verification_status TEXT")
+        if "hackclub_identity_id" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN hackclub_identity_id TEXT")
+        if "hackclub_slack_id" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN hackclub_slack_id TEXT")
+        if "hackclub_ysws_eligible" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN hackclub_ysws_eligible INTEGER DEFAULT 0")
         if "onboarding_complete" not in cols:
             conn.execute("ALTER TABLE user_profile ADD COLUMN onboarding_complete INTEGER DEFAULT 0")
         # migration: add is_private column for older dbs
@@ -473,6 +482,7 @@ def update_profile(**fields):
         "subscription_tier", "byo_api_key", "has_seen_intro_tip",
         "favorite_apps", "quick_links", "buddy_user_id",
         "auth_provider", "hackclub_verified", "hackclub_verification_status",
+        "hackclub_identity_id", "hackclub_slack_id", "hackclub_ysws_eligible",
         "onboarding_complete",
     }
     fields = {k: v for k, v in fields.items() if k in allowed}

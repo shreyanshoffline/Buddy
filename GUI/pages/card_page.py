@@ -41,6 +41,7 @@ class CardPage(QWidget):
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
         # 4. Create the inner container that holds your actual widgets
         self.scroll_content = QWidget()

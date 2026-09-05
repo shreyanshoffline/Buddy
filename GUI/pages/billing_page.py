@@ -2,7 +2,7 @@
 from PySide6.QtWidgets import (
     QLabel, QVBoxLayout, QHBoxLayout, QFrame, QPushButton,
     QMessageBox, QStackedWidget, QWidget, QTableWidget, QTableWidgetItem,
-    QSizePolicy, QLineEdit
+    QSizePolicy, QLineEdit, QHeaderView
 )
 from PySide6.QtCore import Qt, QThread, Signal, QUrl, QUrlQuery, QTimer
 from PySide6.QtGui import QDesktopServices
@@ -33,6 +33,18 @@ class _StatusWorker(QThread):
         self.done.emit(tier)
 
 
+class _HackClubPollWorker(QThread):
+    """Checks the billing backend for the OAuth result without blocking Qt."""
+    result = Signal(dict)
+
+    def __init__(self, buddy_user_id):
+        super().__init__()
+        self.buddy_user_id = buddy_user_id
+
+    def run(self):
+        self.result.emit(billing_client.poll_hackclub_status(self.buddy_user_id))
+
+
 class BillingPage(CardPage):
     def __init__(self, parent=None, close_callback=None):
         super().__init__("Pricing", "Choose the Buddy plan that matches your workflow.", parent, close_callback)
@@ -60,6 +72,9 @@ class BillingPage(CardPage):
         self._auth_timer.setInterval(1000)
         self._auth_timer.timeout.connect(self._refresh_hacky_auth)
         self._auth_timer.start()
+        self._hackclub_poll_timer = QTimer(self)
+        self._hackclub_poll_timer.timeout.connect(self._poll_hackclub_once)
+        self._hackclub_poll_worker = None
         self.main_layout.addStretch()
         self.refresh_status()
 
@@ -468,9 +483,40 @@ class BillingPage(CardPage):
 
     def _open_hackclub_signin(self):
         try:
-            billing_client.open_hackclub_signin()
+            billing_client.open_hackclub_signin(self.buddy_user_id)
         except billing_client.BillingNotConfigured as error:
             QMessageBox.warning(self, "Hack Club setup", str(error))
+            return
+        if self.hacky_signin_button:
+            self.hacky_signin_button.setText("Waiting for sign-in…")
+            self.hacky_signin_button.setEnabled(False)
+        self._hackclub_poll_elapsed_ms = 0
+        self._hackclub_poll_timer.start(2500)
+
+    def _poll_hackclub_once(self):
+        self._hackclub_poll_elapsed_ms += 2500
+        if self._hackclub_poll_elapsed_ms >= 120_000:
+            self._hackclub_poll_timer.stop()
+            if self.hacky_signin_button:
+                self.hacky_signin_button.setText("Sign in with Hack Club")
+                self.hacky_signin_button.setEnabled(True)
+            return
+        self._hackclub_poll_worker = _HackClubPollWorker(self.buddy_user_id)
+        self._hackclub_poll_worker.result.connect(self._on_hackclub_poll_result)
+        self._hackclub_poll_worker.start()
+
+    def _on_hackclub_poll_result(self, result):
+        if not result.get("signed_in"):
+            return  # keep waiting, still polling
+        self._hackclub_poll_timer.stop()
+        core.update_profile(
+            email=result.get("email") or None,
+            name=result.get("name") or None,
+            auth_provider="hackclub",
+            hackclub_verified=bool(result.get("verified")),
+            hackclub_verification_status=result.get("verification_status"),
+        )
+        self._refresh_hacky_auth()
 
     def _update_hacky_button(self):
         if not self.hacky_signin_button:
@@ -532,7 +578,11 @@ class BillingPage(CardPage):
         table.setAlternatingRowColors(True)
         table.setSelectionMode(QTableWidget.NoSelection)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setWordWrap(True)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         table.horizontalHeader().setStretchLastSection(True)
         table.setStyleSheet(f"""
             QTableWidget {{ background: rgba(255,255,255,0.04); border: 1px solid {BORDER_COLOR}; border-radius: 8px; color: {CARD_TEXT_COLOR}; }}

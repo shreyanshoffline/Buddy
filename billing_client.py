@@ -7,7 +7,6 @@ BUDDY_BILLING_URL=https://buddy-billing.onrender.com
 """
 import os
 import webbrowser
-from urllib.parse import urlencode
 
 import requests
 from dotenv import load_dotenv
@@ -15,10 +14,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BACKEND_URL = os.getenv("BUDDY_BILLING_URL", "").rstrip("/")
-HACKCLUB_CLIENT_ID = os.getenv("HACKCLUB_CLIENT_ID", "")
-HACKCLUB_REDIRECT_URI = os.getenv(
-    "HACKCLUB_REDIRECT_URI", "http://localhost:5000/auth/hackclub/callback"
-)
+LOCAL_BACKEND_URL = "http://localhost:5000"
+HACKCLUB_AUTHORIZE_URL = "https://auth.hackclub.com/oauth/authorize"
+HACKCLUB_CLIENT_ID = os.getenv("HACKCLUB_CLIENT_ID", "7e8a441dc3ac83686a799171c0757d33")
 
 # Price IDs from your Stripe Dashboard — set these once you've created
 # the Products/Prices there. Kept here (not secret) so the desktop app
@@ -35,18 +33,32 @@ class BillingNotConfigured(Exception):
     pass
 
 
-def open_hackclub_signin():
-    """Open Hack Club's authorization page directly in the browser."""
-    if not HACKCLUB_CLIENT_ID:
-        raise BillingNotConfigured("HACKCLUB_CLIENT_ID is not set.")
-    query = urlencode({
-        "client_id": HACKCLUB_CLIENT_ID,
-        "redirect_uri": HACKCLUB_REDIRECT_URI,
-        "response_type": "code",
-        "scope": "openid email name profile verification_status",
-    })
-    webbrowser.open(f"https://auth.hackclub.com/oauth/authorize?{query}")
+def open_hackclub_signin(buddy_user_id):
+    """Open Hack Club's authorization URL directly in the browser."""
+    webbrowser.open(
+        f"{HACKCLUB_AUTHORIZE_URL}?client_id={HACKCLUB_CLIENT_ID}"
+        f"&redirect_uri=http%3A%2F%2Flocalhost%3A5000%2Fauth%2Fhackclub%2Fcallback"
+        f"&response_type=code&scope=openid+email+name+profile+verification_status"
+    )
     return True
+
+
+def poll_hackclub_status(buddy_user_id):
+    """Checks whether Hack Club sign-in has completed for this install.
+    Returns {signed_in, verified, verification_status, email, name}.
+    Never raises — a network hiccup just looks like 'not signed in yet'."""
+    backend_url = BACKEND_URL or LOCAL_BACKEND_URL
+    try:
+        resp = requests.get(f"{backend_url}/auth/hackclub/status/{buddy_user_id}", timeout=8)
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("signed_in"):
+            return result
+        latest = requests.get(f"{backend_url}/auth/hackclub/status/latest", timeout=8)
+        latest.raise_for_status()
+        return latest.json()
+    except Exception:
+        return {"signed_in": False}
 
 
 def start_checkout(buddy_user_id, price_key):
@@ -62,11 +74,10 @@ def start_checkout(buddy_user_id, price_key):
         webbrowser.open(price_id)
         return True
 
-    if not BACKEND_URL:
-        raise BillingNotConfigured("BUDDY_BILLING_URL is not set.")
+    backend_url = BACKEND_URL or LOCAL_BACKEND_URL
 
     resp = requests.post(
-        f"{BACKEND_URL}/create-checkout-session",
+        f"{backend_url}/create-checkout-session",
         json={"buddy_user_id": buddy_user_id, "price_id": price_id},
         timeout=10,
     )
@@ -79,10 +90,9 @@ def start_checkout(buddy_user_id, price_key):
 def fetch_subscription_tier(buddy_user_id):
     """Polls the backend for the current tier. Returns 'free' on any
     failure so a network hiccup never crashes the billing page."""
-    if not BACKEND_URL:
-        return "free"
+    backend_url = BACKEND_URL or LOCAL_BACKEND_URL
     try:
-        resp = requests.get(f"{BACKEND_URL}/subscription-status/{buddy_user_id}", timeout=8)
+        resp = requests.get(f"{backend_url}/subscription-status/{buddy_user_id}", timeout=8)
         resp.raise_for_status()
         return resp.json().get("subscription_tier", "free")
     except Exception:
@@ -91,10 +101,9 @@ def fetch_subscription_tier(buddy_user_id):
 
 def open_billing_portal(buddy_user_id):
     """Open Stripe's hosted subscription-management page."""
-    if not BACKEND_URL:
-        raise BillingNotConfigured("BUDDY_BILLING_URL is not set.")
+    backend_url = BACKEND_URL or LOCAL_BACKEND_URL
     resp = requests.post(
-        f"{BACKEND_URL}/create-portal-session",
+        f"{backend_url}/create-portal-session",
         json={"buddy_user_id": buddy_user_id},
         timeout=10,
     )

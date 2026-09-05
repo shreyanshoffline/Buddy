@@ -49,6 +49,7 @@ HACKCLUB_REDIRECT_URI = os.environ.get(
 )
 _oauth_states = set()
 _oauth_state_users = {}
+_latest_hackclub_profile = None
 
 
 def _connect():
@@ -64,9 +65,32 @@ def init_db():
             buddy_user_id TEXT PRIMARY KEY,
             stripe_customer_id TEXT,
             subscription_tier TEXT DEFAULT 'free',
+            hackclub_verified INTEGER DEFAULT 0,
+            hackclub_verification_status TEXT,
+            hackclub_email TEXT,
+            hackclub_name TEXT,
+            hackclub_signed_in_at REAL,
+            hackclub_identity_id TEXT,
+            hackclub_slack_id TEXT,
+            hackclub_ysws_eligible INTEGER DEFAULT 0,
+            hackclub_refresh_token TEXT,
             updated_at REAL
         )
     """)
+    cols = [row["name"] for row in conn.execute("PRAGMA table_info(users)")]
+    for col, decl in (
+        ("hackclub_verified", "INTEGER DEFAULT 0"),
+        ("hackclub_verification_status", "TEXT"),
+        ("hackclub_email", "TEXT"),
+        ("hackclub_name", "TEXT"),
+        ("hackclub_signed_in_at", "REAL"),
+        ("hackclub_identity_id", "TEXT"),
+        ("hackclub_slack_id", "TEXT"),
+        ("hackclub_ysws_eligible", "INTEGER DEFAULT 0"),
+        ("hackclub_refresh_token", "TEXT"),
+    ):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col} {decl}")
     conn.commit()
     conn.close()
 
@@ -141,53 +165,157 @@ def hackclub_callback():
     if not code or not HACKCLUB_CLIENT_SECRET:
         return "Set HACKCLUB_CLIENT_SECRET on the backend first.", 503
 
-    token_response = requests.post(
-        "https://auth.hackclub.com/oauth/token",
-        data={
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": HACKCLUB_REDIRECT_URI,
-            "client_id": HACKCLUB_CLIENT_ID,
-            "client_secret": HACKCLUB_CLIENT_SECRET,
-        },
-        timeout=10,
-    )
-    token_response.raise_for_status()
-    access_token = token_response.json().get("access_token")
+    try:
+        token_response = requests.post(
+            "https://auth.hackclub.com/oauth/token",
+            json={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": HACKCLUB_REDIRECT_URI,
+                "client_id": HACKCLUB_CLIENT_ID,
+                "client_secret": HACKCLUB_CLIENT_SECRET,
+            },
+            timeout=10,
+        )
+        token_response.raise_for_status()
+    except requests.RequestException as error:
+        app.logger.exception("Hack Club token exchange failed")
+        return f"Hack Club token exchange failed. Check the backend terminal: {error}", 502
+    token_data = token_response.json()
+    access_token = token_data.get("access_token")
     if not access_token:
         return "Hack Club did not return an access token.", 502
 
-    user_response = requests.get(
-        "https://auth.hackclub.com/api/v1/me",
-        headers={"Authorization": f"Bearer {access_token}"},
-        timeout=10,
-    )
-    user_response.raise_for_status()
+    try:
+        user_response = requests.get(
+            "https://auth.hackclub.com/api/v1/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        user_response.raise_for_status()
+    except requests.RequestException as error:
+        app.logger.exception("Hack Club profile request failed")
+        return f"Hack Club profile request failed. Check the backend terminal: {error}", 502
     profile = user_response.json()
-    verification = profile.get("verification_status") or "unknown"
-    is_verified = (
-        str(verification).lower() in ("verified", "active", "approved")
-        or bool(profile.get("email_verified"))
-        or bool(profile.get("ysws_eligible"))
-    )
+    identity = profile.get("identity") or profile
+    first_name = identity.get("first_name") or ""
+    last_name = identity.get("last_name") or ""
+    name = (f"{first_name} {last_name}").strip() or identity.get("name") or identity.get("nickname")
+    email = identity.get("primary_email") or identity.get("email")
+    verification = identity.get("verification_status") or "unknown"
+    is_verified = str(verification).lower() == "verified"
+    ysws_eligible = bool(identity.get("ysws_eligible"))
+    global _latest_hackclub_profile
+    _latest_hackclub_profile = {
+        "signed_in": True,
+        "verified": is_verified,
+        "verification_status": str(verification),
+        "email": email,
+        "name": name,
+        "identity_id": identity.get("id"),
+        "slack_id": identity.get("slack_id"),
+        "ysws_eligible": ysws_eligible,
+    }
     try:
         from storage import db as local_db
         local_db.init_db()
         local_db.update_profile(
-            email=profile.get("email"),
-            name=profile.get("name") or profile.get("nickname"),
+            email=email,
+            name=name,
             auth_provider="hackclub",
             hackclub_verified=is_verified,
             hackclub_verification_status=str(verification),
+            hackclub_identity_id=identity.get("id"),
+            hackclub_slack_id=identity.get("slack_id"),
+            hackclub_ysws_eligible=ysws_eligible,
         )
     except Exception as error:
         # OAuth succeeds even if a separately deployed backend cannot see
-        # the desktop app's local database.
+        # the desktop app's local database — this is the normal case once
+        # this backend is deployed anywhere other than the same machine as
+        # Buddy. The server-side save below is what makes sign-in actually
+        # work for real, remote users; the desktop app polls for it.
         app.logger.warning("Could not update local Buddy profile after OAuth: %s", error)
+
+    if buddy_user_id:
+        _save_hackclub_profile(
+            buddy_user_id,
+            email=email,
+            name=name,
+            verified=is_verified,
+            verification_status=str(verification),
+            identity_id=identity.get("id"),
+            slack_id=identity.get("slack_id"),
+            ysws_eligible=ysws_eligible,
+            refresh_token=token_data.get("refresh_token"),
+        )
+
     return (
         "Hack Club sign-in complete. Verification status: "
         f"{verification}. You can close this tab and return to Buddy."
     ), 200
+
+
+def _save_hackclub_profile(buddy_user_id, email, name, verified, verification_status,
+                           identity_id=None, slack_id=None, ysws_eligible=False,
+                           refresh_token=None):
+    conn = _connect()
+    conn.execute(
+        """
+        INSERT INTO users (
+            buddy_user_id, hackclub_email, hackclub_name, hackclub_verified,
+            hackclub_verification_status, hackclub_signed_in_at,
+            hackclub_identity_id, hackclub_slack_id, hackclub_ysws_eligible,
+            hackclub_refresh_token, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(buddy_user_id) DO UPDATE SET
+            hackclub_email = excluded.hackclub_email,
+            hackclub_name = excluded.hackclub_name,
+            hackclub_verified = excluded.hackclub_verified,
+            hackclub_verification_status = excluded.hackclub_verification_status,
+            hackclub_signed_in_at = excluded.hackclub_signed_in_at,
+            hackclub_identity_id = excluded.hackclub_identity_id,
+            hackclub_slack_id = excluded.hackclub_slack_id,
+            hackclub_ysws_eligible = excluded.hackclub_ysws_eligible,
+            hackclub_refresh_token = excluded.hackclub_refresh_token,
+            updated_at = excluded.updated_at
+        """,
+        (buddy_user_id, email, name, 1 if verified else 0, verification_status,
+         time.time(), identity_id, slack_id, 1 if ysws_eligible else 0,
+         refresh_token, time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+
+@app.route("/auth/hackclub/status/<buddy_user_id>")
+def hackclub_status(buddy_user_id):
+    """Desktop app polls this after opening the sign-in browser tab, so it
+    can learn sign-in finished without needing a restart. Works even when
+    this backend is deployed remotely (unlike the local-db write above,
+    which only works when backend and desktop app share a filesystem)."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT hackclub_verified, hackclub_verification_status, hackclub_email, hackclub_name, hackclub_signed_in_at "
+        "FROM users WHERE buddy_user_id = ?",
+        (buddy_user_id,),
+    ).fetchone()
+    conn.close()
+    if not row or not row["hackclub_signed_in_at"]:
+        return jsonify(_latest_hackclub_profile or {"signed_in": False})
+    return jsonify({
+        "signed_in": True,
+        "verified": bool(row["hackclub_verified"]),
+        "verification_status": row["hackclub_verification_status"],
+        "email": row["hackclub_email"],
+        "name": row["hackclub_name"],
+    })
+
+
+@app.route("/auth/hackclub/status/latest")
+def hackclub_latest_status():
+    """Return the most recent local OAuth result for direct-link sign-in."""
+    return jsonify(_latest_hackclub_profile or {"signed_in": False})
 
 
 @app.route("/create-checkout-session", methods=["POST"])
