@@ -16,6 +16,7 @@ import os
 import sqlite3
 import time
 import secrets
+import json
 from urllib.parse import urlencode
 import stripe
 import requests
@@ -26,8 +27,8 @@ load_dotenv()
 
 app = Flask(__name__)
 
-stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
-WEBHOOK_SECRET = os.environ["STRIPE_WEBHOOK_SECRET"]
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
 # price_id -> tier name shown in Buddy
 PRICE_TO_TIER = {
@@ -50,6 +51,7 @@ HACKCLUB_REDIRECT_URI = os.environ.get(
 _oauth_states = set()
 _oauth_state_users = {}
 _latest_hackclub_profile = None
+HACKCLUB_SCOPES = "openid email name profile slack_id verification_status"
 
 
 def _connect():
@@ -91,6 +93,20 @@ def init_db():
     ):
         if col not in cols:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {decl}")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_states (
+            state TEXT PRIMARY KEY,
+            buddy_user_id TEXT,
+            created_at REAL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS oauth_latest (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            payload TEXT,
+            updated_at REAL
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -130,72 +146,207 @@ code {{ overflow-wrap: anywhere; }}
 
 @app.route("/auth/hackclub/start")
 def hackclub_start():
-    """Start Hack Club OAuth using a registered local development callback."""
+    """Start Hack Club OAuth using a registered callback + durable state."""
     if not HACKCLUB_CLIENT_ID:
-        return "Set HACKCLUB_CLIENT_ID on the backend first.", 503
+        return _oauth_page("Hack Club is not configured", "Set HACKCLUB_CLIENT_ID in the backend .env.", ok=False), 503
+    if not HACKCLUB_CLIENT_SECRET:
+        return _oauth_page("Hack Club is not configured", "Set HACKCLUB_CLIENT_SECRET in the backend .env.", ok=False), 503
     state = secrets.token_urlsafe(32)
-    buddy_user_id = request.args.get("buddy_user_id", "")
-    _oauth_states.add(state)
+    buddy_user_id = request.args.get("buddy_user_id", "") or "latest"
+    _remember_oauth_state(state, buddy_user_id)
     params = urlencode({
         "client_id": HACKCLUB_CLIENT_ID,
         "redirect_uri": HACKCLUB_REDIRECT_URI,
         "response_type": "code",
-        "scope": "openid email name profile verification_status",
+        "scope": HACKCLUB_SCOPES,
         "state": state,
     })
-    _oauth_state_users[state] = buddy_user_id
     return redirect(f"https://auth.hackclub.com/oauth/authorize?{params}")
+
+
+def _oauth_page(title, body, ok=True):
+    color = "#188038" if ok else "#b3261e"
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{title}</title>
+<style>
+body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:#eef6fc; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#1f2937; }}
+main {{ width:min(460px, calc(100% - 40px)); padding:32px; background:white; border:1px solid #d7e2ec; border-radius:16px; }}
+h1 {{ margin:0 0 8px; color:{color}; font-size:24px; }}
+p {{ line-height:1.5; color:#5f6b7a; }}
+</style></head><body><main><h1>{title}</h1><p>{body}</p></main></body></html>"""
+
+
+def _remember_oauth_state(state, buddy_user_id):
+    _oauth_states.add(state)
+    _oauth_state_users[state] = buddy_user_id
+    conn = _connect()
+    conn.execute(
+        "INSERT OR REPLACE INTO oauth_states (state, buddy_user_id, created_at) VALUES (?, ?, ?)",
+        (state, buddy_user_id, time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _pop_oauth_state(state):
+    buddy_user_id = _oauth_state_users.pop(state, "") if state else ""
+    if state in _oauth_states:
+        _oauth_states.remove(state)
+    conn = _connect()
+    row = conn.execute("SELECT buddy_user_id FROM oauth_states WHERE state = ?", (state,)).fetchone()
+    if row and not buddy_user_id:
+        buddy_user_id = row["buddy_user_id"] or ""
+    if state:
+        conn.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
+        conn.commit()
+    conn.close()
+    return buddy_user_id
+
+
+def _exchange_hackclub_code(code):
+    payload = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": HACKCLUB_REDIRECT_URI,
+        "client_id": HACKCLUB_CLIENT_ID,
+        "client_secret": HACKCLUB_CLIENT_SECRET,
+    }
+    last_error = None
+    for kwargs in (
+        {"json": payload},
+        {"data": payload},
+    ):
+        try:
+            response = requests.post("https://auth.hackclub.com/oauth/token", timeout=15, **kwargs)
+            if response.ok:
+                data = response.json()
+                if data.get("access_token"):
+                    return data
+            last_error = f"{response.status_code} {response.text[:500]}"
+        except requests.RequestException as error:
+            last_error = str(error)
+    raise RuntimeError(last_error or "token exchange failed")
+
+
+def _store_latest_profile(profile):
+    global _latest_hackclub_profile
+    _latest_hackclub_profile = profile
+    conn = _connect()
+    conn.execute(
+        "INSERT OR REPLACE INTO oauth_latest (id, payload, updated_at) VALUES (1, ?, ?)",
+        (json.dumps(profile), time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _load_latest_profile():
+    if _latest_hackclub_profile:
+        return _latest_hackclub_profile
+    conn = _connect()
+    row = conn.execute("SELECT payload FROM oauth_latest WHERE id = 1").fetchone()
+    conn.close()
+    if not row or not row["payload"]:
+        return {"signed_in": False}
+    try:
+        return json.loads(row["payload"])
+    except json.JSONDecodeError:
+        return {"signed_in": False}
+
+
+def _save_hackclub_profile(
+    buddy_user_id,
+    *,
+    email,
+    name,
+    verified,
+    verification_status,
+    identity_id,
+    slack_id,
+    ysws_eligible,
+    refresh_token=None,
+):
+    """Upsert OAuth data without replacing an existing billing record."""
+    conn = _connect()
+    conn.execute(
+        """
+        INSERT INTO users (
+            buddy_user_id, hackclub_verified, hackclub_verification_status,
+            hackclub_email, hackclub_name, hackclub_signed_in_at,
+            hackclub_identity_id, hackclub_slack_id, hackclub_ysws_eligible,
+            hackclub_refresh_token, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(buddy_user_id) DO UPDATE SET
+            hackclub_verified = excluded.hackclub_verified,
+            hackclub_verification_status = excluded.hackclub_verification_status,
+            hackclub_email = excluded.hackclub_email,
+            hackclub_name = excluded.hackclub_name,
+            hackclub_signed_in_at = excluded.hackclub_signed_in_at,
+            hackclub_identity_id = excluded.hackclub_identity_id,
+            hackclub_slack_id = excluded.hackclub_slack_id,
+            hackclub_ysws_eligible = excluded.hackclub_ysws_eligible,
+            hackclub_refresh_token = COALESCE(excluded.hackclub_refresh_token, users.hackclub_refresh_token),
+            updated_at = excluded.updated_at
+        """,
+        (
+            buddy_user_id,
+            int(verified),
+            verification_status,
+            email,
+            name,
+            time.time(),
+            identity_id,
+            slack_id,
+            int(ysws_eligible),
+            refresh_token,
+            time.time(),
+        ),
+    )
+    conn.commit()
+    conn.close()
 
 
 @app.route("/auth/hackclub/callback")
 def hackclub_callback():
-    """Receive OAuth's code and show the verified Hack Club account status."""
+    """Receive OAuth's code, persist the profile, and tell Buddy to poll."""
     error = request.args.get("error")
     if error:
-        return f"Hack Club sign-in was cancelled: {error}", 400
+        return _oauth_page("Sign-in cancelled", f"Hack Club returned: {error}", ok=False), 400
 
     state = request.args.get("state", "")
-    if state:
-        if state not in _oauth_states:
-            return "Invalid or expired Hack Club sign-in request.", 400
-        _oauth_states.remove(state)
-    buddy_user_id = _oauth_state_users.pop(state, "") if state else ""
+    buddy_user_id = _pop_oauth_state(state) if state else ""
+    if state and not buddy_user_id and state not in _oauth_states:
+        # State was already consumed or never issued by this backend.
+        # Still try to finish if a code is present so a refresh cannot brick sign-in.
+        buddy_user_id = "latest"
 
     code = request.args.get("code")
-    if not code or not HACKCLUB_CLIENT_SECRET:
-        return "Set HACKCLUB_CLIENT_SECRET on the backend first.", 503
+    if not code:
+        return _oauth_page("Missing code", "Hack Club did not send an authorization code.", ok=False), 400
+    if not HACKCLUB_CLIENT_SECRET:
+        return _oauth_page("Missing secret", "Set HACKCLUB_CLIENT_SECRET on the backend first.", ok=False), 503
 
     try:
-        token_response = requests.post(
-            "https://auth.hackclub.com/oauth/token",
-            json={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": HACKCLUB_REDIRECT_URI,
-                "client_id": HACKCLUB_CLIENT_ID,
-                "client_secret": HACKCLUB_CLIENT_SECRET,
-            },
-            timeout=10,
-        )
-        token_response.raise_for_status()
-    except requests.RequestException as error:
+        token_data = _exchange_hackclub_code(code)
+    except Exception as error:
         app.logger.exception("Hack Club token exchange failed")
-        return f"Hack Club token exchange failed. Check the backend terminal: {error}", 502
-    token_data = token_response.json()
-    access_token = token_data.get("access_token")
-    if not access_token:
-        return "Hack Club did not return an access token.", 502
+        return _oauth_page("Token exchange failed", f"Check the backend terminal. {error}", ok=False), 502
 
+    access_token = token_data.get("access_token")
     try:
         user_response = requests.get(
             "https://auth.hackclub.com/api/v1/me",
             headers={"Authorization": f"Bearer {access_token}"},
-            timeout=10,
+            timeout=15,
         )
         user_response.raise_for_status()
     except requests.RequestException as error:
+        detail = ""
+        if getattr(error, "response", None) is not None:
+            detail = error.response.text[:400]
         app.logger.exception("Hack Club profile request failed")
-        return f"Hack Club profile request failed. Check the backend terminal: {error}", 502
+        return _oauth_page("Profile request failed", f"{error} {detail}", ok=False), 502
+
     profile = user_response.json()
     identity = profile.get("identity") or profile
     first_name = identity.get("first_name") or ""
@@ -205,8 +356,7 @@ def hackclub_callback():
     verification = identity.get("verification_status") or "unknown"
     is_verified = str(verification).lower() == "verified"
     ysws_eligible = bool(identity.get("ysws_eligible"))
-    global _latest_hackclub_profile
-    _latest_hackclub_profile = {
+    saved = {
         "signed_in": True,
         "verified": is_verified,
         "verification_status": str(verification),
@@ -216,7 +366,13 @@ def hackclub_callback():
         "slack_id": identity.get("slack_id"),
         "ysws_eligible": ysws_eligible,
     }
+    _store_latest_profile(saved)
+
     try:
+        import sys
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        if root not in sys.path:
+            sys.path.insert(0, root)
         from storage import db as local_db
         local_db.init_db()
         local_db.update_profile(
@@ -230,92 +386,57 @@ def hackclub_callback():
             hackclub_ysws_eligible=ysws_eligible,
         )
     except Exception as error:
-        # OAuth succeeds even if a separately deployed backend cannot see
-        # the desktop app's local database — this is the normal case once
-        # this backend is deployed anywhere other than the same machine as
-        # Buddy. The server-side save below is what makes sign-in actually
-        # work for real, remote users; the desktop app polls for it.
         app.logger.warning("Could not update local Buddy profile after OAuth: %s", error)
 
-    if buddy_user_id:
-        _save_hackclub_profile(
-            buddy_user_id,
-            email=email,
-            name=name,
-            verified=is_verified,
-            verification_status=str(verification),
-            identity_id=identity.get("id"),
-            slack_id=identity.get("slack_id"),
-            ysws_eligible=ysws_eligible,
-            refresh_token=token_data.get("refresh_token"),
-        )
-
-    return (
-        "Hack Club sign-in complete. Verification status: "
-        f"{verification}. You can close this tab and return to Buddy."
-    ), 200
-
-
-def _save_hackclub_profile(buddy_user_id, email, name, verified, verification_status,
-                           identity_id=None, slack_id=None, ysws_eligible=False,
-                           refresh_token=None):
-    conn = _connect()
-    conn.execute(
-        """
-        INSERT INTO users (
-            buddy_user_id, hackclub_email, hackclub_name, hackclub_verified,
-            hackclub_verification_status, hackclub_signed_in_at,
-            hackclub_identity_id, hackclub_slack_id, hackclub_ysws_eligible,
-            hackclub_refresh_token, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(buddy_user_id) DO UPDATE SET
-            hackclub_email = excluded.hackclub_email,
-            hackclub_name = excluded.hackclub_name,
-            hackclub_verified = excluded.hackclub_verified,
-            hackclub_verification_status = excluded.hackclub_verification_status,
-            hackclub_signed_in_at = excluded.hackclub_signed_in_at,
-            hackclub_identity_id = excluded.hackclub_identity_id,
-            hackclub_slack_id = excluded.hackclub_slack_id,
-            hackclub_ysws_eligible = excluded.hackclub_ysws_eligible,
-            hackclub_refresh_token = excluded.hackclub_refresh_token,
-            updated_at = excluded.updated_at
-        """,
-        (buddy_user_id, email, name, 1 if verified else 0, verification_status,
-         time.time(), identity_id, slack_id, 1 if ysws_eligible else 0,
-         refresh_token, time.time()),
+    _save_hackclub_profile(
+        buddy_user_id or "latest",
+        email=email,
+        name=name,
+        verified=is_verified,
+        verification_status=str(verification),
+        identity_id=identity.get("id"),
+        slack_id=identity.get("slack_id"),
+        ysws_eligible=ysws_eligible,
+        refresh_token=token_data.get("refresh_token"),
     )
-    conn.commit()
-    conn.close()
+
+    status_word = "verified" if is_verified else str(verification)
+    return _oauth_page(
+        "Signed in with Hack Club",
+        f"Status: {status_word}. You can close this tab and return to Buddy.",
+        ok=True,
+    ), 200
 
 
 @app.route("/auth/hackclub/status/<buddy_user_id>")
 def hackclub_status(buddy_user_id):
-    """Desktop app polls this after opening the sign-in browser tab, so it
-    can learn sign-in finished without needing a restart. Works even when
-    this backend is deployed remotely (unlike the local-db write above,
-    which only works when backend and desktop app share a filesystem)."""
+    """Desktop app polls this after opening the sign-in browser tab."""
     conn = _connect()
     row = conn.execute(
-        "SELECT hackclub_verified, hackclub_verification_status, hackclub_email, hackclub_name, hackclub_signed_in_at "
+        "SELECT hackclub_verified, hackclub_verification_status, hackclub_email, hackclub_name, "
+        "hackclub_signed_in_at, hackclub_identity_id, hackclub_slack_id, hackclub_ysws_eligible "
         "FROM users WHERE buddy_user_id = ?",
         (buddy_user_id,),
     ).fetchone()
     conn.close()
-    if not row or not row["hackclub_signed_in_at"]:
-        return jsonify(_latest_hackclub_profile or {"signed_in": False})
-    return jsonify({
-        "signed_in": True,
-        "verified": bool(row["hackclub_verified"]),
-        "verification_status": row["hackclub_verification_status"],
-        "email": row["hackclub_email"],
-        "name": row["hackclub_name"],
-    })
+    if row and row["hackclub_signed_in_at"]:
+        return jsonify({
+            "signed_in": True,
+            "verified": bool(row["hackclub_verified"]),
+            "verification_status": row["hackclub_verification_status"],
+            "email": row["hackclub_email"],
+            "name": row["hackclub_name"],
+            "identity_id": row["hackclub_identity_id"],
+            "slack_id": row["hackclub_slack_id"],
+            "ysws_eligible": bool(row["hackclub_ysws_eligible"]),
+        })
+    return jsonify(_load_latest_profile())
 
 
 @app.route("/auth/hackclub/status/latest")
 def hackclub_latest_status():
-    """Return the most recent local OAuth result for direct-link sign-in."""
-    return jsonify(_latest_hackclub_profile or {"signed_in": False})
+    """Return the most recent OAuth result for direct-link sign-in."""
+    return jsonify(_load_latest_profile())
 
 
 @app.route("/create-checkout-session", methods=["POST"])
@@ -330,6 +451,8 @@ def create_checkout_session():
         return jsonify({"error": "buddy_user_id and price_id are required"}), 400
     if price_id not in PRICE_TO_TIER:
         return jsonify({"error": "That billing plan is not available"}), 400
+    if not stripe.api_key:
+        return jsonify({"error": "Stripe is not configured on the backend"}), 503
 
     session = stripe.checkout.Session.create(
         mode="subscription",
@@ -346,6 +469,8 @@ def create_checkout_session():
 def create_portal_session():
     data = request.get_json(silent=True) or {}
     buddy_user_id = data.get("buddy_user_id")
+    if not stripe.api_key:
+        return jsonify({"error": "Stripe is not configured on the backend"}), 503
     if not isinstance(buddy_user_id, str) or not buddy_user_id:
         return jsonify({"error": "buddy_user_id is required"}), 400
 
@@ -382,6 +507,8 @@ def webhook():
     payload = request.data
     sig_header = request.headers.get("Stripe-Signature", "")
 
+    if not WEBHOOK_SECRET:
+        return jsonify({"error": "Stripe webhook is not configured"}), 503
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, WEBHOOK_SECRET)
     except (ValueError, stripe.error.SignatureVerificationError):

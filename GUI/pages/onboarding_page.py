@@ -3,8 +3,7 @@ from PySide6.QtWidgets import (
     QLabel, QVBoxLayout, QHBoxLayout, QLineEdit, QTextEdit, QPushButton,
     QStackedWidget, QWidget, QComboBox, QMessageBox,
 )
-from PySide6.QtCore import Qt, QUrl, QUrlQuery
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt, QTimer
 
 import core
 import billing_client
@@ -21,8 +20,12 @@ class OnboardingPage(CardPage):
         super().__init__("Welcome to Buddy", "Set up your account and preferences. Everything can be changed later in Settings.", parent, close_callback)
         self.on_complete = on_complete
         self.profile = core.get_profile()
+        self.buddy_user_id = core.get_or_create_buddy_user_id()
         self.pages = QStackedWidget()
         self.main_layout.addWidget(self.pages)
+        self._hackclub_poll_timer = QTimer(self)
+        self._hackclub_poll_timer.timeout.connect(self._poll_hackclub_once)
+        self._hackclub_poll_elapsed_ms = 0
         self._build_steps()
         self._build_navigation()
 
@@ -52,19 +55,20 @@ class OnboardingPage(CardPage):
         page, layout = self._step("Create your account", "Choose a sign-in method. You can continue as a local Buddy profile if you prefer.")
         providers = QVBoxLayout()
         providers.setSpacing(8)
-        for label, url in (("Sign in with Google", "https://accounts.google.com"), ("Sign in with Hack Club", None), ("Sign in with GitHub", "https://github.com/login")):
+        self.hackclub_button = QPushButton("Sign in with Hack Club")
+        self.hackclub_button.setCursor(Qt.PointingHandCursor)
+        self.hackclub_button.setMinimumHeight(34)
+        self.hackclub_button.clicked.connect(self._open_hackclub_signin)
+        providers.addWidget(self.hackclub_button)
+        for label in ("Sign in with Google — coming later", "Sign in with GitHub — coming later"):
             button = QPushButton(label)
-            button.setCursor(Qt.PointingHandCursor)
-            if url:
-                button.clicked.connect(lambda _, target=url: QDesktopServices.openUrl(QUrl(target)))
-            else:
-                button.clicked.connect(self._open_hackclub_signin)
+            button.setEnabled(False)
             button.setMinimumHeight(34)
             providers.addWidget(button)
         layout.addLayout(providers)
         self.email = self._field(self.profile.get("email"), "Email address")
         layout.addWidget(self.email)
-        self.account_note = self._label("Choose a sign-in provider or enter an email address to create a local account. The remaining steps are optional.")
+        self.account_note = self._label("Sign in with Hack Club, or just enter an email to keep a local profile. Google and GitHub will come after the first public release.")
         layout.addWidget(self.account_note)
         self.pages.addWidget(page)
 
@@ -122,9 +126,46 @@ class OnboardingPage(CardPage):
 
     def _open_hackclub_signin(self):
         try:
-            billing_client.open_hackclub_signin()
+            billing_client.open_hackclub_signin(self.buddy_user_id)
         except billing_client.BillingNotConfigured as error:
             QMessageBox.warning(self, "Hack Club setup", str(error))
+            return
+        self.hackclub_button.setText("Waiting for Hack Club…")
+        self.hackclub_button.setEnabled(False)
+        self.account_note.setText("Finish sign-in in the browser, then return here. Buddy will pick it up automatically.")
+        self._hackclub_poll_elapsed_ms = 0
+        self._hackclub_poll_timer.start(2500)
+
+    def _poll_hackclub_once(self):
+        self._hackclub_poll_elapsed_ms += 2500
+        if self._hackclub_poll_elapsed_ms >= 120_000:
+            self._hackclub_poll_timer.stop()
+            self.hackclub_button.setText("Sign in with Hack Club")
+            self.hackclub_button.setEnabled(True)
+            self.account_note.setText("Sign-in timed out. Start the backend and try again.")
+            return
+        result = billing_client.poll_hackclub_status(self.buddy_user_id)
+        if not result.get("signed_in"):
+            return
+        self._hackclub_poll_timer.stop()
+        core.update_profile(
+            email=result.get("email") or None,
+            name=result.get("name") or None,
+            auth_provider="hackclub",
+            hackclub_verified=bool(result.get("verified")),
+            hackclub_verification_status=result.get("verification_status"),
+            hackclub_identity_id=result.get("identity_id"),
+            hackclub_slack_id=result.get("slack_id"),
+            hackclub_ysws_eligible=bool(result.get("ysws_eligible")),
+        )
+        self.profile = core.get_profile()
+        if result.get("email"):
+            self.email.setText(result["email"])
+        if hasattr(self, "name") and result.get("name"):
+            self.name.setText(result["name"])
+        self.hackclub_button.setText("Signed in with Hack Club")
+        status = result.get("verification_status") or "signed in"
+        self.account_note.setText(f"Hack Club connected ({status}). You can continue setup.")
 
     def _save_current(self):
         index = self.pages.currentIndex()

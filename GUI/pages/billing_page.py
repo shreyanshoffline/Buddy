@@ -515,6 +515,9 @@ class BillingPage(CardPage):
             auth_provider="hackclub",
             hackclub_verified=bool(result.get("verified")),
             hackclub_verification_status=result.get("verification_status"),
+            hackclub_identity_id=result.get("identity_id"),
+            hackclub_slack_id=result.get("slack_id"),
+            hackclub_ysws_eligible=bool(result.get("ysws_eligible")),
         )
         self._refresh_hacky_auth()
 

@@ -1,5 +1,11 @@
 .env
 .env.*
-
 *.json
-*.json
+__pycache__/
+*.pyc
+*.pyo
+*.db
+.DS_Store
+.tmp/
+venv/
+.venv/
