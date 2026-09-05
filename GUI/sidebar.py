@@ -108,6 +108,7 @@ class Sidebar(QFrame):
         self.btn_new = NavButton("New chat", ICONS["plus"])
         self.btn_lib = NavButton("Library", ICONS["library"])
         self.btn_artifacts = NavButton("Artifacts", ICONS["artifacts"])
+        self.btn_talk = NavButton("Talk", ICONS["mic"])
         self.btn_billing = NavButton("Pricing", ICONS["pricing"])
         self.btn_settings = NavButton("Settings", ICONS["settings"])
         
@@ -119,6 +120,7 @@ class Sidebar(QFrame):
         self.layout.addWidget(self.btn_new)
         self.layout.addWidget(self.btn_lib)
         self.layout.addWidget(self.btn_artifacts)
+        self.layout.addWidget(self.btn_talk)
         self.layout.addWidget(self.btn_billing)
         self.layout.addWidget(self.lbl_recents)
         
@@ -201,6 +203,7 @@ class Sidebar(QFrame):
             self.btn_new.set_collapsed(not self.is_expanded)
             self.btn_lib.set_collapsed(not self.is_expanded)
             self.btn_artifacts.set_collapsed(not self.is_expanded)
+            self.btn_talk.set_collapsed(not self.is_expanded)
             self.btn_billing.set_collapsed(not self.is_expanded)
             self.btn_settings.set_collapsed(not self.is_expanded)
             for row in self.recent_buttons:

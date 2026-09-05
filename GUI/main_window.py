@@ -42,7 +42,7 @@ from .theme import (
     BORDER_COLOR, DANGER_COLOR, DANGER_SOFT_BG, DANGER_BORDER, INPUT_BG, CONTAINER_BG
 )
 from .sidebar import Sidebar
-from .pages import SettingsPage, LibraryPage, BillingPage, ArtifactsPage, OnboardingPage
+from .pages import SettingsPage, LibraryPage, BillingPage, ArtifactsPage, OnboardingPage, TalkToBuddyPage
 
 class SendWorker(QThread):
     """Runs send_and_save_message off the main thread so the UI stays responsive."""
@@ -648,16 +648,19 @@ class BuddyWindow(QWidget):
         self.library_page = LibraryPage(close_callback=self.hide, on_chat_selected=self._request_open_chat, on_delete_chat=self._delete_chat_from_library)
         self.billing_page = BillingPage(close_callback=self.hide)
         self.artifacts_page = ArtifactsPage(close_callback=self.hide)
+        self.talk_page = TalkToBuddyPage(close_callback=self.hide)
         self.onboarding_page = OnboardingPage(close_callback=self.hide, on_complete=self.show_chat_view)
         self.content_stack.addWidget(self.settings_page)
         self.content_stack.addWidget(self.library_page)
         self.content_stack.addWidget(self.billing_page)
         self.content_stack.addWidget(self.artifacts_page)
+        self.content_stack.addWidget(self.talk_page)
         self.content_stack.addWidget(self.onboarding_page)
  
         self.sidebar.btn_new.clicked.connect(self.show_chat_view)
         self.sidebar.btn_lib.clicked.connect(self.show_library_view)
         self.sidebar.btn_artifacts.clicked.connect(self.show_artifacts_view)
+        self.sidebar.btn_talk.clicked.connect(self.show_talk_view)
         self.sidebar.btn_billing.clicked.connect(self.show_billing_view)
         self.sidebar.btn_settings.clicked.connect(self.show_settings_view)
  

@@ -172,7 +172,7 @@ Task Classification & Output Format:
       Use moderately for many tool calls that can be batched to 2 or 3 steps like initiate workspace or shut down workspace.
      - [heavy_task]: Advanced requests requiring deep reasoning, coding, or long content generation. You shouldn't need this much.
      - [vision_task]: A task that requires deeper visual reasoning over an attached image as PART of a larger task (e.g. "read this receipt and create a calendar event for the due date"). If the user just wants you to describe or answer a question about an attached image, answer directly with RESPONSE: instead — no plan needed.
-     - [creation_task]: __USER_NAME__ wants you to CREATE, GENERATE, DRAW, or EDIT an image (e.g. "make me an image of...", "generate a logo", "edit this picture to..."). Write a single-step plan; the worker model for this tag can see and produce images directly. If __USER_NAME__ attached image(s) to edit or combine, they'll be available to the worker automatically.
+     - [creation_task]: __USER_NAME__ wants you to CREATE, GENERATE, DRAW, or EDIT an image (e.g. "make me an image of...", "generate a logo", "edit this picture to..."). Write a single-step plan whose one line IS the full, detailed image description itself — this exact text becomes the prompt sent to the image model, so make it rich and specific (subject, style, colors, mood, composition), not a vague instruction like "create the requested image". If __USER_NAME__ attached image(s) to edit or combine, they'll be passed to the worker automatically — just describe the desired edit/result.
 
    Example Format (Plan only):
      PLAN: [simple_task]
@@ -188,7 +188,7 @@ Task Classification & Output Format:
    Example Format (Image generation):
      RESPONSE: On it — generating that now!
      PLAN: [creation_task]
-     1. Create the requested image.
+     A golden retriever puppy sitting in a field of sunflowers at golden hour, warm lighting, soft focus background, photorealistic style.
 """
 
 _ACTION_TEMPLATE = """

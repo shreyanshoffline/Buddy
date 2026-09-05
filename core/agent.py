@@ -196,6 +196,62 @@ def parse_manager_output(manager_output):
     return "invalid", cleaned_output, DEFAULT_WORKER_MODEL, title
  
  
+IMAGE_GEN_MODEL = "google/gemini-3.1-flash-lite-image"
+IMAGE_GEN_MAX_ATTEMPTS = 2  # the image model occasionally returns text-only on a bad roll; one retry covers almost all of those
+
+
+def run_image_creation_task(plan_text, source_images=None, cancel_check=None):
+    """Dedicated path for [creation_task] plans — deliberately NOT the
+    generic tool-calling run_worker loop. Image-generation models respond
+    to a direct prompt + modalities=["image","text"] request; handing them
+    tools_schema (meant for text/function-calling workers) risks the model
+    ignoring the request entirely or trying to call an unrelated tool like
+    list_running_apps. This path can only do one thing, and does it
+    reliably: turn the plan into a prompt, call the image model directly,
+    retry once on an empty result, and fail with a clear, honest message
+    instead of a confusing generic tool error."""
+    from models import run_image_generation
+
+    prompt = plan_text.strip()
+    # Strip a leading numbered-step artifact like "1. " if the Manager
+    # wrote the plan as a numbered list rather than a plain description.
+    if prompt[:3].rstrip(".").isdigit():
+        prompt = prompt.split(".", 1)[-1].strip()
+
+    last_error = None
+    for attempt in range(1, IMAGE_GEN_MAX_ATTEMPTS + 1):
+        if cancel_check and cancel_check():
+            return {"status": "cancelled", "message": "Cancelled by user.", "step_count": attempt, "tools": [], "tool_log": [], "tokens_in": 0, "tokens_out": 0, "requests": attempt}
+        try:
+            images = run_image_generation(IMAGE_GEN_MODEL, prompt, source_images=source_images, cancel_check=cancel_check)
+        except BuddyCancelled:
+            return {"status": "cancelled", "message": "Cancelled by user.", "step_count": attempt, "tools": [], "tool_log": [], "tokens_in": 0, "tokens_out": 0, "requests": attempt}
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+        if images:
+            action = "edited that image" if source_images else "created that image"
+            return {
+                "status": "success",
+                "summary": f"Done — I {action} for you.",
+                "images": images,
+                "step_count": attempt,
+                "tools": ["generate_image"],
+                "tool_log": [{"name": "generate_image", "args": {"prompt": prompt, "source_images": bool(source_images)}, "result": f"{len(images)} image(s) returned", "duration": "-"}],
+                "tokens_in": 0, "tokens_out": 0, "requests": attempt,
+            }
+        # Empty result without an exception — try once more before giving up.
+
+    detail = f" ({last_error})" if last_error else ""
+    return {
+        "status": "incomplete",
+        "message": f"I wasn't able to generate that image this time{detail}. Want me to try again, maybe with a more specific description?",
+        "step_count": IMAGE_GEN_MAX_ATTEMPTS,
+        "tools": [], "tool_log": [], "tokens_in": 0, "tokens_out": 0, "requests": IMAGE_GEN_MAX_ATTEMPTS,
+    }
+
+
 def execute_tool(tool_name, tool_args):
     known_tools = [name for name in dir(tools) if not name.startswith("_")]
     known_tools += [name for name in dir(gmail_tools) if not name.startswith("_")]
@@ -449,7 +505,15 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         if on_event:
             on_event({"type": "plan", "model": worker_model, "plan": plan_text})
  
-        outcome = run_worker(plan_text, worker_model, on_event=on_event, cancel_check=cancel_check, deadline=deadline)
+        outcome = (
+            run_image_creation_task(
+                plan_text,
+                source_images=[item["data_url"] for item in image_attachments] or None,
+                cancel_check=cancel_check,
+            )
+            if worker_model == IMAGE_GEN_MODEL
+            else run_worker(plan_text, worker_model, on_event=on_event, cancel_check=cancel_check, deadline=deadline)
+        )
  
         # Merge worker metrics
         metrics["requests"] += outcome.get("requests", 0)
@@ -471,7 +535,6 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
                 )
 
             response = format_response(reply, metrics, start_time)
-            response["images"] = outcome.get("images", [])
             if response_title:
                 response["chat_title"] = response_title
             return response
@@ -520,6 +583,7 @@ def format_response(reply_text, metrics, start_time):
         "plan_text": metrics["final_plan"],
         "tools_used": metrics["tools_executed"],
         "tool_log": metrics["tool_log"],
+        "images": metrics.get("generated_images", []),
         "stats": {
             "Tokens In": metrics["tokens_in"],
             "Tokens Out": metrics["tokens_out"],

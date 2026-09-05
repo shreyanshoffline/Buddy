@@ -4,5 +4,6 @@ from .library_page import LibraryPage
 from .billing_page import BillingPage
 from .artifacts_page import ArtifactsPage
 from .onboarding_page import OnboardingPage
+from .talk_to_buddy_page import TalkToBuddyPage
 
-__all__ = ["CardPage", "SettingsPage", "LibraryPage", "BillingPage", "ArtifactsPage", "OnboardingPage"]
+__all__ = ["CardPage", "SettingsPage", "LibraryPage", "BillingPage", "ArtifactsPage", "OnboardingPage", "TalkToBuddyPage"]
