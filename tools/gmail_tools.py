@@ -18,8 +18,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose"
 ]
-TOKEN_PATH = os.path.expanduser("~/Buddy/token.json")
-CREDS_PATH = os.path.expanduser("~/Buddy/credentials.json")
+TOKEN_PATH = os.path.expanduser("~/Buddy/tools/token.json")
+CREDS_PATH = os.path.expanduser("~/Buddy/tools/credentials.json")
 
 
 def _get_service():

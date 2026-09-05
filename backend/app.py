@@ -49,13 +49,19 @@ PRICE_TO_TIER = {
 DB_PATH = os.environ.get("BILLING_DB_PATH") or os.path.join(_ROOT, "billing.db")
 HACKCLUB_CLIENT_ID = os.environ.get("HACKCLUB_CLIENT_ID", "")
 HACKCLUB_CLIENT_SECRET = os.environ.get("HACKCLUB_CLIENT_SECRET", "")
-HACKCLUB_REDIRECT_URI = os.environ.get(
-    "HACKCLUB_REDIRECT_URI", "http://localhost:5000/auth/hackclub/callback"
-)
+DEFAULT_HACKCLUB_REDIRECT_URI = "http://127.0.0.1:5000/auth/hackclub/callback"
+HACKCLUB_REDIRECT_URI = (
+    os.environ.get("HACKCLUB_REDIRECT_URI") or DEFAULT_HACKCLUB_REDIRECT_URI
+).strip().rstrip("/")
 _oauth_states = set()
 _oauth_state_users = {}
 _latest_hackclub_profile = None
-HACKCLUB_SCOPES = "openid email name profile slack_id verification_status"
+# Must be a subset of the scopes checked on your Hack Club developer app.
+# Community-allowed: openid profile email name slack_id verification_status
+HACKCLUB_SCOPES = (
+    os.environ.get("HACKCLUB_SCOPES")
+    or "openid email name verification_status"
+)
 
 
 def _connect():
