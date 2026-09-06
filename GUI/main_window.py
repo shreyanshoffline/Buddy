@@ -176,7 +176,9 @@ class BuddyWindow(QWidget):
         base_width = 500.0
         scale = max(0.85, min(self.width() / base_width, 2.2))
  
-        title_size = max(14, int(WINDOW_TITLE_SIZE * scale))
+        # Keep the title at the design size. Scaling it with the window
+        # clipped the descender on "y", so the header read "Buddv".
+        title_size = WINDOW_TITLE_SIZE
         self.title_label.setStyleSheet(f"""
             QLabel {{
                 color: {WINDOW_TITLE_COLOR};
@@ -825,10 +827,13 @@ class BuddyWindow(QWidget):
         self.content_stack.setCurrentWidget(self.onboarding_page)
         self._set_active_nav(None)
 
-    def show_talk_view(self):
-        """Open the live voice page. Talk was wired in the sidebar and
-        added to the stack in the voice commit, but this method was missing
-        so the click did nothing."""
+    def show_talk_view(self, conversation_id=None):
+        """Voice is a chat type. Sidebar mic starts a new Voice chat;
+        Library rows with a mic icon reopen the same conversation here."""
+        if conversation_id:
+            self.talk_page.load_conversation(conversation_id)
+        else:
+            self.talk_page.start_new_voice_chat()
         self.content_stack.setCurrentWidget(self.talk_page)
         self._set_active_nav(self.sidebar.btn_talk)
 
@@ -847,7 +852,7 @@ class BuddyWindow(QWidget):
         a chat - sidebar clicks, library clicks, and search results all
         route through here."""
         if not core.get_conversation_is_private(conversation_id):
-            self.load_chat(conversation_id)
+            self._open_conversation(conversation_id)
             return
 
         if core.has_privacy_pin():
@@ -860,7 +865,7 @@ class BuddyWindow(QWidget):
             if not core.verify_privacy_pin(pin):
                 QMessageBox.warning(self, "Incorrect PIN", "That PIN doesn't match. Chat stays locked.")
                 return
-            self.load_chat(conversation_id)
+            self._open_conversation(conversation_id)
         else:
             choice = QMessageBox.warning(
                 self, "Private Chat",
@@ -871,7 +876,19 @@ class BuddyWindow(QWidget):
                 QMessageBox.Cancel
             )
             if choice == QMessageBox.Open:
-                self.load_chat(conversation_id)
+                self._open_conversation(conversation_id)
+
+    def _open_conversation(self, conversation_id):
+        kind = "chat"
+        try:
+            from storage import db
+            kind = db.get_conversation_kind(conversation_id)
+        except Exception:
+            pass
+        if kind == "voice":
+            self.show_talk_view(conversation_id)
+            return
+        self.load_chat(conversation_id)
 
     def load_chat(self, conversation_id):
         self.show_chat_view()

@@ -1,6 +1,6 @@
 """Chat library: searchable list of past conversations, with All/Favorites/
-Archived filter tabs, per-chat favorite/private/archive controls, and
-right-click delete."""
+Voice/Archived filter tabs, per-chat favorite/private/archive controls, and
+a mic icon on voice chats."""
 from PySide6.QtWidgets import (
     QLabel, QLineEdit, QHBoxLayout, QVBoxLayout, QFrame, QPushButton, QMenu,
 )
@@ -16,7 +16,12 @@ from ..theme import (
 
 
 class LibraryPage(CardPage):
-    FILTERS = [("all", "All"), ("favorites", "★ Favorites"), ("archived", "🗄 Archived")]
+    FILTERS = [
+        ("all", "All"),
+        ("favorites", "★ Favorites"),
+        ("voice", "🎤 Voice"),
+        ("archived", "🗄 Archived"),
+    ]
 
     def __init__(self, parent=None, close_callback=None, on_chat_selected=None, on_delete_chat=None):
         super().__init__("Library", "Browse your past chat histories and conversations with Buddy.", parent, close_callback)
@@ -27,7 +32,6 @@ class LibraryPage(CardPage):
         self.chat_item_widgets = []
         self.active_filter = "all"
 
-        # --- Filter tabs: All / Favorites / Archived ---
         filter_row = QHBoxLayout()
         filter_row.setSpacing(6)
         self.filter_buttons = {}
@@ -36,7 +40,7 @@ class LibraryPage(CardPage):
             btn.setCursor(Qt.PointingHandCursor)
             btn.setCheckable(True)
             btn.setChecked(key == "all")
-            btn.setToolTip(f"Show {label.lstrip('★🗄 ')} chats")
+            btn.setToolTip("Show %s chats" % label)
             btn.clicked.connect(lambda checked=False, k=key: self._on_filter_selected(k))
             filter_row.addWidget(btn)
             self.filter_buttons[key] = btn
@@ -44,7 +48,6 @@ class LibraryPage(CardPage):
         self.main_layout.addLayout(filter_row)
         self._restyle_filter_buttons()
 
-        # --- Search bar ---
         search_row = QHBoxLayout()
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("\U0001F50D  Search chats...")
@@ -72,10 +75,10 @@ class LibraryPage(CardPage):
         self.history_label = QLabel("Recent Chats")
         self.history_label.setStyleSheet(f"""
             QLabel {{
-                color: {CARD_TEXT_COLOR}; 
-                font-size: 13px; 
-                font-weight: bold; 
-                background: transparent; 
+                color: {CARD_TEXT_COLOR};
+                font-size: 13px;
+                font-weight: bold;
+                background: transparent;
                 border: none;
                 margin-top: 8px;
             }}
@@ -92,7 +95,6 @@ class LibraryPage(CardPage):
         self.main_layout.addWidget(self.no_results_label)
 
         self.main_layout.addStretch()
-
         self.refresh_chats()
 
     def _restyle_filter_buttons(self):
@@ -122,7 +124,6 @@ class LibraryPage(CardPage):
             self.refresh_chats()
 
     def refresh_chats(self):
-        """Reload the chat list for the active filter (most recent first)."""
         try:
             self.all_chats = core.get_recent_conversations(limit=200, filter_mode=self.active_filter)
         except Exception:
@@ -140,8 +141,12 @@ class LibraryPage(CardPage):
         self._clear_list()
         self.no_results_label.setText(
             "No chats match your search." if self.search_box.text().strip() else
-            {"all": "No chats here yet.", "favorites": "No favorites yet — star a chat to pin it here.",
-             "archived": "Nothing archived."}.get(self.active_filter, "No chats here yet.")
+            {
+                "all": "No chats here yet.",
+                "favorites": "No favorites yet — star a chat to pin it here.",
+                "voice": "No voice chats yet — tap the mic in the sidebar.",
+                "archived": "Nothing archived.",
+            }.get(self.active_filter, "No chats here yet.")
         )
         self.no_results_label.setVisible(len(chats) == 0)
         for chat in chats:
@@ -150,10 +155,11 @@ class LibraryPage(CardPage):
             is_private = bool(chat.get("is_private"))
             is_favorite = bool(chat.get("is_favorite"))
             is_archived = bool(chat.get("is_archived"))
+            is_voice = (chat.get("kind") or "chat") == "voice"
 
             box = QFrame()
             box.setCursor(Qt.PointingHandCursor)
-            box.setToolTip(f"{title}\n(right-click for more options)")
+            box.setToolTip("%s\n(right-click for more options)" % title)
             box.setStyleSheet(f"""
                 QFrame {{
                     background-color: {INPUT_BG};
@@ -167,6 +173,12 @@ class LibraryPage(CardPage):
             """)
             box_layout = QHBoxLayout(box)
             box_layout.setContentsMargins(10, 8, 10, 8)
+
+            if is_voice:
+                icon = QLabel("🎤")
+                icon.setStyleSheet("font-size: 13px; background: transparent; border: none;")
+                icon.setFixedWidth(22)
+                box_layout.addWidget(icon)
 
             label = QLabel(title)
             label.setStyleSheet(f"font-size: 12px; color: {TEXT_COLOR_DARK}; background: transparent; border: none;")
@@ -247,6 +259,5 @@ class LibraryPage(CardPage):
         self._render_chat_list(results)
 
     def _select_chat(self, chat_id):
-        """Opens the clicked chat; the main window handles switching off the settings/library page."""
         if self.on_chat_selected:
             self.on_chat_selected(chat_id)

@@ -1,33 +1,31 @@
 """Speech-to-text and text-to-speech via Hack Club AI's Replicate proxy.
 
-Hack AI's own chat/embeddings endpoints have no audio input or output at
-all — confirmed against their live model catalog (every model's
-output_modalities is text-only or text+image, never audio) and their
-docs (no /audio endpoints exist, chat.send() doesn't even list
-`modalities` as a parameter). Voice is only reachable through Replicate,
-proxied at https://ai.hackclub.com/proxy/v1/replicate using the same
-Hack Club AI key as everything else — per Hack AI's own Replicate guide,
-you point the official Replicate client/API at that base URL.
+Proxy source:
+  https://github.com/hackclub/ai/blob/main/src/routes/proxy/v1/replicate.ts
 
-Endpoints below match Replicate's real, documented HTTP API
-(https://replicate.com/docs/reference/http), just with the Hack AI
-base URL and key substituted in:
-  - POST /models/{owner}/{name}/predictions   (official models)
-  - GET  /predictions/{id}                     (poll status)
-  - POST /files                                (upload local audio)
+Base URL:
+  https://ai.hackclub.com/proxy/v1/replicate
 
-STT: vaibhavs10/incredibly-fast-whisper — whisper-large-v3 optimized for
-speed, audio in, transcript out. Verified against Replicate's real input
-schema (audio, task, language, batch_size, return_timestamps) and output
-shape ({"text": "..."}).
+Never put `model` in the JSON body. Replicate's POST /v1/predictions schema
+rejects it with 422 "Additional property model is not allowed". Hack Club
+forwards that body as-is on POST /predictions.
 
-TTS: inworld/realtime-tts-1.5-mini — ~120ms latency per Inworld's own
-benchmarks, the fastest option in Replicate's text-to-speech collection,
-picked specifically because "close to how humans talk" depends on the
-speak step not being the bottleneck. Verified against Replicate's real
-input schema (text, voice_id, temperature, audio_format, sample_rate).
-"Ashley" is the model's own documented default voice.
+Community models (Whisper) must use the version in the PATH. That route
+strips `model`/`version` from the body and sends only input + canonical
+version to Replicate:
+
+  POST /models/{owner}/{name}:{version}/predictions
+  {"input": {...}}
+
+Official models (Inworld TTS) use the unversioned official path:
+
+  POST /models/{owner}/{name}/predictions
+  {"input": {...}}
+
+Pinned Whisper version is from Hack Club's allowlist:
+  src/config/allowed-replicate-model-versions.json
 """
+import base64
 import os
 import time
 
@@ -37,25 +35,36 @@ from dotenv import load_dotenv
 load_dotenv()
 
 REPLICATE_BASE_URL = "https://ai.hackclub.com/proxy/v1/replicate"
-STT_MODEL = ("vaibhavs10", "incredibly-fast-whisper")
-TTS_MODEL = ("inworld", "realtime-tts-1.5-mini")
-DEFAULT_TTS_VOICE = "Ashley"
 
-SYNC_WAIT_SECONDS = 25  # `Prefer: wait` — most requests finish inside this
+STT_OWNER = "vaibhavs10"
+STT_NAME = "incredibly-fast-whisper"
+STT_VERSION = "3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c"
+TTS_OWNER = "inworld"
+TTS_NAME = "realtime-tts-1.5-mini"
+DEFAULT_TTS_VOICE = "Ashley"
+GEMINI_STT_MODELS = (
+    "google/gemini-2.5-flash-lite",
+    "google/gemini-2.5-flash",
+    "google/gemini-3-flash-preview",
+)
+STT_PROMPT = (
+    "Transcribe this voice recording verbatim. "
+    "Return only the spoken words. No quotes, labels, or commentary. "
+    "If there is no speech, return an empty string."
+)
+
+SYNC_WAIT_SECONDS = 25
 POLL_INTERVAL_SECONDS = 0.6
-POLL_TIMEOUT_SECONDS = 30  # fallback if a request doesn't finish within SYNC_WAIT_SECONDS
-REQUEST_TIMEOUT_SECONDS = SYNC_WAIT_SECONDS + 10
+POLL_TIMEOUT_SECONDS = 45
+REQUEST_TIMEOUT_SECONDS = SYNC_WAIT_SECONDS + 15
 
 
 class VoiceError(Exception):
-    """Raised for any STT/TTS failure. Callers show str(e) directly, so
-    messages here are already user-facing — never a raw stack trace."""
+    """Raised for any STT/TTS failure. Callers show str(e) directly."""
     pass
 
 
 def _api_key():
-    """Same key used everywhere else in Buddy — Hack Club AI's proxy
-    accepts one token for chat, embeddings, and Replicate alike."""
     api_key = os.getenv("API_KEY")
     try:
         from storage import db
@@ -68,60 +77,68 @@ def _api_key():
     return api_key
 
 
-def _run_prediction(owner, name, input_payload, cancel_check=None):
-    """Creates a prediction with Prefer: wait for a fast synchronous
-    result; falls back to polling /predictions/{id} if it isn't done
-    yet. Raises VoiceError with a specific, honest reason on any
-    failure — mirrors core/agent.py's run_image_creation_task, which
-    exists precisely because an earlier silent-empty-result bug there
-    made Buddy fail with no diagnostic information at all."""
-    headers = {
-        "Authorization": f"Bearer {_api_key()}",
+def _headers():
+    return {
+        "Authorization": "Bearer %s" % _api_key(),
         "Content-Type": "application/json",
-        "Prefer": f"wait={SYNC_WAIT_SECONDS}",
+        "Prefer": "wait=%s" % SYNC_WAIT_SECONDS,
     }
-    try:
-        resp = requests.post(
-            f"{REPLICATE_BASE_URL}/models/{owner}/{name}/predictions",
-            headers=headers,
-            json={"input": input_payload},
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-    except requests.RequestException as e:
-        raise VoiceError(f"Couldn't reach the voice service: {e}")
 
-    if resp.status_code >= 400:
-        raise VoiceError(f"Voice service rejected the request ({resp.status_code}): {resp.text[:200]}")
 
-    prediction = resp.json()
+def _prediction_id(prediction):
+    if not isinstance(prediction, dict):
+        return None
+    pred_id = prediction.get("id")
+    if pred_id:
+        return pred_id
+    get_url = (prediction.get("urls") or {}).get("get") or ""
+    if "/predictions/" in get_url:
+        return get_url.rstrip("/").split("/predictions/")[-1].split("?")[0]
+    return None
+
+
+def _wait_for_output(prediction, cancel_check=None):
+    if not isinstance(prediction, dict):
+        return prediction
+
     status = prediction.get("status")
-
     if status == "succeeded":
         return prediction.get("output")
     if status == "failed":
-        raise VoiceError(f"Voice generation failed: {prediction.get('error') or 'unknown error'}")
+        raise VoiceError("Voice generation failed: %s" % (prediction.get("error") or "unknown error"))
+    if status == "canceled":
+        raise VoiceError("Cancelled.")
 
-    # Didn't finish inside the sync window — poll like any async prediction.
-    get_url = prediction.get("urls", {}).get("get")
-    if not get_url:
+    pred_id = _prediction_id(prediction)
+    if not pred_id:
         raise VoiceError("Voice service didn't return a prediction to track.")
 
     elapsed = 0.0
+    headers = _headers()
     while elapsed < POLL_TIMEOUT_SECONDS:
         if cancel_check and cancel_check():
             raise VoiceError("Cancelled.")
         try:
-            poll_resp = requests.get(get_url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
-            poll_resp.raise_for_status()
-            result = poll_resp.json()
+            poll_resp = requests.get(
+                "%s/predictions/%s" % (REPLICATE_BASE_URL, pred_id),
+                headers=headers,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
         except requests.RequestException as e:
-            raise VoiceError(f"Lost connection while waiting on the voice service: {e}")
+            raise VoiceError("Lost connection while waiting on the voice service: %s" % e)
 
+        if poll_resp.status_code >= 400:
+            raise VoiceError(
+                "Voice service rejected the request (%s): %s"
+                % (poll_resp.status_code, poll_resp.text[:200])
+            )
+
+        result = poll_resp.json()
         status = result.get("status")
         if status == "succeeded":
             return result.get("output")
         if status == "failed":
-            raise VoiceError(f"Voice generation failed: {result.get('error') or 'unknown error'}")
+            raise VoiceError("Voice generation failed: %s" % (result.get("error") or "unknown error"))
         if status == "canceled":
             raise VoiceError("Cancelled.")
 
@@ -131,67 +148,266 @@ def _run_prediction(owner, name, input_payload, cancel_check=None):
     raise VoiceError("Voice service is taking too long to respond. Try again in a moment.")
 
 
-def upload_audio_file(file_path):
-    """Uploads a local recording so it can be passed as an `audio` URL to
-    transcribe_audio() — incredibly-fast-whisper's input schema takes a
-    URI, not raw bytes. Matches Replicate's real POST /files multipart
-    contract."""
-    filename = os.path.basename(file_path)
+def _create_prediction(path, input_payload, cancel_check=None):
+    """POST a prediction. Body is only {"input": ...} — never model or version."""
     try:
-        with open(file_path, "rb") as f:
-            resp = requests.post(
-                f"{REPLICATE_BASE_URL}/files",
-                headers={"Authorization": f"Bearer {_api_key()}"},
-                files={"content": (filename, f, "audio/wav")},
-                timeout=REQUEST_TIMEOUT_SECONDS,
-            )
-        resp.raise_for_status()
-        url = resp.json().get("urls", {}).get("get")
-        if not url:
-            raise VoiceError("Upload succeeded but no file URL was returned.")
-        return url
+        resp = requests.post(
+            "%s/%s" % (REPLICATE_BASE_URL, path.lstrip("/")),
+            headers=_headers(),
+            json={"input": input_payload},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
     except requests.RequestException as e:
-        raise VoiceError(f"Couldn't upload the recording: {e}")
+        raise VoiceError("Couldn't reach the voice service: %s" % e)
+
+    if resp.status_code >= 400:
+        raise VoiceError(
+            "Voice service rejected the request (%s): %s"
+            % (resp.status_code, resp.text[:200])
+        )
+    return _wait_for_output(resp.json(), cancel_check=cancel_check)
+
+
+def _as_transcript(output):
+    if output is None:
+        return ""
+    if isinstance(output, str):
+        return output.strip()
+    if isinstance(output, dict):
+        for key in ("text", "transcription", "transcript", "output"):
+            value = output.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        chunks = output.get("chunks") or output.get("segments")
+        if isinstance(chunks, list):
+            parts = []
+            for chunk in chunks:
+                if isinstance(chunk, dict) and chunk.get("text"):
+                    parts.append(str(chunk["text"]))
+                elif isinstance(chunk, str):
+                    parts.append(chunk)
+            return " ".join(parts).strip()
+    if isinstance(output, list):
+        return " ".join(_as_transcript(item) for item in output).strip()
+    return str(output).strip()
+
+
+def _as_audio_url(output):
+    if output is None:
+        return ""
+    if isinstance(output, str) and output.startswith(("http://", "https://", "data:")):
+        return output
+    if isinstance(output, dict):
+        for key in ("url", "audio", "wav", "mp3", "output", "audio_url"):
+            value = output.get(key)
+            if isinstance(value, str) and value.startswith(("http://", "https://", "data:")):
+                return value
+            found = _as_audio_url(value)
+            if found:
+                return found
+        urls = output.get("urls")
+        if isinstance(urls, dict):
+            return _as_audio_url(urls.get("get") or urls.get("stream"))
+    if isinstance(output, list) and output:
+        return _as_audio_url(output[0])
+    url = getattr(output, "url", None)
+    if callable(url):
+        try:
+            url = url()
+        except Exception:
+            url = None
+    if isinstance(url, str) and url.startswith(("http://", "https://", "data:")):
+        return url
+    return ""
+
+
+def upload_audio_file(file_path):
+    """Talk page still calls this. Returns a data URI so we never POST /files."""
+    with open(file_path, "rb") as handle:
+        encoded = base64.b64encode(handle.read()).decode("ascii")
+    return "data:audio/wav;base64,%s" % encoded
+
+
+def _audio_bytes(audio_url):
+    if isinstance(audio_url, str) and audio_url.startswith("data:") and "," in audio_url:
+        return base64.b64decode(audio_url.split(",", 1)[1])
+    if isinstance(audio_url, str) and os.path.exists(audio_url):
+        with open(audio_url, "rb") as handle:
+            return handle.read()
+    if isinstance(audio_url, str) and audio_url.startswith("http"):
+        resp = requests.get(audio_url, timeout=REQUEST_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        return resp.content
+    raise VoiceError("Couldn't read the recording.")
+
+
+def _gemini_transcribe(audio_bytes, cancel_check=None):
+    import models
+
+    encoded = base64.b64encode(audio_bytes).decode("ascii")
+    content = [
+        {"type": "text", "text": STT_PROMPT},
+        {"type": "input_audio", "input_audio": {"data": encoded, "format": "wav"}},
+    ]
+    last_error = None
+    for model_id in GEMINI_STT_MODELS:
+        if cancel_check and cancel_check():
+            raise VoiceError("Cancelled.")
+        try:
+            response = models.run_manager_step(
+                model_id,
+                [{"role": "user", "content": content}],
+                max_tokens=512,
+                cancel_check=cancel_check,
+            )
+            message = response.choices[0].message
+            text = models.message_text(message).strip()
+            if text:
+                return text
+        except Exception as exc:
+            last_error = exc
+            continue
+    if last_error:
+        raise last_error
+    return ""
 
 
 def transcribe_audio(audio_url, cancel_check=None):
-    """Speech-to-text via incredibly-fast-whisper. audio_url must already
-    be reachable by Replicate — use upload_audio_file() first for local
-    recordings. Returns the transcript text; raises VoiceError (never
-    returns silently empty) if nothing was transcribed, since a dropped
-    transcript would make Buddy respond to nothing with no indication
-    why."""
-    owner, name = STT_MODEL
-    output = _run_prediction(
-        owner, name,
-        {"audio": audio_url, "task": "transcribe", "batch_size": 24, "return_timestamps": False},
+    audio_bytes = _audio_bytes(audio_url)
+    try:
+        text = _gemini_transcribe(audio_bytes, cancel_check=cancel_check)
+        if text:
+            return text
+    except Exception:
+        pass
+
+    data_uri = audio_url
+    if not (isinstance(audio_url, str) and audio_url.startswith("data:")):
+        data_uri = "data:audio/wav;base64,%s" % base64.b64encode(audio_bytes).decode("ascii")
+    output = _create_prediction(
+        "models/%s/%s:%s/predictions" % (STT_OWNER, STT_NAME, STT_VERSION),
+        {"audio": data_uri, "task": "transcribe", "batch_size": 8},
         cancel_check=cancel_check,
     )
-    # Real output shape is {"text": "..."} (optionally with "chunks" if
-    # return_timestamps was requested) — not a bare string or "transcription".
-    text = output.get("text", "") if isinstance(output, dict) else str(output or "")
-    text = text.strip()
+    text = _as_transcript(output)
     if not text:
         raise VoiceError("Didn't catch that — no speech was detected in the recording.")
     return text
 
 
 def synthesize_speech(text, voice=DEFAULT_TTS_VOICE, cancel_check=None):
-    """Text-to-speech via Inworld Realtime TTS 1.5 Mini (~120ms latency,
-    the fastest model in Replicate's TTS collection — picked so the
-    speak step doesn't become the bottleneck in a live conversation).
-    Returns a playable audio URL. Raises VoiceError with a specific
-    reason if generation fails or returns nothing."""
+    """Paid Replicate TTS. Talk page no longer uses this — system voices are free."""
     if not text or not text.strip():
         raise VoiceError("Nothing to say — the reply was empty.")
-
-    owner, name = TTS_MODEL
-    output = _run_prediction(
-        owner, name,
-        {"text": text.strip(), "voice_id": voice, "audio_format": "mp3"},
+    output = _create_prediction(
+        "models/%s/%s/predictions" % (TTS_OWNER, TTS_NAME),
+        {
+            "text": text.strip(),
+            "voice_id": voice or DEFAULT_TTS_VOICE,
+            "audio_format": "mp3",
+        },
         cancel_check=cancel_check,
     )
-    url = output if isinstance(output, str) else None
+    url = _as_audio_url(output)
     if not url:
         raise VoiceError("The voice model responded but didn't return any audio.")
     return url
+
+
+def mac_premium_voice():
+    """Pick a downloaded Enhanced/Premium macOS voice, then a Siri/Samantha voice."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("say"):
+        return None
+    try:
+        raw = subprocess.check_output(["say", "-v", "?"], text=True, stderr=subprocess.STDOUT)
+    except Exception:
+        return None
+
+    names = []
+    for line in raw.splitlines():
+        if "#" in line:
+            name = line.split("#", 1)[0].rstrip()
+        else:
+            name = line.rstrip()
+        # Voice name is everything before the locale column.
+        parts = name.split()
+        locale_idx = next((i for i, part in enumerate(parts) if "_" in part or part.startswith("en")), None)
+        voice = " ".join(parts[:locale_idx] if locale_idx else parts).strip()
+        if voice:
+            names.append(voice)
+
+    for needle in ("Premium", "Enhanced"):
+        for voice in names:
+            if needle.lower() in voice.lower() and ("en_" in voice.lower() or True):
+                if any(tag in voice for tag in ("Premium", "Enhanced", "Samantha", "Allison", "Zoe", "Nicky", "Evan", "Siri")):
+                    return voice
+        matches = [voice for voice in names if needle.lower() in voice.lower()]
+        if matches:
+            return matches[0]
+    for preferred in ("Samantha (Premium)", "Allison (Premium)", "Zoe (Premium)", "Samantha", "Allison", "Siri Voice 1"):
+        if preferred in names:
+            return preferred
+    return names[0] if names else None
+
+
+def system_say_command(text):
+    """Free TTS via the OS speech engine. Prefers Mac Premium/Enhanced voices."""
+    import shutil
+    import sys
+
+    spoken = (text or "").strip()
+    if not spoken:
+        return None
+    if sys.platform == "darwin" and shutil.which("say"):
+        voice = mac_premium_voice()
+        if voice:
+            return ["say", "-v", voice, spoken]
+        return ["say", spoken]
+    if sys.platform.startswith("win"):
+        escaped = spoken.replace("'", "''")
+        return [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "Add-Type -AssemblyName System.Speech; "
+            "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            "$s.Speak('%s')" % escaped,
+        ]
+    for binary in ("espeak-ng", "espeak", "spd-say"):
+        if shutil.which(binary):
+            return [binary, spoken]
+    return None
+
+
+def system_record_command(wav_path, sample_rate=16000):
+    """Record mic to a WAV file without Qt Multimedia.
+
+    Prefers sox `rec`, then ffmpeg. Returns argv or None.
+    """
+    import shutil
+    import sys
+
+    if shutil.which("rec"):
+        return ["rec", "-q", "-r", str(sample_rate), "-c", "1", "-b", "16", wav_path]
+    if shutil.which("ffmpeg"):
+        if sys.platform == "darwin":
+            return [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "avfoundation", "-i", ":0",
+                "-ac", "1", "-ar", str(sample_rate), wav_path,
+            ]
+        if sys.platform.startswith("win"):
+            return [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "dshow", "-i", "audio=default",
+                "-ac", "1", "-ar", str(sample_rate), wav_path,
+            ]
+        return [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "alsa", "-i", "default",
+            "-ac", "1", "-ar", str(sample_rate), wav_path,
+        ]
+    return None

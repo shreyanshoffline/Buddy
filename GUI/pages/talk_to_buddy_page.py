@@ -1,17 +1,8 @@
 """Talk to Buddy — a real-time voice conversation page.
 
-Pipeline per turn: record mic -> upload -> Whisper transcribes -> the same
-Manager/Worker pipeline used everywhere else in Buddy replies -> Inworld
-Realtime TTS speaks the reply -> played back automatically, then the mic
-re-arms for the next turn.
-
-Every network step (upload, transcribe, think, speak) is real, so latency
-is the sum of those calls, not something this page can fake. What it does
-control: recording starts instantly, each stage shows a specific status
-label instead of one long silent "Thinking...", and Inworld's realtime-tts-1.5-mini was
-picked specifically because Resemble built it for sub-200ms low-latency
-voice agents (see voice_client.py's docstring) rather than the higher-
-quality-but-slower chatterbox-pro used nowhere in this app.
+Pipeline per turn: record mic -> Whisper transcribes (Replicate) ->
+the same Manager/Worker pipeline replies -> the operating system's
+built-in speech engine speaks the reply for free. No paid TTS.
 
 Uses core.process_message_incognito so voice turns don't get saved as a
 permanent chat transcript by default — this is a live conversation, not
@@ -22,10 +13,7 @@ import tempfile
 import threading
 
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QFrame
-from PySide6.QtCore import Qt, QThread, Signal, QUrl, QTimer
-from PySide6.QtMultimedia import (
-    QAudioSource, QAudioFormat, QMediaDevices, QMediaPlayer, QAudioOutput,
-)
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QProcess
 
 import core
 import voice_client
@@ -36,8 +24,7 @@ from ..theme import (
     PRESSED_BG_COLOR, TEXT_COLOR_DARK, DANGER_COLOR, DANGER_SOFT_BG, DANGER_BORDER,
 )
 
-# --- Recording format: 16kHz mono 16-bit PCM WAV — small, fast to upload,
-# and exactly what Whisper expects, so no server-side conversion needed. ---
+# --- Recording format: 16kHz mono 16-bit PCM WAV — small, fast to upload. ---
 SAMPLE_RATE = 16000
 MAX_RECORDING_SECONDS = 60  # safety ceiling so a stuck mic can't record forever
 
@@ -60,22 +47,19 @@ class _VoiceTurnWorker(QThread):
     unbroken 'thinking' spinner."""
     stage = Signal(str)
     user_text_ready = Signal(str)
-    reply_ready = Signal(str, str)  # (reply_text, audio_url) — audio_url may be ""
+    reply_ready = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, wav_path, message_history, voice_name):
+    def __init__(self, wav_path, message_history):
         super().__init__()
         self.wav_path = wav_path
         self.message_history = message_history
-        self.voice_name = voice_name
         self.cancel_event = threading.Event()
 
     def run(self):
         try:
-            self.stage.emit("Uploading...")
-            audio_url = voice_client.upload_audio_file(self.wav_path)
-
             self.stage.emit("Listening...")
+            audio_url = voice_client.upload_audio_file(self.wav_path)
             user_text = voice_client.transcribe_audio(audio_url, cancel_check=self.cancel_event.is_set)
             self.user_text_ready.emit(user_text)
 
@@ -83,19 +67,7 @@ class _VoiceTurnWorker(QThread):
             result = core.process_message_incognito(
                 user_text, self.message_history, cancel_check=self.cancel_event.is_set,
             )
-            reply_text = result.get("reply", "")
-
-            self.stage.emit("Speaking...")
-            try:
-                audio_reply_url = voice_client.synthesize_speech(
-                    reply_text, voice=self.voice_name, cancel_check=self.cancel_event.is_set,
-                )
-            except voice_client.VoiceError:
-                # Text reply still succeeded even if speech synthesis
-                # failed — show it rather than losing the whole turn.
-                audio_reply_url = ""
-
-            self.reply_ready.emit(reply_text, audio_reply_url)
+            self.reply_ready.emit(result.get("reply", ""))
         except voice_client.VoiceError as e:
             self.failed.emit(str(e))
         except Exception as e:
@@ -115,8 +87,9 @@ class TalkToBuddyPage(CardPage):
 
     def __init__(self, parent=None, close_callback=None):
         super().__init__("Talk to Buddy", "A live voice conversation — tap the mic and start talking.", parent, close_callback)
+        self.conversation_id = None
+        self._last_user_text = ""
         self.message_history = core.new_message_history() if hasattr(core, "new_message_history") else []
-        self.voice_name = voice_client.DEFAULT_TTS_VOICE
         self.state = self.STATE_IDLE
         self._audio_source = None
         self._audio_io_device = None
@@ -125,11 +98,17 @@ class TalkToBuddyPage(CardPage):
         self._record_timer.setSingleShot(True)
         self._record_timer.timeout.connect(self._stop_recording)
         self._turn_worker = None
-        self._player = QMediaPlayer(self)
-        self._audio_output = QAudioOutput(self)
-        self._player.setAudioOutput(self._audio_output)
-        self._player.mediaStatusChanged.connect(self._on_playback_status_changed)
+        self._tts_engine = None
+        self._record_process = None
+        self._record_wav_path = None
+        self._say_process = QProcess(self)
+        self._say_process.finished.connect(lambda *_: self._style_idle())
+        self._init_tts()
 
+        if hasattr(self, "account_chip"):
+            self.account_chip.setVisible(False)
+        if hasattr(self, "account_button"):
+            self.account_button.setVisible(False)
         self._build_ui()
 
     # --- UI ---
@@ -145,6 +124,7 @@ class TalkToBuddyPage(CardPage):
         self.status_dot.setFixedWidth(16)
         status_row.addWidget(self.status_dot)
         self.status_label = QLabel("Tap the mic to start talking")
+        self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {CARD_SUBTITLE_COLOR}; font-size: 12px; background: transparent; border: none;")
         status_row.addWidget(self.status_label)
         status_row.addStretch()
@@ -162,7 +142,7 @@ class TalkToBuddyPage(CardPage):
         self.main_layout.addLayout(mic_row)
         self._style_idle()
 
-        hint = QLabel("Voice powered by Whisper-large-v3 (listening) and Inworld TTS (speaking), via Hack Club AI's Replicate proxy.")
+        hint = QLabel("Listening uses Gemini Flash-Lite. Speaking uses your Mac Premium/Enhanced system voice — $0. This session is saved in Library as a Voice chat.")
         hint.setWordWrap(True)
         hint.setAlignment(Qt.AlignCenter)
         hint.setStyleSheet(f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; background: transparent; border: none; margin-top: 8px;")
@@ -198,7 +178,10 @@ class TalkToBuddyPage(CardPage):
     def _style_error(self, message):
         self.state = self.STATE_ERROR
         self.status_dot.setStyleSheet(f"color: {DANGER_COLOR}; background: transparent; border: none; font-size: 11px;")
-        self.status_label.setText(message)
+        clean = " ".join(str(message or "").split())
+        if len(clean) > 140:
+            clean = clean[:137] + "…"
+        self.status_label.setText(clean)
         self.mic_button.setEnabled(True)
         self.mic_button.setStyleSheet(self._mic_style(PRIMARY_COLOR, PRIMARY_COLOR_DARK))
 
@@ -232,29 +215,70 @@ class TalkToBuddyPage(CardPage):
             self._start_recording()
 
     def _start_recording(self):
+        self._pcm_buffer = bytearray()
+        self._audio_source = None
+        self._audio_io_device = None
+        self._record_process = getattr(self, "_record_process", None)
+        self._record_wav_path = None
+
+        if self._start_qt_recording():
+            self._style_recording()
+            self._record_timer.start(MAX_RECORDING_SECONDS * 1000)
+            return
+
+        fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="buddy_voice_")
+        os.close(fd)
+        command = voice_client.system_record_command(wav_path, sample_rate=SAMPLE_RATE)
+        if not command:
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+            self._style_error(
+                "No microphone module found. In the Buddy folder run: pip install PySide6-Addons"
+            )
+            return
+
+        self._record_wav_path = wav_path
+        self._record_process = QProcess(self)
+        self._record_process.start(command[0], command[1:])
+        if not self._record_process.waitForStarted(2000):
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+            self._record_process = None
+            self._record_wav_path = None
+            self._style_error("Couldn't start the microphone recorder. Check mic permissions.")
+            return
+
+        self._style_recording()
+        self._record_timer.start(MAX_RECORDING_SECONDS * 1000)
+
+    def _start_qt_recording(self):
+        try:
+            from PySide6.QtMultimedia import QAudioFormat, QAudioSource, QMediaDevices
+        except Exception:
+            return False
+
         device = QMediaDevices.defaultAudioInput()
         if device is None:
-            self._style_error("No microphone found. Check your system's audio input settings.")
-            return
+            return False
 
         fmt = QAudioFormat()
         fmt.setSampleRate(SAMPLE_RATE)
         fmt.setChannelCount(1)
         fmt.setSampleFormat(QAudioFormat.Int16)
-
         if not device.isFormatSupported(fmt):
             fmt = device.preferredFormat()
 
-        self._pcm_buffer = bytearray()
         self._audio_source = QAudioSource(device, fmt, self)
         self._audio_io_device = self._audio_source.start()
         if self._audio_io_device is None:
-            self._style_error("Couldn't open the microphone. Check permissions and try again.")
-            return
+            self._audio_source = None
+            return False
         self._audio_io_device.readyRead.connect(self._on_audio_ready_read)
-
-        self._style_recording()
-        self._record_timer.start(MAX_RECORDING_SECONDS * 1000)
+        return True
 
     def _on_audio_ready_read(self):
         if self._audio_io_device is None:
@@ -263,46 +287,140 @@ class TalkToBuddyPage(CardPage):
         self._pcm_buffer.extend(bytes(chunk))
 
     def _stop_recording(self):
-        if self._audio_source is None:
-            return
         self._record_timer.stop()
-        self._audio_source.stop()
-        actual_rate = self._audio_source.format().sampleRate()
-        self._audio_source = None
-        self._audio_io_device = None
 
-        if len(self._pcm_buffer) < SAMPLE_RATE:  # under ~0.5s of audio at 16-bit mono
+        if self._audio_source is not None:
+            actual_rate = self._audio_source.format().sampleRate()
+            self._audio_source.stop()
+            self._audio_source = None
+            self._audio_io_device = None
+            if len(self._pcm_buffer) < SAMPLE_RATE:
+                self._style_error("That was too short — try holding the mic a little longer.")
+                return
+            wav_bytes = _write_wav_header(len(self._pcm_buffer), sample_rate=actual_rate) + bytes(self._pcm_buffer)
+            fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="buddy_voice_")
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(wav_bytes)
+            self._run_turn(wav_path)
+            return
+
+        process = getattr(self, "_record_process", None)
+        wav_path = getattr(self, "_record_wav_path", None)
+        self._record_process = None
+        self._record_wav_path = None
+        if process is not None and process.state() != QProcess.NotRunning:
+            process.write(b"q\n")
+            if not process.waitForFinished(1500):
+                process.terminate()
+                process.waitForFinished(1000)
+
+        if not wav_path or not os.path.exists(wav_path) or os.path.getsize(wav_path) < 1000:
+            if wav_path:
+                try:
+                    os.remove(wav_path)
+                except OSError:
+                    pass
             self._style_error("That was too short — try holding the mic a little longer.")
             return
-
-        wav_bytes = _write_wav_header(len(self._pcm_buffer), sample_rate=actual_rate) + bytes(self._pcm_buffer)
-        fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="buddy_voice_")
-        with os.fdopen(fd, "wb") as f:
-            f.write(wav_bytes)
-
         self._run_turn(wav_path)
 
     # --- pipeline ---
     def _run_turn(self, wav_path):
-        self._style_processing("Uploading...")
-        self._turn_worker = _VoiceTurnWorker(wav_path, self.message_history, self.voice_name)
+        self._style_processing("Listening...")
+        self._turn_worker = _VoiceTurnWorker(wav_path, self.message_history)
         self._turn_worker.stage.connect(lambda label: self._style_processing(label))
-        self._turn_worker.user_text_ready.connect(lambda text: self._add_transcript_line(text, is_user=True))
+        self._turn_worker.user_text_ready.connect(self._on_user_text)
         self._turn_worker.reply_ready.connect(self._on_reply_ready)
         self._turn_worker.failed.connect(self._on_turn_failed)
         self._turn_worker.start()
 
-    def _on_reply_ready(self, reply_text, audio_url):
-        self._add_transcript_line(reply_text, is_user=False)
-        if audio_url:
-            self._player.setSource(QUrl(audio_url))
-            self._player.play()
-        else:
+    def _init_tts(self):
+        try:
+            from PySide6.QtTextToSpeech import QTextToSpeech
+            self._tts_engine = QTextToSpeech(self)
+            self._tts_engine.stateChanged.connect(self._on_tts_state)
+        except Exception:
+            self._tts_engine = None
+
+    def _on_tts_state(self, state):
+        try:
+            from PySide6.QtTextToSpeech import QTextToSpeech
+            if state != QTextToSpeech.Speaking:
+                self._style_idle()
+        except Exception:
             self._style_idle()
 
-    def _on_playback_status_changed(self, status):
-        if status in (QMediaPlayer.EndOfMedia, QMediaPlayer.InvalidMedia):
+    def _speak(self, text):
+        spoken = (text or "").strip()
+        if not spoken:
             self._style_idle()
+            return
+        self._style_processing("Speaking...")
+        command = voice_client.system_say_command(spoken)
+        if command:
+            self._say_process.start(command[0], command[1:])
+            return
+        if self._tts_engine is not None:
+            self._tts_engine.say(spoken)
+            return
+        self._style_idle()
+
+    def _on_user_text(self, text):
+        self._last_user_text = text
+        self._add_transcript_line(text, is_user=True)
+
+    def _on_reply_ready(self, reply_text):
+        self._add_transcript_line(reply_text, is_user=False)
+        self._persist_turn(self._last_user_text if hasattr(self, "_last_user_text") else "", reply_text)
+        self._speak(reply_text)
+
+    def start_new_voice_chat(self):
+        self.conversation_id = None
+        self.message_history = core.new_message_history() if hasattr(core, "new_message_history") else []
+        self._clear_transcript()
+        self._style_idle()
+
+    def load_conversation(self, conversation_id):
+        self.conversation_id = conversation_id
+        try:
+            history = core.get_conversation_history(conversation_id)
+        except Exception:
+            history = []
+        self.message_history = core.new_message_history() if hasattr(core, "new_message_history") else []
+        self._clear_transcript()
+        for message in history:
+            role = message.get("role")
+            text = (message.get("content") or "").strip()
+            if not text or role not in ("user", "assistant"):
+                continue
+            self.message_history.append({"role": role, "content": text})
+            self._add_transcript_line(text, is_user=(role == "user"))
+        self._style_idle()
+
+    def _clear_transcript(self):
+        while self.transcript_container.count():
+            item = self.transcript_container.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+            layout = item.layout()
+            if layout:
+                while layout.count():
+                    child = layout.takeAt(0)
+                    if child.widget():
+                        child.widget().deleteLater()
+
+    def _persist_turn(self, user_text, reply_text):
+        try:
+            from storage import db
+            if self.conversation_id is None:
+                self.conversation_id = db.create_conversation(title="Voice chat", kind="voice")
+            if user_text:
+                db.save_message(self.conversation_id, "user", content=user_text)
+            if reply_text:
+                db.save_message(self.conversation_id, "assistant", content=reply_text)
+        except Exception:
+            pass
 
     def _on_turn_failed(self, message):
         self._style_error(message)
@@ -311,9 +429,22 @@ class TalkToBuddyPage(CardPage):
         """Stop any in-flight recording/playback if the user navigates
         away mid-turn, so nothing keeps running against a closed page."""
         if self._audio_source is not None:
-            self._audio_source.stop()
+            try:
+                self._audio_source.stop()
+            except Exception:
+                pass
             self._audio_source = None
+        if getattr(self, "_record_process", None) is not None:
+            if self._record_process.state() != QProcess.NotRunning:
+                self._record_process.kill()
+            self._record_process = None
         if self._turn_worker is not None and self._turn_worker.isRunning():
             self._turn_worker.cancel_event.set()
-        self._player.stop()
+        if self._tts_engine is not None:
+            try:
+                self._tts_engine.stop()
+            except Exception:
+                pass
+        if self._say_process.state() != QProcess.NotRunning:
+            self._say_process.kill()
         super().hideEvent(event)
