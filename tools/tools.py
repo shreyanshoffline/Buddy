@@ -10,7 +10,7 @@ Future: abstract backend for Linux/Windows.
 
 Dependencies (install via manage_package if missing):
   - pyautogui
-  - ddgs (or duckduckgo-search)
+  - requests (Hack Club Search)
   - google-auth, google-auth-oauthlib, google-api-python-client  (for Gmail)
   - Optional: psutil, send2trash
 
@@ -41,14 +41,12 @@ except ImportError:
     HAS_PYAUTOGUI = False
 
 try:
-    from ddgs import DDGS
-    HAS_DDGS = True
+    import requests as _requests
+    HAS_REQUESTS = True
 except ImportError:
-    try:
-        from ddgs import DDGS
-        HAS_DDGS = True
-    except ImportError:
-        HAS_DDGS = False
+    HAS_REQUESTS = False
+
+from tools.memory_tools import remember_fact, forget_fact, list_remembered_facts  # noqa: F401
 
 try:
     from google.auth.transport.requests import Request
@@ -228,23 +226,87 @@ def activate_app(app: str) -> str:
 # WEB / BROWSER TOOLS
 # =============================================================================
 
-def web_search(query: str, max_results: int = 5) -> str:
-    """Searches the web via DuckDuckGo for live facts, current information, or links."""
-    if not HAS_DDGS:
-        return "Error: ddgs / duckduckgo-search package not installed. Use manage_package to install it."
+def _hackclub_search_key() -> str:
+    """Key for search.hackclub.com. Separate from the Hack Club AI chat key
+    when the user has one; otherwise reuse API_KEY / the Settings BYO key."""
+    import os
+    for name in ("HACKCLUB_SEARCH_KEY", "SEARCH_HACKCLUB_KEY"):
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
     try:
-        results = list(DDGS().text(query, max_results=max_results))
-        if not results:
-            return f"No search results found for: '{query}'"
-        formatted = f"DuckDuckGo Search Results for '{query}':\n"
-        for i, res in enumerate(results, 1):
-            title = res.get("title", "No Title")
-            snippet = res.get("body", "No Description")
-            url = res.get("href", "No URL")
-            formatted += f"\n{i}. {title}\n   Snippet: {snippet}\n   URL: {url}\n"
-        return formatted
+        from storage import db
+        profile = db.get_profile() or {}
+        for name in ("hackclub_search_key", "byo_api_key"):
+            value = (profile.get(name) or "").strip()
+            if value:
+                return value
+    except Exception:
+        pass
+    return (os.getenv("API_KEY") or "").strip()
+
+
+def web_search(query: str, max_results: int = 5) -> str:
+    """Searches the web via Hack Club Search (Brave proxy at search.hackclub.com)."""
+    if not HAS_REQUESTS:
+        return "Error: the requests package is missing, so web search cannot run."
+    key = _hackclub_search_key()
+    if not key:
+        return (
+            "Error: no search key. Add HACKCLUB_SEARCH_KEY to .env "
+            "(create one at https://search.hackclub.com) and restart Buddy."
+        )
+    count = max(1, min(int(max_results or 5), 10))
+    try:
+        resp = _requests.get(
+            "https://search.hackclub.com/res/v1/web/search",
+            params={"q": query, "count": count},
+            headers={
+                "Authorization": f"Bearer {key}",
+                "x-subscription-token": key,
+                "Accept": "application/json",
+            },
+            timeout=20,
+        )
     except Exception as e:
-        return f"Failed to execute web search: {str(e)}"
+        return f"Failed to reach search.hackclub.com: {e}"
+
+    if resp.status_code in (401, 403):
+        return (
+            "Hack Club Search rejected the key "
+            f"({resp.status_code}). Get a search key at https://search.hackclub.com "
+            "and put it in HACKCLUB_SEARCH_KEY."
+        )
+    if resp.status_code >= 400:
+        return f"Hack Club Search failed ({resp.status_code}): {resp.text[:200]}"
+
+    try:
+        payload = resp.json()
+    except Exception:
+        return f"Hack Club Search returned non-JSON: {resp.text[:200]}"
+
+    items = []
+    if isinstance(payload, dict):
+        web = payload.get("web") or payload.get("data") or {}
+        if isinstance(web, dict):
+            items = web.get("results") or web.get("items") or []
+        if not items:
+            items = payload.get("results") or payload.get("items") or []
+    elif isinstance(payload, list):
+        items = payload
+
+    if not items:
+        return f"No search results found for: '{query}'"
+
+    formatted = f"Hack Club Search results for '{query}':\n"
+    for i, res in enumerate(items[:count], 1):
+        if not isinstance(res, dict):
+            continue
+        title = res.get("title") or res.get("name") or "No Title"
+        snippet = res.get("description") or res.get("snippet") or res.get("body") or ""
+        url = res.get("url") or res.get("href") or res.get("link") or ""
+        formatted += f"\n{i}. {title}\n   Snippet: {snippet}\n   URL: {url}\n"
+    return formatted
 
 
 def open_url(url: str, browser: str = "Google Chrome") -> str:

@@ -795,6 +795,7 @@ class BuddyWindow(QWidget):
             getattr(self, "library_page", None),
             getattr(self, "billing_page", None),
             getattr(self, "artifacts_page", None),
+            getattr(self, "talk_page", None),
             getattr(self, "onboarding_page", None),
         ):
             if page is not None and hasattr(page, "refresh_account_header"):
@@ -823,9 +824,19 @@ class BuddyWindow(QWidget):
     def show_onboarding_view(self):
         self.content_stack.setCurrentWidget(self.onboarding_page)
         self._set_active_nav(None)
- 
+
+    def show_talk_view(self):
+        """Open the live voice page. Talk was wired in the sidebar and
+        added to the stack in the voice commit, but this method was missing
+        so the click did nothing."""
+        self.content_stack.setCurrentWidget(self.talk_page)
+        self._set_active_nav(self.sidebar.btn_talk)
+
     def _set_active_nav(self, active_btn):
-        for btn in (self.sidebar.btn_new, self.sidebar.btn_lib, self.sidebar.btn_artifacts, self.sidebar.btn_billing, self.sidebar.btn_settings):
+        for btn in (
+            self.sidebar.btn_new, self.sidebar.btn_lib, self.sidebar.btn_artifacts,
+            self.sidebar.btn_talk, self.sidebar.btn_billing, self.sidebar.btn_settings,
+        ):
             btn.set_active(btn is active_btn)
 
     def _request_open_chat(self, conversation_id):

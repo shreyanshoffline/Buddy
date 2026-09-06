@@ -128,6 +128,7 @@ class TalkToBuddyPage(CardPage):
         self._player = QMediaPlayer(self)
         self._audio_output = QAudioOutput(self)
         self._player.setAudioOutput(self._audio_output)
+        self._player.mediaStatusChanged.connect(self._on_playback_status_changed)
 
         self._build_ui()
 
@@ -296,13 +297,11 @@ class TalkToBuddyPage(CardPage):
         if audio_url:
             self._player.setSource(QUrl(audio_url))
             self._player.play()
-            self._player.mediaStatusChanged.connect(self._on_playback_status_changed)
         else:
             self._style_idle()
 
     def _on_playback_status_changed(self, status):
-        if status == QMediaPlayer.EndOfMedia:
-            self._player.mediaStatusChanged.disconnect(self._on_playback_status_changed)
+        if status in (QMediaPlayer.EndOfMedia, QMediaPlayer.InvalidMedia):
             self._style_idle()
 
     def _on_turn_failed(self, message):

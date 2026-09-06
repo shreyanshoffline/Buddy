@@ -192,6 +192,18 @@ def init_db():
             VALUES (1, NULL, 'blue', 0, 'free')
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'general',
+                keywords TEXT,
+                embedding TEXT,
+                created_at REAL NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_facts_created ON memory_facts(created_at)")
+
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS attachments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 conversation_id INTEGER NOT NULL,
@@ -781,3 +793,118 @@ def find_relevant_chunks(conversation_id, query, limit=8):
     # Re-sort picked by (attachment_id, chunk_index) so context reads in order
     picked.sort(key=lambda c: (c["attachment_id"], c["chunk_index"]))
     return picked
+
+# --- Durable memory facts (layered RAG: identity + facts + episodes + files) ---
+
+def save_memory_fact(content, category="general"):
+    text = (content or "").strip()
+    if not text:
+        return None
+    keywords = " ".join(_extract_keywords(text))
+    embedding = _safe_embed([text])
+    emb_json = json.dumps(embedding[0]) if embedding else None
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO memory_facts (content, category, keywords, embedding, created_at) VALUES (?, ?, ?, ?, ?)",
+            (text, (category or "general").strip() or "general", keywords, emb_json, time.time()),
+        )
+        return cur.lastrowid
+
+
+def list_memory_facts(limit=40):
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, content, category, keywords, created_at FROM memory_facts ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_memory_facts(query):
+    """Delete facts whose content or keywords overlap the query. Returns the removed rows."""
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    tokens = set(_extract_keywords(q)) | {q}
+    with _connect() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, content, category, keywords FROM memory_facts"
+        ).fetchall()]
+        removed = []
+        for row in rows:
+            hay = f"{row['content']} {row.get('keywords') or ''}".lower()
+            if q in hay or (tokens and tokens & set((row.get("keywords") or "").split())):
+                conn.execute("DELETE FROM memory_facts WHERE id = ?", (row["id"],))
+                removed.append(row)
+    return removed
+
+
+def find_relevant_facts(query_text, limit=8):
+    with _connect() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, content, category, keywords, embedding, created_at FROM memory_facts ORDER BY created_at DESC"
+        ).fetchall()]
+    if not rows:
+        return []
+    has_all = all(r.get("embedding") for r in rows)
+    if has_all:
+        query_embedding = _safe_embed([query_text])
+        if query_embedding:
+            q_vec = query_embedding[0]
+            scored = []
+            for r in rows:
+                try:
+                    vec = json.loads(r["embedding"])
+                except Exception:
+                    continue
+                scored.append((_cosine(q_vec, vec), r))
+            scored.sort(key=lambda pair: pair[0], reverse=True)
+            return [row for score, row in scored[:limit] if score > 0.15]
+    query_keywords = set(_extract_keywords(query_text))
+    scored = []
+    for r in rows:
+        row_keywords = set((r.get("keywords") or "").split())
+        overlap = len(query_keywords & row_keywords)
+        # always keep a few newest facts even without overlap
+        scored.append((overlap, r["created_at"], r))
+    scored.sort(key=lambda pair: (pair[0], pair[1]), reverse=True)
+    picked = []
+    for overlap, _created, row in scored:
+        if overlap >= 1 or len(picked) < min(3, limit):
+            picked.append(row)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+def find_recent_chat_snippets(query_text, limit=3, exclude_conversation_id=None):
+    """Lightweight cross-chat recall: recent user/assistant lines that share keywords."""
+    query_keywords = set(_extract_keywords(query_text or ""))
+    if not query_keywords:
+        return []
+    with _connect() as conn:
+        sql = (
+            "SELECT m.role, m.content, m.conversation_id FROM messages m "
+            "JOIN conversations c ON c.id = m.conversation_id "
+            "WHERE m.role IN ('user', 'assistant') AND IFNULL(c.is_private, 0) = 0 "
+        )
+        params = []
+        if exclude_conversation_id:
+            sql += "AND m.conversation_id != ? "
+            params.append(exclude_conversation_id)
+        sql += "ORDER BY m.id DESC LIMIT 80"
+        rows = conn.execute(sql, params).fetchall()
+    scored = []
+    for r in rows:
+        content = (r["content"] or "").strip()
+        if not content or len(content) < 12:
+            continue
+        if content.startswith("Memory layers") or content.startswith("Relevant past"):
+            continue
+        overlap = len(query_keywords & set(_extract_keywords(content)))
+        if overlap >= 2:
+            snippet = content if len(content) <= 220 else content[:217] + "…"
+            scored.append((overlap, {"role": r["role"], "content": snippet}))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in scored[:limit]]
+

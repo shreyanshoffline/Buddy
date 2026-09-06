@@ -89,7 +89,7 @@ tools_schema = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Searches the web via DuckDuckGo for live facts, current information, or links.",
+            "description": "Searches the live web via Hack Club Search (search.hackclub.com) for current facts or links.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1059,6 +1059,46 @@ tools_schema = [
                 },
                 "required": ["action", "package_name"]
             }
+        }
+    },
+
+
+    # ==================== MEMORY ====================
+    {
+        "type": "function",
+        "function": {
+            "name": "remember_fact",
+            "description": "Save a durable fact the user wants remembered across chats (name spellings, preferences, ongoing projects).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fact": {"type": "string", "description": "The fact to remember, in one short sentence."},
+                    "category": {"type": "string", "description": "Optional bucket such as preference, project, person, school."}
+                },
+                "required": ["fact"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "forget_fact",
+            "description": "Delete remembered facts that match a short query.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Words that identify the fact to forget."}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_remembered_facts",
+            "description": "List durable facts Buddy is currently holding.",
+            "parameters": {"type": "object", "properties": {}}
         }
     },
 

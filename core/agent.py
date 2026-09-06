@@ -395,17 +395,29 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         ]
 
     if not incognito:
-        # --- Long-term memory retrieval (POC) ---
-        memories = db.find_similar_task_memories(
-            user_input, limit=MEMORY_RETRIEVAL_LIMIT, min_overlap=MEMORY_RETRIEVAL_MIN_OVERLAP
-        )
-
-        if memories:
-            memory_note = "Relevant past experience (for reference, adapt as needed, don't just repeat blindly):\n"
-            for mem in memories:
-                memory_note += f"- Task: {mem['task_summary']}\n  What worked: {mem['outcome_summary'] or mem['plan_text']}\n"
+        # Layered RAG: identity + facts + episodes + files + recent chats.
+        conversation_id = None
+        try:
+            conversation_id = next(
+                (m.get("conversation_id") for m in message_history if isinstance(m, dict) and m.get("conversation_id")),
+                None,
+            )
+        except Exception:
+            conversation_id = None
+        try:
+            from storage.memory import build_memory_context
+            memory_note = build_memory_context(user_input, conversation_id=conversation_id, file_context=file_context)
+        except Exception:
+            memory_note = None
+            memories = db.find_similar_task_memories(
+                user_input, limit=MEMORY_RETRIEVAL_LIMIT, min_overlap=MEMORY_RETRIEVAL_MIN_OVERLAP
+            )
+            if memories:
+                memory_note = "Relevant past experience (for reference, adapt as needed, don't just repeat blindly):\n"
+                for mem in memories:
+                    memory_note += f"- Task: {mem['task_summary']}\n  What worked: {mem['outcome_summary'] or mem['plan_text']}\n"
+        if memory_note:
             message_history.append({"role": "system", "content": memory_note})
-        # --- end retrieval ---
 
     deadline = start_time + OVERALL_TIMEOUT_SECONDS
 
