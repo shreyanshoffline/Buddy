@@ -16,11 +16,17 @@ base URL and key substituted in:
   - GET  /predictions/{id}                     (poll status)
   - POST /files                                (upload local audio)
 
-STT: openai/whisper — audio in, transcript out.
-TTS: resemble-ai/chatterbox-turbo — text in, audio out. Built by Resemble
-specifically for low-latency voice agents (sub-200ms decode per their
-own docs), which is why it's the pick here over chatterbox-pro (higher
-quality, meant for narration — wrong tool for a live conversation).
+STT: vaibhavs10/incredibly-fast-whisper — whisper-large-v3 optimized for
+speed, audio in, transcript out. Verified against Replicate's real input
+schema (audio, task, language, batch_size, return_timestamps) and output
+shape ({"text": "..."}).
+
+TTS: inworld/realtime-tts-1.5-mini — ~120ms latency per Inworld's own
+benchmarks, the fastest option in Replicate's text-to-speech collection,
+picked specifically because "close to how humans talk" depends on the
+speak step not being the bottleneck. Verified against Replicate's real
+input schema (text, voice_id, temperature, audio_format, sample_rate).
+"Ashley" is the model's own documented default voice.
 """
 import os
 import time
@@ -31,8 +37,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 REPLICATE_BASE_URL = "https://ai.hackclub.com/proxy/v1/replicate"
-STT_MODEL = ("openai", "whisper")
-TTS_MODEL = ("resemble-ai", "chatterbox-turbo")
+STT_MODEL = ("vaibhavs10", "incredibly-fast-whisper")
+TTS_MODEL = ("inworld", "realtime-tts-1.5-mini")
+DEFAULT_TTS_VOICE = "Ashley"
 
 SYNC_WAIT_SECONDS = 25  # `Prefer: wait` — most requests finish inside this
 POLL_INTERVAL_SECONDS = 0.6
@@ -126,8 +133,9 @@ def _run_prediction(owner, name, input_payload, cancel_check=None):
 
 def upload_audio_file(file_path):
     """Uploads a local recording so it can be passed as an `audio` URL to
-    transcribe_audio() — Whisper's input schema takes a URI, not raw
-    bytes. Matches Replicate's real POST /files multipart contract."""
+    transcribe_audio() — incredibly-fast-whisper's input schema takes a
+    URI, not raw bytes. Matches Replicate's real POST /files multipart
+    contract."""
     filename = os.path.basename(file_path)
     try:
         with open(file_path, "rb") as f:
@@ -147,36 +155,40 @@ def upload_audio_file(file_path):
 
 
 def transcribe_audio(audio_url, cancel_check=None):
-    """Speech-to-text via Whisper. audio_url must already be reachable by
-    Replicate — use upload_audio_file() first for local recordings.
-    Returns the transcript text; raises VoiceError (never returns
-    silently empty) if nothing was transcribed, since a dropped
+    """Speech-to-text via incredibly-fast-whisper. audio_url must already
+    be reachable by Replicate — use upload_audio_file() first for local
+    recordings. Returns the transcript text; raises VoiceError (never
+    returns silently empty) if nothing was transcribed, since a dropped
     transcript would make Buddy respond to nothing with no indication
     why."""
     owner, name = STT_MODEL
     output = _run_prediction(
         owner, name,
-        {"audio": audio_url, "model": "base", "format": "text"},
+        {"audio": audio_url, "task": "transcribe", "batch_size": 24, "return_timestamps": False},
         cancel_check=cancel_check,
     )
-    text = output.get("transcription", "") if isinstance(output, dict) else str(output or "")
+    # Real output shape is {"text": "..."} (optionally with "chunks" if
+    # return_timestamps was requested) — not a bare string or "transcription".
+    text = output.get("text", "") if isinstance(output, dict) else str(output or "")
     text = text.strip()
     if not text:
         raise VoiceError("Didn't catch that — no speech was detected in the recording.")
     return text
 
 
-def synthesize_speech(text, voice="Luna", cancel_check=None):
-    """Text-to-speech via Chatterbox-Turbo. Returns a playable audio URL.
-    Raises VoiceError with a specific reason if generation fails or
-    returns nothing."""
+def synthesize_speech(text, voice=DEFAULT_TTS_VOICE, cancel_check=None):
+    """Text-to-speech via Inworld Realtime TTS 1.5 Mini (~120ms latency,
+    the fastest model in Replicate's TTS collection — picked so the
+    speak step doesn't become the bottleneck in a live conversation).
+    Returns a playable audio URL. Raises VoiceError with a specific
+    reason if generation fails or returns nothing."""
     if not text or not text.strip():
         raise VoiceError("Nothing to say — the reply was empty.")
 
     owner, name = TTS_MODEL
     output = _run_prediction(
         owner, name,
-        {"prompt": text.strip(), "voice": voice},
+        {"text": text.strip(), "voice_id": voice, "audio_format": "mp3"},
         cancel_check=cancel_check,
     )
     url = output if isinstance(output, str) else None

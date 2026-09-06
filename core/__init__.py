@@ -4,6 +4,10 @@ core.conversations directly, and never import storage/tools/models.
 """
 from storage import db as _db
 _db.init_db()
+try:
+    _db.prune_stale_short_term_memories()
+except Exception:
+    pass  # never block app startup over a housekeeping task
 
 from core.agent import process_message, process_message_incognito
 from core.conversations import (

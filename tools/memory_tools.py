@@ -27,10 +27,15 @@ def forget_fact(query):
 
 
 def list_remembered_facts():
-    """List durable facts Buddy is currently holding."""
+    """List durable facts Buddy is currently holding, including
+    short/medium-term observations it's noticed on its own."""
     from storage import db
     facts = db.list_memory_facts(limit=40)
     if not facts:
         return "No durable facts saved yet."
-    lines = [f"#{item['id']} [{item.get('category') or 'general'}] {item['content']}" for item in facts]
+    lines = []
+    for item in facts:
+        tier = item.get("tier") or "long"
+        tag = "" if tier == "long" else f" ({tier}-term)"
+        lines.append(f"#{item['id']} [{item.get('category') or 'general'}]{tag} {item['content']}")
     return "Remembered facts:\n" + "\n".join(lines)

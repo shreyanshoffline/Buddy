@@ -1,14 +1,14 @@
 """Talk to Buddy — a real-time voice conversation page.
 
 Pipeline per turn: record mic -> upload -> Whisper transcribes -> the same
-Manager/Worker pipeline used everywhere else in Buddy replies -> Chatterbox
-Turbo speaks the reply -> played back automatically, then the mic
+Manager/Worker pipeline used everywhere else in Buddy replies -> Inworld
+Realtime TTS speaks the reply -> played back automatically, then the mic
 re-arms for the next turn.
 
 Every network step (upload, transcribe, think, speak) is real, so latency
 is the sum of those calls, not something this page can fake. What it does
 control: recording starts instantly, each stage shows a specific status
-label instead of one long silent "Thinking...", and Chatterbox Turbo was
+label instead of one long silent "Thinking...", and Inworld's realtime-tts-1.5-mini was
 picked specifically because Resemble built it for sub-200ms low-latency
 voice agents (see voice_client.py's docstring) rather than the higher-
 quality-but-slower chatterbox-pro used nowhere in this app.
@@ -116,7 +116,7 @@ class TalkToBuddyPage(CardPage):
     def __init__(self, parent=None, close_callback=None):
         super().__init__("Talk to Buddy", "A live voice conversation — tap the mic and start talking.", parent, close_callback)
         self.message_history = core.new_message_history() if hasattr(core, "new_message_history") else []
-        self.voice_name = "Luna"
+        self.voice_name = voice_client.DEFAULT_TTS_VOICE
         self.state = self.STATE_IDLE
         self._audio_source = None
         self._audio_io_device = None
@@ -162,7 +162,7 @@ class TalkToBuddyPage(CardPage):
         self.main_layout.addLayout(mic_row)
         self._style_idle()
 
-        hint = QLabel("Voice powered by Whisper (listening) and Chatterbox Turbo (speaking), via Hack Club AI's Replicate proxy.")
+        hint = QLabel("Voice powered by Whisper-large-v3 (listening) and Inworld TTS (speaking), via Hack Club AI's Replicate proxy.")
         hint.setWordWrap(True)
         hint.setAlignment(Qt.AlignCenter)
         hint.setStyleSheet(f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; background: transparent; border: none; margin-top: 8px;")

@@ -203,6 +203,25 @@ def init_db():
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_facts_created ON memory_facts(created_at)")
 
+        # --- Tiered memory migration ---------------------------------------
+        # Real human memory doesn't treat every noticed detail the same as
+        # something deliberately committed to permanent recall. `tier`
+        # models that: 'short' = just noticed this session and will fade if
+        # never reinforced; 'medium' = has come up again, worth holding onto
+        # for a while; 'long' = explicitly asked to be remembered, or
+        # reinforced enough times to earn permanence. hit_count / last_used_at
+        # track reinforcement — every time a fact is actually retrieved and
+        # used in a reply, that's a "recall", and recall is what naturally
+        # strengthens a memory and promotes it to the next tier.
+        mem_cols = [r["name"] for r in conn.execute("PRAGMA table_info(memory_facts)")]
+        if "tier" not in mem_cols:
+            conn.execute("ALTER TABLE memory_facts ADD COLUMN tier TEXT NOT NULL DEFAULT 'long'")
+        if "hit_count" not in mem_cols:
+            conn.execute("ALTER TABLE memory_facts ADD COLUMN hit_count INTEGER NOT NULL DEFAULT 0")
+        if "last_used_at" not in mem_cols:
+            conn.execute("ALTER TABLE memory_facts ADD COLUMN last_used_at REAL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_facts_tier ON memory_facts(tier)")
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS attachments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -796,27 +815,105 @@ def find_relevant_chunks(conversation_id, query, limit=8):
 
 # --- Durable memory facts (layered RAG: identity + facts + episodes + files) ---
 
-def save_memory_fact(content, category="general"):
+PROMOTION_HITS_TO_MEDIUM = 1   # any reinforcement at all lifts a short-term note out of "just noticed"
+PROMOTION_HITS_TO_LONG = 3     # repeated recall earns permanence, same as explicit remember_fact
+SHORT_TERM_DECAY_DAYS = 14     # an unreinforced short-term note fades like real short-term memory does
+
+
+def save_memory_fact(content, category="general", tier="long"):
+    """tier defaults to 'long' because this is the path for deliberate,
+    explicit remember_fact() calls — a conscious decision to commit
+    something to memory earns immediate permanence, same as it would for
+    a person. Auto-noticed observations that haven't been reinforced yet
+    should go through note_short_term_observation() instead, which starts
+    them at 'short' and lets real usage promote them over time."""
     text = (content or "").strip()
     if not text:
         return None
     keywords = " ".join(_extract_keywords(text))
     embedding = _safe_embed([text])
     emb_json = json.dumps(embedding[0]) if embedding else None
+    now = time.time()
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO memory_facts (content, category, keywords, embedding, created_at) VALUES (?, ?, ?, ?, ?)",
-            (text, (category or "general").strip() or "general", keywords, emb_json, time.time()),
+            "INSERT INTO memory_facts (content, category, keywords, embedding, tier, hit_count, last_used_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+            (text, (category or "general").strip() or "general", keywords, emb_json, tier, now, now),
         )
         return cur.lastrowid
 
 
-def list_memory_facts(limit=40):
+def note_short_term_observation(content, category="observation"):
+    """For things Buddy picks up on its own during a conversation — not
+    something the user explicitly asked to remember. Starts at the
+    'short' tier: it'll surface in retrieval like anything else, but if
+    it's never relevant again it quietly decays (see prune_stale_short_term_memories).
+    If it does come up again, register_fact_recall() promotes it, exactly
+    like a detail you half-noticed becoming a real memory once it turns
+    out to matter."""
+    text = (content or "").strip()
+    if not text:
+        return None
+    # Don't duplicate an existing near-identical short-term note — just
+    # treat seeing it again as a recall.
+    existing = find_relevant_facts(text, limit=1)
+    if existing and existing[0]["content"].strip().lower() == text.lower():
+        register_fact_recall(existing[0]["id"])
+        return existing[0]["id"]
+    return save_memory_fact(text, category=category, tier="short")
+
+
+def register_fact_recall(fact_id):
+    """Call this whenever a fact was actually surfaced to the model and
+    used in a reply — the memory equivalent of successfully recalling
+    something, which is what naturally reinforces and promotes it.
+    Bumps hit_count/last_used_at and promotes short -> medium -> long
+    once the corresponding threshold is crossed."""
     with _connect() as conn:
-        rows = conn.execute(
-            "SELECT id, content, category, keywords, created_at FROM memory_facts ORDER BY created_at DESC LIMIT ?",
-            (limit,),
+        row = conn.execute("SELECT tier, hit_count FROM memory_facts WHERE id = ?", (fact_id,)).fetchone()
+        if not row:
+            return
+        new_hits = (row["hit_count"] or 0) + 1
+        tier = row["tier"]
+        if tier == "short" and new_hits >= PROMOTION_HITS_TO_MEDIUM:
+            tier = "medium"
+        if tier in ("short", "medium") and new_hits >= PROMOTION_HITS_TO_LONG:
+            tier = "long"
+        conn.execute(
+            "UPDATE memory_facts SET hit_count = ?, last_used_at = ?, tier = ? WHERE id = ?",
+            (new_hits, time.time(), tier, fact_id),
+        )
+
+
+def prune_stale_short_term_memories(max_age_days=SHORT_TERM_DECAY_DAYS):
+    """Deletes 'short' tier facts that haven't been reinforced (recalled)
+    in max_age_days — the forgetting half of a real memory system. Only
+    ever touches the short tier; medium and long-term facts never decay
+    on their own, matching how a promoted memory doesn't just vanish.
+    Safe to call on every app start — cheap, and idempotent."""
+    cutoff = time.time() - (max_age_days * 86400)
+    with _connect() as conn:
+        removed = conn.execute(
+            "SELECT id FROM memory_facts WHERE tier = 'short' AND COALESCE(last_used_at, created_at) < ?",
+            (cutoff,),
         ).fetchall()
+        conn.execute(
+            "DELETE FROM memory_facts WHERE tier = 'short' AND COALESCE(last_used_at, created_at) < ?",
+            (cutoff,),
+        )
+    return len(removed)
+
+
+def list_memory_facts(limit=40, tier=None):
+    query = "SELECT id, content, category, tier, hit_count, keywords, created_at FROM memory_facts"
+    params = []
+    if tier:
+        query += " WHERE tier = ?"
+        params.append(tier)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    with _connect() as conn:
+        rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -839,10 +936,13 @@ def delete_memory_facts(query):
     return removed
 
 
+TIER_WEIGHT = {"short": 0.85, "medium": 1.0, "long": 1.15}
+
+
 def find_relevant_facts(query_text, limit=8):
     with _connect() as conn:
         rows = [dict(r) for r in conn.execute(
-            "SELECT id, content, category, keywords, embedding, created_at FROM memory_facts ORDER BY created_at DESC"
+            "SELECT id, content, category, keywords, embedding, tier, hit_count, created_at FROM memory_facts ORDER BY created_at DESC"
         ).fetchall()]
     if not rows:
         return []
@@ -857,14 +957,15 @@ def find_relevant_facts(query_text, limit=8):
                     vec = json.loads(r["embedding"])
                 except Exception:
                     continue
-                scored.append((_cosine(q_vec, vec), r))
+                weight = TIER_WEIGHT.get(r.get("tier"), 1.0)
+                scored.append((_cosine(q_vec, vec) * weight, r))
             scored.sort(key=lambda pair: pair[0], reverse=True)
             return [row for score, row in scored[:limit] if score > 0.15]
     query_keywords = set(_extract_keywords(query_text))
     scored = []
     for r in rows:
         row_keywords = set((r.get("keywords") or "").split())
-        overlap = len(query_keywords & row_keywords)
+        overlap = len(query_keywords & row_keywords) * TIER_WEIGHT.get(r.get("tier"), 1.0)
         # always keep a few newest facts even without overlap
         scored.append((overlap, r["created_at"], r))
     scored.sort(key=lambda pair: (pair[0], pair[1]), reverse=True)
@@ -907,4 +1008,3 @@ def find_recent_chat_snippets(query_text, limit=3, exclude_conversation_id=None)
             scored.append((overlap, {"role": r["role"], "content": snippet}))
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return [item for _, item in scored[:limit]]
-

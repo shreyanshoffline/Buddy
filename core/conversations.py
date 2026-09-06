@@ -46,7 +46,7 @@ def send_and_save_message(conversation_id, user_text, on_event=None, attachments
     file_context = format_attachment_context(excerpts)
 
     image_attachments = [item for item in (attachments or []) if item.get("mime_type", "").startswith("image/")]
-    result = process_message(user_text, history, on_event=on_event, file_context=file_context, cancel_check=cancel_check, image_attachments=image_attachments)
+    result = process_message(user_text, history, on_event=on_event, file_context=file_context, cancel_check=cancel_check, image_attachments=image_attachments, conversation_id=conversation_id)
 
     assistant_metadata = None
     if result.get("plan_text") or result.get("tools_used") or result.get("stats"):
@@ -78,7 +78,7 @@ def redo_assistant_response(conversation_id, user_text, on_event=None, cancel_ch
     """Regenerates the assistant response for the same user query and saves it as a new assistant message."""
     previous_history = db.load_messages(conversation_id)
     history = new_message_history() + _sanitize_history_for_model(previous_history)
-    result = process_message(user_text, history, on_event=on_event, cancel_check=cancel_check)
+    result = process_message(user_text, history, on_event=on_event, cancel_check=cancel_check, conversation_id=conversation_id)
  
     assistant_metadata = None
     if result.get("plan_text") or result.get("tools_used") or result.get("stats"):

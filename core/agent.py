@@ -356,7 +356,7 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
     return {"status": "incomplete", "message": "Reached max steps without finishing.", "step_count": step_count, **stats}
  
  
-def process_message(user_input, message_history, on_event=None, file_context=None, cancel_check=None, incognito=False, image_attachments=None):
+def process_message(user_input, message_history, on_event=None, file_context=None, cancel_check=None, incognito=False, image_attachments=None, conversation_id=None):
     """Pure model-facing turn: takes a message + history, talks to the
     Manager/Worker pipeline, returns a result dict. Knows nothing about
     conversation_id or the database — that's send_and_save_message's job.
@@ -396,14 +396,6 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
 
     if not incognito:
         # Layered RAG: identity + facts + episodes + files + recent chats.
-        conversation_id = None
-        try:
-            conversation_id = next(
-                (m.get("conversation_id") for m in message_history if isinstance(m, dict) and m.get("conversation_id")),
-                None,
-            )
-        except Exception:
-            conversation_id = None
         try:
             from storage.memory import build_memory_context
             memory_note = build_memory_context(user_input, conversation_id=conversation_id, file_context=file_context)

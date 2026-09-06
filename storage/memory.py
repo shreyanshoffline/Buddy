@@ -3,7 +3,10 @@
 Layers, highest priority first:
 
 1. identity  — name, age, bio, apps, links from user_profile
-2. facts     — durable things the user asked Buddy to remember
+2. facts     — things worth remembering, tiered like real memory:
+               short-term (just noticed, decays if never reinforced),
+               medium (came up again), long (explicitly asked to
+               remember, or reinforced enough to earn permanence)
 3. episodes  — past tasks that actually worked (task_memories)
 4. files     — retrieved chunks from files attached to this chat
 5. recents   — short snippets from other recent chats (keyword only)
@@ -13,6 +16,8 @@ capped so it cannot blow the context window. Embeddings are used when
 they exist; otherwise the same keyword scorer already in storage.db
 keeps working.
 """
+import re
+
 from storage import db
 
 MAX_NOTE_CHARS = 3500
@@ -20,6 +25,40 @@ FACT_LIMIT = 8
 EPISODE_LIMIT = 3
 FILE_CHUNK_LIMIT = 6
 RECENT_LIMIT = 3
+
+# Deliberately narrow: only clear first-person declarative statements about
+# durable facts (not questions, not one-off requests). A real person
+# doesn't remember every sentence someone says — they remember the ones
+# that sound like they're actually telling you something about themselves.
+# Being conservative here matters more than being clever: a wrong "memory"
+# is worse than a missed one.
+_OBSERVATION_PATTERNS = [
+    re.compile(r"\bi live in ([A-Za-z][\w\s,.'-]{2,40})", re.IGNORECASE),
+    re.compile(r"\bi work at ([A-Za-z][\w\s,.'-]{2,40})", re.IGNORECASE),
+    re.compile(r"\bi(?:'m| am) (?:a|an) ([A-Za-z0-9][\w\s-]{2,40})", re.IGNORECASE),
+    re.compile(r"\bmy (?:favorite|favourite) ([a-z]+) is ([A-Za-z0-9][\w\s,.'-]{1,40})", re.IGNORECASE),
+    re.compile(r"\bmy (birthday|dog|cat|sister|brother|mom|dad|wife|husband|partner)('s name)? is ([A-Za-z0-9][\w\s,.'-]{1,40})", re.IGNORECASE),
+]
+
+
+def note_observations_from_message(user_text):
+    """Scans one user message for clear, narrow first-person facts and
+    quietly logs any matches as short-term memories. Never touches
+    anything the user explicitly asked to remember (that's remember_fact,
+    which starts at long-term immediately) — this only catches things
+    mentioned in passing, exactly like how a person half-registers a
+    detail without consciously deciding to remember it."""
+    if not user_text or len(user_text) > 500:
+        return  # long messages are more likely file dumps/pastes than casual remarks
+    for pattern in _OBSERVATION_PATTERNS:
+        match = pattern.search(user_text)
+        if match:
+            snippet = match.group(0).strip().rstrip(".,!?")
+            if len(snippet) >= 6:
+                try:
+                    db.note_short_term_observation(snippet, category="observation")
+                except Exception:
+                    pass  # never worth failing a turn over a passive background note
 
 
 def _identity_lines(profile):
@@ -46,6 +85,8 @@ def _identity_lines(profile):
 
 def build_memory_context(user_input, conversation_id=None, file_context=None):
     """Return a single system-note string, or None if nothing useful."""
+    note_observations_from_message(user_input)
+
     sections = []
 
     try:
@@ -64,7 +105,13 @@ def build_memory_context(user_input, conversation_id=None, file_context=None):
         lines = []
         for fact in facts:
             label = fact.get("category") or "fact"
-            lines.append(f"[{label}] {fact['content']}")
+            tier = fact.get("tier")
+            tag = f"[{label}]" if tier in (None, "long") else f"[{label}, {tier}-term]"
+            lines.append(f"{tag} {fact['content']}")
+            try:
+                db.register_fact_recall(fact["id"])
+            except Exception:
+                pass  # reinforcement is a nice-to-have, never worth failing the whole turn over
         sections.append("Things they asked you to remember:\n- " + "\n- ".join(lines))
 
     try:
