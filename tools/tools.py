@@ -66,8 +66,26 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
 ]
-TOKEN_PATH = os.path.expanduser("~/Buddy/token.json")
-CREDS_PATH = os.path.expanduser("~/Buddy/credentials.json")
+def _gmail_file(name):
+    """Find Gmail OAuth files wherever Buddy actually keeps them."""
+    project_root = Path(__file__).resolve().parent.parent
+    tools_dir = Path(__file__).resolve().parent
+    candidates = [
+        tools_dir / name,
+        project_root / name,
+        Path.home() / "Buddy" / "tools" / name,
+        Path.home() / "Buddy" / name,
+        Path.cwd() / "tools" / name,
+        Path.cwd() / name,
+    ]
+    for path in candidates:
+        if path.exists():
+            return str(path)
+    return str(tools_dir / name)
+
+
+TOKEN_PATH = _gmail_file("token.json")
+CREDS_PATH = _gmail_file("credentials.json")
 
 # Patterns that trigger mandatory confirmation for run_terminal_command
 DANGEROUS_COMMAND_PATTERNS = [

@@ -36,7 +36,7 @@ def _safe_embed(texts):
         return models.embed_texts(texts)
     except Exception:
         return None
-MAX_FILE_CHARS = 200_000   # doubled — handle larger files
+MAX_FILE_CHARS = 60_000    # ~20-30 pages; more than this rarely gets retrieved
 CHUNK_CHARS = 3000         # bigger chunks = more context per retrieval hit
 CHUNK_OVERLAP = 400        # more overlap = less chance of splitting mid-thought
 
@@ -651,7 +651,7 @@ def chunk_text(text, chunk_size=CHUNK_CHARS, overlap=CHUNK_OVERLAP):
 
 def save_conversation_attachments(conversation_id, message_id, files):
     """files = [{name, extension, contents, path}, ...]"""
-    conn = sqlite3.connect(_DB_PATH)
+    conn = sqlite3.connect(get_db_path())
     saved_ids = []
     now = time.time()
     for item in files or []:
@@ -693,7 +693,7 @@ def save_conversation_attachments(conversation_id, message_id, files):
 
 
 def latest_user_message_id(conversation_id):
-    conn = sqlite3.connect(_DB_PATH)
+    conn = sqlite3.connect(get_db_path())
     row = conn.execute(
         """
         SELECT id FROM messages

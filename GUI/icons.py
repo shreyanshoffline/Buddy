@@ -2,7 +2,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtGui import QPixmap, QPainter, QIcon, QPainterPath
 
-# --- Cyber / Modern App Icon ---
 def create_buddy_icon(image_path=None):
     if image_path:
         return create_image_icon(image_path)
@@ -22,7 +21,7 @@ def create_buddy_icon(image_path=None):
         <path d="M 32 14 L 48 24 L 48 40 L 32 50 L 16 40 L 16 24 Z" fill="none" stroke="url(#logoGrad)" stroke-width="4" stroke-linejoin="round"/>
         <circle cx="32" cy="32" r="6" fill="url(#logoGrad)" />
     </svg>"""
-    renderer = QSvgRenderer(svg_data.encode('utf-8'))
+    renderer = QSvgRenderer(svg_data.encode("utf-8"))
     pixmap = QPixmap(128, 128)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
@@ -32,45 +31,33 @@ def create_buddy_icon(image_path=None):
 
 
 def create_image_icon(image_path):
-    # 1. Load the image from the provided file path
     original_pixmap = QPixmap(image_path)
-    
     size = 64
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
-    
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-    
-    # 2. Create a rounded rectangle clip path (mimicking the app icon shape)
     path = QPainterPath()
     path.addRoundedRect(0, 0, size, size, 22, 22)
     painter.setClipPath(path)
-    
-    # 3. Scale the input image to fit the 64x64 icon size smoothly
     scaled_image = original_pixmap.scaled(
-        size, size, 
-        Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
-        Qt.TransformationMode.SmoothTransformation
+        size, size,
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
     )
-    
-    # Center the image if it wasn't a perfect square
     x = (size - scaled_image.width()) // 2
     y = (size - scaled_image.height()) // 2
-    
-    # 4. Draw the image onto the masked/rounded pixmap
     painter.drawPixmap(x, y, scaled_image)
     painter.end()
-    
     return QIcon(pixmap)
 
-# --- SVG Icon Generator ---
+
 def get_svg_icon(svg_path, color="#888888", size=20):
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="{size}" height="{size}">
                 <path fill="{color}" d="{svg_path}"/>
               </svg>"""
-    renderer = QSvgRenderer(svg.encode('utf-8'))
+    renderer = QSvgRenderer(svg.encode("utf-8"))
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
@@ -89,7 +76,7 @@ ICONS = {
     "plus": "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z",
     "library": "M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z",
     "settings": "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.73 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .43-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.49-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z",
-    "pricing": "M12 2.5C6.75 2.5 2.5 6.75 2.5 12S6.75 21.5 12 21.5 21.5 17.25 21.5 12 17.25 2.5 12 2.5zm1 4.5h-2v3H8v2h3v3h2v-3h3v-2h-3V7z",
+    "pricing": "M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z",
     "artifacts": "M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-1 16H6c-.55 0-1-.45-1-1V6c0-.55.45-1 1-1h12c.55 0 1 .45 1 1v12c0 .55-.45 1-1 1zm-8-8h8v2h-8v-2zm0 4h8v2h-8v-2zm0-8h8v2H10V7z",
-    "mic": "M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.49 6-3.31 6-6.72h-1.7z"
+    "mic": "M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.49 6-3.31 6-6.72h-1.7z",
 }

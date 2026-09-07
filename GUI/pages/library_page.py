@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt
 
 import core
 from .card_page import CardPage
+from ..icons import get_svg_icon, ICONS
 from ..theme import (
     CARD_TEXT_COLOR, CARD_SUBTITLE_COLOR, HOVER_BG_COLOR, PRESSED_BG_COLOR,
     PRIMARY_COLOR, PRIMARY_COLOR_DARK, ON_PRIMARY_TEXT, ACTIVE_BG_COLOR,
@@ -18,9 +19,9 @@ from ..theme import (
 class LibraryPage(CardPage):
     FILTERS = [
         ("all", "All"),
-        ("favorites", "★ Favorites"),
-        ("voice", "🎤 Voice"),
-        ("archived", "🗄 Archived"),
+        ("favorites", "Favorites"),
+        ("voice", "Voice"),
+        ("archived", "Archived"),
     ]
 
     def __init__(self, parent=None, close_callback=None, on_chat_selected=None, on_delete_chat=None):
@@ -175,9 +176,10 @@ class LibraryPage(CardPage):
             box_layout.setContentsMargins(10, 8, 10, 8)
 
             if is_voice:
-                icon = QLabel("🎤")
-                icon.setStyleSheet("font-size: 13px; background: transparent; border: none;")
-                icon.setFixedWidth(22)
+                icon = QLabel()
+                icon.setPixmap(get_svg_icon(ICONS["mic"], PRIMARY_COLOR, 14).pixmap(14, 14))
+                icon.setFixedWidth(18)
+                icon.setStyleSheet("background: transparent; border: none;")
                 box_layout.addWidget(icon)
 
             label = QLabel(title)

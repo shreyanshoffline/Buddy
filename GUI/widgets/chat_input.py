@@ -1,29 +1,38 @@
 """The message composer: FlowLayout (wraps attachment pills), attachment
-pill/tray widgets, and the auto-growing ChatInput text box."""
-import os
-import sys
+pill/tray widgets, and the auto-growing ChatInput text box.
+
+Compatible with current Buddy widgets + main_window:
+  ChatInput(send_callback, parent=None, tray_ref=None)
+  attached_files packets include name/extension/contents/path/mime_type/data_url
+"""
+import base64
 import mimetypes
 from pathlib import Path
+
 from PySide6.QtWidgets import (
-    QTextEdit, QWidget, QVBoxLayout, QPushButton, QFrame,
-    QLabel, QHBoxLayout, QApplication, QFileDialog, QSizePolicy,
-    QLayout, QLayoutItem,
+    QTextEdit, QWidget, QPushButton, QFrame,
+    QLabel, QHBoxLayout, QFileDialog, QMessageBox,
+    QLayout,
 )
-from PySide6.QtCore import Qt, Signal, QRect, QPoint, QSize
+from PySide6.QtCore import Qt, Signal, QRect, QPoint, QSize, QThread
 from PySide6.QtGui import QKeyEvent, QDragEnterEvent, QDropEvent, QFontMetrics
 from pypdf import PdfReader
 
-from ..icons import get_svg_icon, ICONS
-from ..theme import HOVER_BG_COLOR, PRESSED_BG_COLOR, PRIMARY_COLOR, PRIMARY_COLOR_DARK, PRIMARY_COLOR_PRESSED, ON_PRIMARY_TEXT, TEXT_COLOR_SUBTITLE, TEXT_COLOR_DARK
+from ..theme import HOVER_BG_COLOR, PRESSED_BG_COLOR, TEXT_COLOR_DARK
 
 TEXT_EXTS = {
     ".txt", ".md", ".json", ".csv", ".py", ".js", ".ts",
     ".yaml", ".yml", ".html", ".css",
 }
 
+MAX_TEXT_FILE_BYTES = 5 * 1024 * 1024
+MAX_PDF_FILE_BYTES = 40 * 1024 * 1024
+MAX_IMAGE_FILE_BYTES = 12 * 1024 * 1024
+
 PILL_BG = "#E7F0FA"
 PILL_BORDER = "#B7CDE8"
 PILL_TEXT = "#1c6ad9"
+
 
 class FlowLayout(QLayout):
     """Wraps child widgets onto new rows as needed — no horizontal scrollbar ever."""
@@ -119,7 +128,7 @@ class AttachmentPill(QFrame):
 
         self.setFixedHeight(26)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip(f"{file_packet.get('name', 'file')} · double-click to preview")
+        self.setToolTip("%s · double-click to preview" % file_packet.get("name", "file"))
         self.setStyleSheet(f"""
             QFrame {{
                 background: {PILL_BG};
@@ -184,20 +193,16 @@ class AttachmentTray(QWidget):
         self.row = FlowLayout(self, margin=4, h_spacing=6, v_spacing=6)
 
     def set_files(self, files):
-        
         while self.row.count():
             item = self.row.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-
         for packet in files or []:
             pill = AttachmentPill(packet)
             pill.removed.connect(self.file_removed.emit)
             pill.preview_requested.connect(self.preview_requested.emit)
             self.row.addWidget(pill)
-
         self.setVisible(bool(files))
-
 
 
 class ChatInput(QTextEdit):
@@ -206,12 +211,12 @@ class ChatInput(QTextEdit):
     def __init__(self, send_callback, parent=None, tray_ref=None):
         super().__init__(parent)
         self.send_callback = send_callback
-        self.tray_ref = tray_ref  # direct ref avoids widget-tree crawl on every keystroke
+        self.tray_ref = tray_ref
         self.setPlaceholderText("Ask Buddy...")
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setAcceptDrops(True)
         self.attached_files = []
-
+        self._pending_worker = None
         self.setStyleSheet("""
             QTextEdit {
                 background: transparent;
@@ -221,17 +226,14 @@ class ChatInput(QTextEdit):
                 color: #333;
             }
         """)
-        self.setFixedHeight(36)  # start at single-line height; grows on text change
+        self.setFixedHeight(36)
         self.textChanged.connect(self.adjust_height)
 
     def adjust_height(self):
         doc_height = self.document().size().height()
-        if doc_height <= 0 or doc_height > 500:  # ignore bogus values before layout settles
+        if doc_height <= 0 or doc_height > 500:
             return
-        min_height = 36
-        max_height = 120
-        new_height = max(min_height, min(int(doc_height) + 12, max_height))
-        self.setFixedHeight(new_height)
+        self.setFixedHeight(max(36, min(int(doc_height) + 12, 120)))
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
@@ -259,18 +261,11 @@ class ChatInput(QTextEdit):
         if not urls:
             super().dropEvent(event)
             return
-
-        files = []
-        for url in urls:
-            local_path = url.toLocalFile()
-            if local_path:
-                files.append(Path(local_path))
-
+        files = [Path(url.toLocalFile()) for url in urls if url.toLocalFile()]
         if files:
             self._add_file_attachments(files)
             event.acceptProposedAction()
             return
-
         super().dropEvent(event)
 
     def clear(self):
@@ -291,44 +286,47 @@ class ChatInput(QTextEdit):
     def _show_attached_files(self):
         self.attachment_changed.emit()
 
-    def _extract_file_text(self, file_path):
-        suffix = file_path.suffix.lower()
-        if suffix in TEXT_EXTS:
-            return file_path.read_text(encoding="utf-8", errors="replace")
-        if suffix == ".pdf":
-            try:
-                text = "\n\n".join((page.extract_text() or "") for page in PdfReader(str(file_path)).pages).strip()
-                return text or "[PDF had no extractable text.]"
-            except Exception as exc:
-                return f"[Could not read PDF: {exc}]"
-        return "[Unsupported file type. Attach a text file or PDF.]"
-
     def _add_file_attachments(self, file_paths):
         existing = {item.get("path") for item in self.attached_files}
+        valid_paths = []
         for file_path in file_paths:
             if not file_path.exists() or not file_path.is_file():
                 continue
             if str(file_path) in existing:
                 continue
             try:
-                mime_type = mimetypes.guess_type(str(file_path))[0] or ""
-                data_url = None
-                if mime_type.startswith("image/"):
-                    import base64
-                    encoded = base64.b64encode(file_path.read_bytes()).decode("ascii")
-                    data_url = f"{mime_type};base64,{encoded}"
-                    data_url = "data:" + data_url
-                self.attached_files.append({
-                    "name": file_path.name,
-                    "extension": file_path.suffix,
-                    "contents": self._extract_file_text(file_path),
-                    "path": str(file_path),
-                    "mime_type": mime_type,
-                    "data_url": data_url,
-                })
-            except Exception:
+                size = file_path.stat().st_size
+            except OSError:
                 continue
-        self._show_attached_files()
+            suffix = file_path.suffix.lower()
+            mime_type = mimetypes.guess_type(str(file_path))[0] or ""
+            if mime_type.startswith("image/"):
+                cap, label = MAX_IMAGE_FILE_BYTES, "12 MB"
+            elif suffix == ".pdf":
+                cap, label = MAX_PDF_FILE_BYTES, "40 MB"
+            else:
+                cap, label = MAX_TEXT_FILE_BYTES, "5 MB"
+            if size > cap:
+                QMessageBox.warning(
+                    self, "File too large",
+                    "“%s” is larger than the %s limit for this file type and won't be attached."
+                    % (file_path.name, label),
+                )
+                continue
+            valid_paths.append(file_path)
+        if not valid_paths:
+            return
+        self._pending_worker = _AttachmentReadWorker(valid_paths)
+        self._pending_worker.file_ready.connect(self._on_file_read)
+        self._pending_worker.file_failed.connect(self._on_file_failed)
+        self._pending_worker.finished.connect(self._show_attached_files)
+        self._pending_worker.start()
+
+    def _on_file_read(self, packet):
+        self.attached_files.append(packet)
+
+    def _on_file_failed(self, name, reason):
+        QMessageBox.warning(self, "Couldn't attach file", "“%s” couldn't be attached: %s" % (name, reason))
 
     def open_file_picker(self):
         paths, _ = QFileDialog.getOpenFileNames(
@@ -341,3 +339,64 @@ class ChatInput(QTextEdit):
             self._add_file_attachments([Path(p) for p in paths])
 
 
+class _AttachmentReadWorker(QThread):
+    file_ready = Signal(dict)
+    file_failed = Signal(str, str)
+
+    def __init__(self, file_paths):
+        super().__init__()
+        self.file_paths = file_paths
+
+    def run(self):
+        for file_path in self.file_paths:
+            try:
+                packet = self._read_one(file_path)
+                if packet:
+                    self.file_ready.emit(packet)
+            except Exception as exc:
+                self.file_failed.emit(file_path.name, str(exc))
+
+    def _read_one(self, file_path):
+        suffix = file_path.suffix.lower()
+        mime_type = mimetypes.guess_type(str(file_path))[0] or ""
+        data_url = None
+        if mime_type.startswith("image/"):
+            encoded = base64.b64encode(file_path.read_bytes()).decode("ascii")
+            data_url = "data:%s;base64,%s" % (mime_type, encoded)
+            contents = "[Image attached]"
+        else:
+            contents = self._extract_file_text(file_path, suffix)
+        return {
+            "name": file_path.name,
+            "extension": file_path.suffix,
+            "contents": contents,
+            "path": str(file_path),
+            "mime_type": mime_type,
+            "data_url": data_url,
+        }
+
+    def _extract_file_text(self, file_path, suffix):
+        if suffix in TEXT_EXTS:
+            try:
+                return file_path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, UnicodeError) as exc:
+                return "[Could not read file: %s]" % exc
+        if suffix == ".pdf":
+            try:
+                reader = PdfReader(str(file_path))
+            except Exception as exc:
+                return "[Could not open PDF: %s]" % exc
+            pages = []
+            failed_pages = 0
+            for page in reader.pages:
+                try:
+                    pages.append(page.extract_text() or "")
+                except Exception:
+                    failed_pages += 1
+            text = "\n\n".join(pages).strip()
+            if not text:
+                return "[PDF had no extractable text — it may be scanned images without OCR, or password-protected.]"
+            if failed_pages:
+                text += "\n\n[Note: %s page(s) in this PDF couldn't be read and were skipped.]" % failed_pages
+            return text
+        return "[Unsupported file type. Attach a text file, PDF, or image.]"

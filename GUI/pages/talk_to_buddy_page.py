@@ -12,12 +12,13 @@ import os
 import tempfile
 import threading
 
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QFrame
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QProcess
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QFrame, QSizePolicy, QWidget
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QProcess, QSize
 
 import core
 import voice_client
 from .card_page import CardPage
+from ..icons import get_svg_icon, ICONS
 from ..theme import (
     CARD_TEXT_COLOR, CARD_SUBTITLE_COLOR, PRIMARY_COLOR, PRIMARY_COLOR_DARK,
     ON_PRIMARY_TEXT, BORDER_COLOR, SECTION_CARD_BG, HOVER_BG_COLOR,
@@ -50,10 +51,11 @@ class _VoiceTurnWorker(QThread):
     reply_ready = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, wav_path, message_history):
+    def __init__(self, wav_path, message_history, conversation_id=None):
         super().__init__()
         self.wav_path = wav_path
         self.message_history = message_history
+        self.conversation_id = conversation_id
         self.cancel_event = threading.Event()
 
     def run(self):
@@ -64,7 +66,9 @@ class _VoiceTurnWorker(QThread):
             self.user_text_ready.emit(user_text)
 
             self.stage.emit("Thinking...")
-            result = core.process_message_incognito(
+            if self.conversation_id and self.message_history:
+                self.message_history[0]["conversation_id"] = self.conversation_id
+            result = core.process_message(
                 user_text, self.message_history, cancel_check=self.cancel_event.is_set,
             )
             self.reply_ready.emit(result.get("reply", ""))
@@ -114,7 +118,8 @@ class TalkToBuddyPage(CardPage):
     # --- UI ---
     def _build_ui(self):
         self.transcript_container = QVBoxLayout()
-        self.transcript_container.setSpacing(10)
+        self.transcript_container.setSpacing(12)
+        self.transcript_container.setContentsMargins(8, 4, 8, 8)
         self.main_layout.addLayout(self.transcript_container)
         self.main_layout.addStretch()
 
@@ -132,10 +137,12 @@ class TalkToBuddyPage(CardPage):
 
         mic_row = QHBoxLayout()
         mic_row.addStretch()
-        self.mic_button = QPushButton("\U0001F3A4")
+        self.mic_button = QPushButton()
         self.mic_button.setFixedSize(72, 72)
         self.mic_button.setCursor(Qt.PointingHandCursor)
         self.mic_button.setToolTip("Tap to talk, tap again to stop")
+        self.mic_button.setIcon(get_svg_icon(ICONS["mic"], ON_PRIMARY_TEXT, 28))
+        self.mic_button.setIconSize(QSize(28, 28))
         self.mic_button.clicked.connect(self._on_mic_clicked)
         mic_row.addWidget(self.mic_button)
         mic_row.addStretch()
@@ -190,22 +197,43 @@ class TalkToBuddyPage(CardPage):
         bubble = QFrame()
         bg = PRIMARY_COLOR if is_user else SECTION_CARD_BG
         text_color = ON_PRIMARY_TEXT if is_user else CARD_TEXT_COLOR
-        bubble.setStyleSheet(f"QFrame {{ background: {bg}; border-radius: 12px; }}")
+        radius = "18px"
+        tail = "4px" if is_user else "4px"
+        if is_user:
+            bubble.setStyleSheet(
+                f"QFrame {{ background: {bg}; border-radius: {radius}; border-bottom-right-radius: {tail}; }}"
+            )
+        else:
+            bubble.setStyleSheet(
+                f"QFrame {{ background: {bg}; border: 1px solid {BORDER_COLOR}; border-radius: {radius}; border-bottom-left-radius: {tail}; }}"
+            )
+        bubble.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        max_w = max(220, int(self.width() * 0.68) if self.width() > 0 else 360)
+        bubble.setMaximumWidth(max_w)
+
         layout = QVBoxLayout(bubble)
-        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setContentsMargins(14, 10, 14, 10)
         label = QLabel(text)
         label.setWordWrap(True)
-        label.setStyleSheet(f"color: {text_color}; font-size: 13px; background: transparent; border: none;")
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        label.setMaximumWidth(max_w - 28)
+        label.setStyleSheet(
+            f"color: {text_color}; font-size: 13.5px; line-height: 140%; background: transparent; border: none;"
+        )
         layout.addWidget(label)
 
         row = QHBoxLayout()
+        row.setContentsMargins(0, 2, 0, 2)
+        row.setSpacing(0)
         if is_user:
             row.addStretch()
-            row.addWidget(bubble)
+            row.addWidget(bubble, 0)
         else:
-            row.addWidget(bubble)
+            row.addWidget(bubble, 0)
             row.addStretch()
-        self.transcript_container.addLayout(row)
+        wrap = QWidget()
+        wrap.setLayout(row)
+        self.transcript_container.addWidget(wrap)
 
     # --- mic capture ---
     def _on_mic_clicked(self):
@@ -327,7 +355,13 @@ class TalkToBuddyPage(CardPage):
     # --- pipeline ---
     def _run_turn(self, wav_path):
         self._style_processing("Listening...")
-        self._turn_worker = _VoiceTurnWorker(wav_path, self.message_history)
+        if self.conversation_id is None:
+            try:
+                from storage import db
+                self.conversation_id = db.create_conversation(title="Voice chat", kind="voice")
+            except Exception:
+                self.conversation_id = None
+        self._turn_worker = _VoiceTurnWorker(wav_path, self.message_history, self.conversation_id)
         self._turn_worker.stage.connect(lambda label: self._style_processing(label))
         self._turn_worker.user_text_ready.connect(self._on_user_text)
         self._turn_worker.reply_ready.connect(self._on_reply_ready)
@@ -415,6 +449,15 @@ class TalkToBuddyPage(CardPage):
             from storage import db
             if self.conversation_id is None:
                 self.conversation_id = db.create_conversation(title="Voice chat", kind="voice")
+            current_title = (db.get_conversation_title(self.conversation_id) or "").strip().lower()
+            if user_text and current_title in ("voice chat", "new chat", "untitled chat", ""):
+                try:
+                    from core.agent import generate_conversation_title
+                    title = generate_conversation_title(user_text)
+                except Exception:
+                    title = db.auto_title_from_first_message(user_text)
+                if title:
+                    db.touch_conversation(self.conversation_id, title=title)
             if user_text:
                 db.save_message(self.conversation_id, "user", content=user_text)
             if reply_text:
