@@ -23,7 +23,9 @@ from ..theme import (
     CARD_TEXT_COLOR, CARD_SUBTITLE_COLOR, PRIMARY_COLOR, PRIMARY_COLOR_DARK,
     ON_PRIMARY_TEXT, BORDER_COLOR, SECTION_CARD_BG, HOVER_BG_COLOR,
     PRESSED_BG_COLOR, TEXT_COLOR_DARK, DANGER_COLOR, DANGER_SOFT_BG, DANGER_BORDER,
+    UI_CHAT_FONT_SIZE,
 )
+from ..widgets.voice_animation import VoiceAnimation
 
 # --- Recording format: 16kHz mono 16-bit PCM WAV — small, fast to upload. ---
 SAMPLE_RATE = 16000
@@ -135,6 +137,14 @@ class TalkToBuddyPage(CardPage):
         status_row.addStretch()
         self.main_layout.addLayout(status_row)
 
+        self.voice_animation = VoiceAnimation()
+        self.voice_animation.setAccessibleName("Buddy voice activity")
+        animation_row = QHBoxLayout()
+        animation_row.addStretch()
+        animation_row.addWidget(self.voice_animation)
+        animation_row.addStretch()
+        self.main_layout.addLayout(animation_row)
+
         mic_row = QHBoxLayout()
         mic_row.addStretch()
         self.mic_button = QPushButton()
@@ -165,6 +175,7 @@ class TalkToBuddyPage(CardPage):
         self.state = self.STATE_IDLE
         self.status_dot.setStyleSheet(f"color: {CARD_SUBTITLE_COLOR}; background: transparent; border: none; font-size: 11px;")
         self.status_label.setText("Tap the mic to start talking")
+        self.voice_animation.set_mode("idle")
         self.mic_button.setEnabled(True)
         self.mic_button.setStyleSheet(self._mic_style(PRIMARY_COLOR, PRIMARY_COLOR_DARK))
 
@@ -172,6 +183,7 @@ class TalkToBuddyPage(CardPage):
         self.state = self.STATE_RECORDING
         self.status_dot.setStyleSheet(f"color: {DANGER_COLOR}; background: transparent; border: none; font-size: 11px;")
         self.status_label.setText("Listening — tap the mic to stop")
+        self.voice_animation.set_mode("recording")
         self.mic_button.setEnabled(True)
         self.mic_button.setStyleSheet(self._mic_style(DANGER_COLOR, DANGER_COLOR))
 
@@ -179,6 +191,7 @@ class TalkToBuddyPage(CardPage):
         self.state = self.STATE_PROCESSING
         self.status_dot.setStyleSheet("color: #f1c40f; background: transparent; border: none; font-size: 11px;")
         self.status_label.setText(label)
+        self.voice_animation.set_mode("processing")
         self.mic_button.setEnabled(False)
         self.mic_button.setStyleSheet(self._mic_style(BORDER_COLOR, BORDER_COLOR))
 
@@ -189,6 +202,7 @@ class TalkToBuddyPage(CardPage):
         if len(clean) > 140:
             clean = clean[:137] + "…"
         self.status_label.setText(clean)
+        self.voice_animation.set_mode("error")
         self.mic_button.setEnabled(True)
         self.mic_button.setStyleSheet(self._mic_style(PRIMARY_COLOR, PRIMARY_COLOR_DARK))
 
@@ -218,7 +232,7 @@ class TalkToBuddyPage(CardPage):
         label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         label.setMaximumWidth(max_w - 28)
         label.setStyleSheet(
-            f"color: {text_color}; font-size: 13.5px; line-height: 140%; background: transparent; border: none;"
+            f"color: {text_color}; font-size: {UI_CHAT_FONT_SIZE}px; line-height: 140%; background: transparent; border: none;"
         )
         layout.addWidget(label)
 

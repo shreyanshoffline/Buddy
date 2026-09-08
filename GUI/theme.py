@@ -21,7 +21,7 @@ ACCENTS = {
     "yellow": "#f1c40f",
     "green":  "#33d6a6",
     "cyan":   "#5bc0de",
-    "blue":   "#338eda",
+    "blue":   "#0099e9",
     "purple": "#a633d6",
     "muted":  "#8492a6",
 }
@@ -200,6 +200,52 @@ CARD_TEXT_SIZE = 26
 CARD_TEXT_WEIGHT = 700
 CARD_SUBTITLE_SIZE = 13
 
+# ---------------------------------------------------------------------------
+# Universal UI tuning
+#
+# This is the main place to adjust the visual proportions of Buddy. Keep
+# colors that depend on the selected accent below in the derived-color
+# section; the values here are stable layout and typography choices.
+# ---------------------------------------------------------------------------
+UI_CORNER_RADIUS = 15
+UI_CARD_CORNER_RADIUS = 18
+UI_SMALL_CORNER_RADIUS = 8
+UI_LAYOUT_MARGIN = 10
+UI_LAYOUT_SPACING = 6
+UI_CHAT_SIDE_MARGIN = 16
+UI_CHAT_TOP_MARGIN = 8
+UI_GREETING_MIN_HEIGHT = 60
+UI_INPUT_FONT_SIZE = BODY_FONT_SIZE
+UI_CHAT_FONT_SIZE = 13.5
+UI_CHAT_LINE_HEIGHT = 1.4
+UI_THINKING_FONT_SIZE = 13
+UI_ICON_BUTTON_FONT_SIZE = 14
+UI_ICON_BUTTON_PADDING = 4
+UI_NAV_BUTTON_HEIGHT = 32
+UI_NAV_FONT_SIZE = 13
+UI_RECENT_FONT_SIZE = 12
+UI_LABEL_FONT_SIZE = 11
+UI_ATTACHMENT_HEIGHT = 26
+UI_ATTACHMENT_CLOSE_SIZE = 16
+UI_ATTACHMENT_FONT_SIZE = 11
+UI_BUBBLE_HORIZONTAL_PADDING = 14
+UI_BUBBLE_VERTICAL_PADDING = 10
+UI_BUBBLE_SPACING = 8
+UI_BUBBLE_FOOTER_BUTTON_SIZE = 20
+UI_PAW_LOADER_WIDTH = 64
+UI_PAW_LOADER_HEIGHT = 38
+
+# Fixed control sizes that are useful to tune together.
+ATTACH_BUTTON_SIZE = 28
+ATTACH_ICON_SIZE = 16
+CLOSE_BUTTON_RADIUS = 12
+PREVIEW_CLOSE_BUTTON_SIZE = 28
+PREVIEW_PANEL_WIDTH_RATIO = 0.70
+PREVIEW_PANEL_HEIGHT_RATIO = 0.70
+VOICE_BUTTON_SIZE = 72
+TOGGLE_WIDTH = 40
+TOGGLE_HEIGHT = 22
+
 # --- Window chrome ---
 WINDOW_TITLE_COLOR = _T["text_secondary"]
 WINDOW_HEADER_HEIGHT = 42
@@ -238,6 +284,13 @@ PRIMARY_COLOR_DARK = _T["accent_hover"]
 PRIMARY_COLOR_PRESSED = _T["accent_pressed"]
 ON_PRIMARY_TEXT = _T["on_accent_text"]
 
+# Small widget colors that do not need accent math but should still be easy
+# to customize from one place.
+PILL_BG = _tint(PRIMARY_COLOR, 0.88)
+PILL_BORDER = _tint(PRIMARY_COLOR, 0.68)
+PILL_TEXT = PRIMARY_COLOR_DARK
+LOADER_COLOR = PRIMARY_COLOR
+
 DANGER_COLOR = _T["danger"]
 DANGER_SOFT_BG = _T["danger_soft"]
 DANGER_BORDER = _T["danger_border"]
@@ -245,6 +298,7 @@ DANGER_BORDER = _T["danger_border"]
 TEXT_COLOR_DARK = _T["text_primary"]
 TEXT_COLOR_MUTED = _T["text_muted"]
 TEXT_COLOR_SUBTITLE = _T["text_secondary"]
+DEV_TEXT_COLOR = TEXT_COLOR_MUTED
 BORDER_COLOR = _T["border_color"]
 CONTAINER_BG = _T["card_bg_top"]
 CARD_BG_TOP = _T["card_bg_top"]

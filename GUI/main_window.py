@@ -40,6 +40,10 @@ from .theme import (
     CHAT_BUBBLE_AGENT, CHAT_BUBBLE_AGENT_TEXT, SIZE_GRIP_SIZE, TEXT_COLOR_SUBTITLE,
     TEXT_COLOR_MUTED, TEXT_COLOR_DARK, HOVER_BG_COLOR, PRESSED_BG_COLOR, ACTIVE_BG_COLOR,
     BORDER_COLOR, DANGER_COLOR, DANGER_SOFT_BG, DANGER_BORDER, INPUT_BG, CONTAINER_BG
+    , UI_CORNER_RADIUS, UI_CHAT_SIDE_MARGIN, UI_CHAT_TOP_MARGIN, UI_GREETING_MIN_HEIGHT,
+    UI_INPUT_FONT_SIZE, UI_ICON_BUTTON_FONT_SIZE, UI_ICON_BUTTON_PADDING,
+    ATTACH_BUTTON_SIZE, ATTACH_ICON_SIZE, PREVIEW_CLOSE_BUTTON_SIZE,
+    PREVIEW_PANEL_WIDTH_RATIO, PREVIEW_PANEL_HEIGHT_RATIO
 )
 from .sidebar import Sidebar
 from .pages import SettingsPage, LibraryPage, BillingPage, ArtifactsPage, OnboardingPage, TalkToBuddyPage
@@ -295,7 +299,7 @@ class BuddyWindow(QWidget):
                     x1:0, y1:0, x2:1, y2:1,
                     stop:0.0 {WINDOW_BG_TOP}, stop:0.6 {WINDOW_BG_MID}, stop:1.0 {WINDOW_BG_BOTTOM}
                 );
-                border-radius: 15px;
+                border-radius: {UI_CORNER_RADIUS}px;
                 border: 1px solid rgba(255, 255, 255, 0.7);
             }}
         """)
@@ -380,7 +384,7 @@ class BuddyWindow(QWidget):
         self.privacy_btn.setCursor(Qt.PointingHandCursor)
         self.privacy_btn.setToolTip("Mark this chat as private")
         self.privacy_btn.setStyleSheet(f"""
-            QPushButton {{ border: none; background: transparent; border-radius: 6px; font-size: 14px; padding: 4px; }}
+            QPushButton {{ border: none; background: transparent; border-radius: 6px; font-size: {UI_ICON_BUTTON_FONT_SIZE}px; padding: {UI_ICON_BUTTON_PADDING}px; }}
             QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
             QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
         """)
@@ -392,7 +396,7 @@ class BuddyWindow(QWidget):
         self.incognito_btn.setCursor(Qt.PointingHandCursor)
         self.incognito_btn.setToolTip("Start an incognito chat (nothing is saved)")
         self.incognito_btn.setStyleSheet(f"""
-            QPushButton {{ border: none; background: transparent; border-radius: 6px; font-size: 14px; padding: 4px; }}
+            QPushButton {{ border: none; background: transparent; border-radius: 6px; font-size: {UI_ICON_BUTTON_FONT_SIZE}px; padding: {UI_ICON_BUTTON_PADDING}px; }}
             QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
             QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
         """)
@@ -423,7 +427,7 @@ class BuddyWindow(QWidget):
             }}
         """)
         self.main_layout = QVBoxLayout(self.chat_page)
-        self.main_layout.setContentsMargins(16, 8, 16, 0)
+        self.main_layout.setContentsMargins(UI_CHAT_SIDE_MARGIN, UI_CHAT_TOP_MARGIN, UI_CHAT_SIDE_MARGIN, 0)
         self.main_layout.setSpacing(0)
  
         self.content_stack.addWidget(self.chat_page)
@@ -432,7 +436,7 @@ class BuddyWindow(QWidget):
         self.greeting.setAlignment(Qt.AlignCenter)
         self.greeting.setWordWrap(True)
         self.greeting.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        self.greeting.setMinimumHeight(60)
+        self.greeting.setMinimumHeight(UI_GREETING_MIN_HEIGHT)
         self.greeting.setStyleSheet(f"color: {GREETING_COLOR}; background: transparent; border: none;")
         self.greeting.setFont(QFont("Helvetica Neue", GREETING_FONT_SIZE, QFont.Medium))
  
@@ -501,11 +505,11 @@ class BuddyWindow(QWidget):
         input_row.setSpacing(4)
 
         self.attach_button = QPushButton()
-        self.attach_button.setFixedSize(28, 28)
+        self.attach_button.setFixedSize(ATTACH_BUTTON_SIZE, ATTACH_BUTTON_SIZE)
         self.attach_button.setCursor(Qt.PointingHandCursor)
         self.attach_button.setToolTip("Attach a file")
-        self.attach_button.setIcon(get_svg_icon(ICONS["plus"], TEXT_COLOR_SUBTITLE, 16))
-        self.attach_button.setIconSize(QSize(16, 16))
+        self.attach_button.setIcon(get_svg_icon(ICONS["plus"], TEXT_COLOR_SUBTITLE, ATTACH_ICON_SIZE))
+        self.attach_button.setIconSize(QSize(ATTACH_ICON_SIZE, ATTACH_ICON_SIZE))
         self.attach_button.setStyleSheet(f"""
             QPushButton {{ background: transparent; border: none; border-radius: 14px; }}
             QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
@@ -519,7 +523,7 @@ class BuddyWindow(QWidget):
                 background: transparent;
                 border: none;
                 padding: 4px 4px;
-                font-size: 14px;
+                font-size: {UI_INPUT_FONT_SIZE}px;
                 color: {TEXT_COLOR_DARK};
             }}
         """)
@@ -573,7 +577,7 @@ class BuddyWindow(QWidget):
         self.preview_header.addWidget(self.preview_title)
         self.preview_header.addStretch()
         self.preview_close_btn = QPushButton("✕")
-        self.preview_close_btn.setFixedSize(28, 28)
+        self.preview_close_btn.setFixedSize(PREVIEW_CLOSE_BUTTON_SIZE, PREVIEW_CLOSE_BUTTON_SIZE)
         self.preview_close_btn.setCursor(Qt.PointingHandCursor)
         self.preview_close_btn.setToolTip("Close preview")
         self.preview_close_btn.setStyleSheet(f"""
@@ -696,7 +700,7 @@ class BuddyWindow(QWidget):
         if not self.preview_overlay.isVisible():
             self.preview_overlay.resize(self.chat_page.size())
             self.preview_overlay.move(0, 0)
-            self.preview_panel.resize(int(self.chat_page.width() * 0.7), int(self.chat_page.height() * 0.7))
+            self.preview_panel.resize(int(self.chat_page.width() * PREVIEW_PANEL_WIDTH_RATIO), int(self.chat_page.height() * PREVIEW_PANEL_HEIGHT_RATIO))
             self.preview_panel.move(
                 (self.chat_page.width() - self.preview_panel.width()) // 2,
                 (self.chat_page.height() - self.preview_panel.height()) // 2,
@@ -704,7 +708,7 @@ class BuddyWindow(QWidget):
         else:
             self.preview_overlay.resize(self.chat_page.size())
             self.preview_overlay.move(0, 0)
-            self.preview_panel.resize(int(self.chat_page.width() * 0.7), int(self.chat_page.height() * 0.7))
+            self.preview_panel.resize(int(self.chat_page.width() * PREVIEW_PANEL_WIDTH_RATIO), int(self.chat_page.height() * PREVIEW_PANEL_HEIGHT_RATIO))
             self.preview_panel.move(
                 (self.chat_page.width() - self.preview_panel.width()) // 2,
                 (self.chat_page.height() - self.preview_panel.height()) // 2,
@@ -911,13 +915,13 @@ class BuddyWindow(QWidget):
             return
         self.incognito_mode = not self.incognito_mode
         if self.incognito_mode:
-            self.incognito_btn.setStyleSheet(f"QPushButton {{ border: none; background: {ACTIVE_BG_COLOR}; border-radius: 6px; font-size: 14px; padding: 4px; }}")
+            self.incognito_btn.setStyleSheet(f"QPushButton {{ border: none; background: {ACTIVE_BG_COLOR}; border-radius: 6px; font-size: {UI_ICON_BUTTON_FONT_SIZE}px; padding: {UI_ICON_BUTTON_PADDING}px; }}")
             self.incognito_btn.setToolTip("Incognito ON — nothing in this chat will be saved")
             self.subtitle_label.setText("🕶️ Incognito — nothing here is saved")
             self.subtitle_label.setVisible(True)
         else:
             self.incognito_btn.setStyleSheet(f"""
-                QPushButton {{ border: none; background: transparent; border-radius: 6px; font-size: 14px; padding: 4px; }}
+                QPushButton {{ border: none; background: transparent; border-radius: 6px; font-size: {UI_ICON_BUTTON_FONT_SIZE}px; padding: {UI_ICON_BUTTON_PADDING}px; }}
                 QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
                 QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
             """)

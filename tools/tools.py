@@ -1030,6 +1030,19 @@ def get_recent_emails(days_back: int = 7, max_results: int = 10) -> List[Dict]:
     return _fetch_messages(query, max_results)
 
 
+def check_gmail_connection() -> Dict[str, Any]:
+    """Verify Gmail OAuth and return the connected account without reading mail."""
+    service = _get_gmail_service()
+    profile = service.users().getProfile(userId="me").execute()
+    return {
+        "connected": True,
+        "provider": "Gmail API",
+        "email": profile.get("emailAddress", ""),
+        "messages_total": profile.get("messagesTotal", 0),
+        "threads_total": profile.get("threadsTotal", 0),
+    }
+
+
 def get_unread_emails(days_back: int = 7, max_results: int = 10) -> List[Dict]:
     """Get unread inbox emails from the last `days_back` days."""
     after_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y/%m/%d")

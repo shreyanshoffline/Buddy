@@ -724,8 +724,19 @@ tools_schema = [
     {
         "type": "function",
         "function": {
+            "name": "check_gmail_connection",
+            "description": "Checks whether Buddy is connected to Gmail through OAuth and returns the connected account. Use this when the user asks whether Google or Gmail works.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_recent_emails",
-            "description": "Gets recent inbox emails (read-only) from the last N days. Requires Gmail OAuth credentials in ~/Buddy/.",
+            "description": "Gets recent inbox emails (read-only) from the last N days through the Gmail API.",
             "parameters": {
                 "type": "object",
                 "properties": {

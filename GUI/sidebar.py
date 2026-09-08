@@ -4,7 +4,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from .theme import (
     SIDEBAR_BG, BORDER_COLOR, HOVER_BG_COLOR, PRESSED_BG_COLOR, ACTIVE_BG_COLOR, PRIMARY_COLOR,
-    SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_EXPANDED_WIDTH, ICON_SIZE, TEXT_COLOR_MUTED, TEXT_COLOR_DARK
+    SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_EXPANDED_WIDTH, ICON_SIZE, TEXT_COLOR_MUTED, TEXT_COLOR_DARK,
+    UI_NAV_BUTTON_HEIGHT, UI_NAV_FONT_SIZE, UI_RECENT_FONT_SIZE, UI_LABEL_FONT_SIZE,
+    UI_LAYOUT_MARGIN, UI_LAYOUT_SPACING
 )
 
 from .icons import get_svg_icon, ICONS
@@ -19,7 +21,7 @@ class NavButton(QPushButton):
         self.setIcon(get_svg_icon(icon_path, size=ICON_SIZE if not small else 14))
         self.setIconSize(self.iconSize())
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(32)
+        self.setFixedHeight(UI_NAV_BUTTON_HEIGHT)
         self.set_collapsed(True)
 
     def set_active(self, active: bool):
@@ -41,7 +43,7 @@ class NavButton(QPushButton):
                     border-radius: 8px;
                     {active_border}
                     {active_bg}
-                    font-size: {"12px" if self.small else "13px"};
+                    font-size: {"12px" if self.small else f"{UI_NAV_FONT_SIZE}px"};
                     font-weight: {"600" if self.is_active else ("normal" if self.small else "500")};
                     color: {PRIMARY_COLOR if self.is_active else TEXT_COLOR_DARK};
                 }}
@@ -58,7 +60,7 @@ class NavButton(QPushButton):
                     border-radius: 8px;
                     {active_border}
                     {active_bg}
-                    font-size: {"12px" if self.small else "13px"};
+                    font-size: {"12px" if self.small else f"{UI_NAV_FONT_SIZE}px"};
                     font-weight: {"600" if self.is_active else ("normal" if self.small else "500")};
                     color: {PRIMARY_COLOR if self.is_active else TEXT_COLOR_DARK};
                 }}
@@ -101,8 +103,8 @@ class Sidebar(QFrame):
         """)
         self.setToolTip("Click to expand/collapse")
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(5, 14, 5, 14)
-        self.layout.setSpacing(6)
+        self.layout.setContentsMargins(UI_LAYOUT_MARGIN // 2, 14, UI_LAYOUT_MARGIN // 2, 14)
+        self.layout.setSpacing(UI_LAYOUT_SPACING)
 
         # Main Navigation Buttons
         self.btn_new = NavButton("New chat", ICONS["plus"])
@@ -114,7 +116,7 @@ class Sidebar(QFrame):
         
         # Recent Chats Section Header
         self.lbl_recents = QLabel("Recents")
-        self.lbl_recents.setStyleSheet(f"color: {TEXT_COLOR_MUTED}; font-size: 11px; font-weight: bold; background: transparent; border: none; margin-top: 8px; margin-bottom: 2px;")
+        self.lbl_recents.setStyleSheet(f"color: {TEXT_COLOR_MUTED}; font-size: {UI_LABEL_FONT_SIZE}px; font-weight: bold; background: transparent; border: none; margin-top: 8px; margin-bottom: 2px;")
         self.lbl_recents.hide()
 
         self.layout.addWidget(self.btn_new)
@@ -169,7 +171,7 @@ class Sidebar(QFrame):
             btn.setStyleSheet(f"""
                 QPushButton {{
                     font-weight: normal;
-                    font-size: 12px;
+                    font-size: {UI_RECENT_FONT_SIZE}px;
                     padding: 6px 8px;
                     text-align: left;
                     border: none;

@@ -7,20 +7,24 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QSize, QTimer, QRectF
 from PySide6.QtGui import QKeyEvent, QTextDocument, QFontMetrics, QPainter, QColor, QPainterPath, QPixmap
 import base64
+import math
 
 from ..icons import get_svg_icon, ICONS
 from ..theme import (
     HOVER_BG_COLOR, PRESSED_BG_COLOR, PRIMARY_COLOR, PRIMARY_COLOR_DARK, DANGER_COLOR, DANGER_SOFT_BG,
     TEXT_COLOR_SUBTITLE, TEXT_COLOR_MUTED, BORDER_COLOR,
     CHAT_BUBBLE_USER, CHAT_BUBBLE_USER_TEXT, CHAT_BUBBLE_AGENT, CHAT_BUBBLE_AGENT_TEXT,
+    UI_PAW_LOADER_WIDTH, UI_PAW_LOADER_HEIGHT, UI_THINKING_FONT_SIZE,
+    UI_CHAT_FONT_SIZE, UI_CHAT_LINE_HEIGHT, UI_BUBBLE_FOOTER_BUTTON_SIZE,
+    UI_LABEL_FONT_SIZE, LOADER_COLOR, DEV_TEXT_COLOR,
 )
 
 class BuddyPawLoader(QWidget):
-    """Compact animated thinking indicator featuring bear paw prints walking upward."""
+    """Compact Buddy response indicator: a soft pulse with paw prints walking upward."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(64, 38)
+        self.setFixedSize(UI_PAW_LOADER_WIDTH, UI_PAW_LOADER_HEIGHT)
         self._phase = 0.0
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._animate)
@@ -39,7 +43,7 @@ class BuddyPawLoader(QWidget):
         painter.scale(scale, scale)
 
         # Primary accent color for Buddy paws
-        color = QColor("#2b7ff0")
+        color = QColor(LOADER_COLOR)
         color.setAlphaF(max(0.0, min(1.0, opacity)))
         painter.setBrush(color)
         painter.setPen(Qt.NoPen)
@@ -68,6 +72,15 @@ class BuddyPawLoader(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
 
         center_x = self.width() / 2.0
+        # A subtle breathing halo makes it clear that Buddy is actively
+        # working, even when no progress step has arrived yet.
+        halo = QColor(LOADER_COLOR)
+        halo.setAlpha(18 + int(10 * (1 + math.sin(self._phase * 1.6))))
+        painter.setBrush(halo)
+        painter.setPen(Qt.NoPen)
+        radius = 8.0 + 2.0 * (1 + math.sin(self._phase * 1.6))
+        painter.drawEllipse(QRectF(center_x - radius, 19 - radius, radius * 2, radius * 2))
+
         total_paws = 4
         spacing_y = 8.0
         base_y = 30.0
@@ -102,18 +115,18 @@ class DevChamber(QWidget):
         self.toggle_btn = QPushButton("▶ See thought process")
         self.toggle_btn.setCursor(Qt.PointingHandCursor)
         self.toggle_btn.setCheckable(True)
-        self.toggle_btn.setStyleSheet("""
-            QPushButton {
+        self.toggle_btn.setStyleSheet(f"""
+            QPushButton {{
                 text-align: left;
-                color: #888888;
-                font-size: 11px;
+                color: {DEV_TEXT_COLOR};
+                font-size: {UI_LABEL_FONT_SIZE}px;
                 font-weight: 600;
                 background: transparent;
                 border: none;
                 padding: 4px 0px;
-            }
-            QPushButton:hover { color: #555555; }
-            QPushButton:checked { color: #2b7ff0; }
+            }}
+            QPushButton:hover {{ color: {TEXT_COLOR_SUBTITLE}; }}
+            QPushButton:checked {{ color: {PRIMARY_COLOR}; }}
         """)
         self.toggle_btn.toggled.connect(self.on_toggle)
 
@@ -232,7 +245,7 @@ class ChatBubble(QWidget):
             current_row.addWidget(self.paw_loader)
 
             self.thinking_current_label = QLabel("Buddy is thinking...")
-            self.thinking_current_label.setStyleSheet(f"color: {TEXT_COLOR_MUTED}; font-size: 13px; font-weight: 500; font-style: italic; background: transparent; border: none;")
+            self.thinking_current_label.setStyleSheet(f"color: {TEXT_COLOR_MUTED}; font-size: {UI_THINKING_FONT_SIZE}px; font-weight: 500; font-style: italic; background: transparent; border: none;")
             current_row.addWidget(self.thinking_current_label)
             current_row.addStretch()
             self.thinking_container.addLayout(current_row)
@@ -255,8 +268,8 @@ class ChatBubble(QWidget):
                 }}
                 QLabel {{
                     color: {CHAT_BUBBLE_USER_TEXT};
-                    font-size: 13.5px;
-                    line-height: 1.4;
+                    font-size: {UI_CHAT_FONT_SIZE}px;
+                    line-height: {UI_CHAT_LINE_HEIGHT};
                 }}
                 QLabel a {{ color: {CHAT_BUBBLE_USER_TEXT}; text-decoration: underline; }}
             """)
@@ -275,8 +288,8 @@ class ChatBubble(QWidget):
                 }}
                 QLabel {{
                     color: {CHAT_BUBBLE_AGENT_TEXT};
-                    font-size: 13.5px;
-                    line-height: 1.4;
+                    font-size: {UI_CHAT_FONT_SIZE}px;
+                    line-height: {UI_CHAT_LINE_HEIGHT};
                 }}
                 QLabel a {{ color: {PRIMARY_COLOR}; text-decoration: none; font-weight: 600; }}
                 QLabel pre {{
@@ -376,7 +389,7 @@ class ChatBubble(QWidget):
         self.footer_layout.addStretch()
 
         self.prev_btn = QPushButton(icon=get_svg_icon(ICONS["left"], TEXT_COLOR_SUBTITLE))
-        self.prev_btn.setFixedSize(20, 20)
+        self.prev_btn.setFixedSize(UI_BUBBLE_FOOTER_BUTTON_SIZE, UI_BUBBLE_FOOTER_BUTTON_SIZE)
         self.prev_btn.setStyleSheet(btn_style)
         self.prev_btn.setCursor(Qt.PointingHandCursor)
         self.prev_btn.setToolTip("Previous version")
@@ -388,7 +401,7 @@ class ChatBubble(QWidget):
         self.footer_layout.addWidget(self.page_label)
 
         self.next_btn = QPushButton(icon=get_svg_icon(ICONS["right"], TEXT_COLOR_SUBTITLE))
-        self.next_btn.setFixedSize(20, 20)
+        self.next_btn.setFixedSize(UI_BUBBLE_FOOTER_BUTTON_SIZE, UI_BUBBLE_FOOTER_BUTTON_SIZE)
         self.next_btn.setStyleSheet(btn_style)
         self.next_btn.setCursor(Qt.PointingHandCursor)
         self.next_btn.setToolTip("Next version")

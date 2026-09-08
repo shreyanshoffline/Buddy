@@ -18,7 +18,11 @@ from PySide6.QtCore import Qt, Signal, QRect, QPoint, QSize, QThread
 from PySide6.QtGui import QKeyEvent, QDragEnterEvent, QDropEvent, QFontMetrics
 from pypdf import PdfReader
 
-from ..theme import HOVER_BG_COLOR, PRESSED_BG_COLOR, TEXT_COLOR_DARK
+from ..theme import (
+    HOVER_BG_COLOR, PRESSED_BG_COLOR, TEXT_COLOR_DARK,
+    PILL_BG, PILL_BORDER, PILL_TEXT, UI_ATTACHMENT_HEIGHT,
+    UI_ATTACHMENT_CLOSE_SIZE, UI_ATTACHMENT_FONT_SIZE, UI_INPUT_FONT_SIZE,
+)
 
 TEXT_EXTS = {
     ".txt", ".md", ".json", ".csv", ".py", ".js", ".ts",
@@ -28,11 +32,6 @@ TEXT_EXTS = {
 MAX_TEXT_FILE_BYTES = 5 * 1024 * 1024
 MAX_PDF_FILE_BYTES = 40 * 1024 * 1024
 MAX_IMAGE_FILE_BYTES = 12 * 1024 * 1024
-
-PILL_BG = "#E7F0FA"
-PILL_BORDER = "#B7CDE8"
-PILL_TEXT = "#1c6ad9"
-
 
 class FlowLayout(QLayout):
     """Wraps child widgets onto new rows as needed — no horizontal scrollbar ever."""
@@ -126,7 +125,7 @@ class AttachmentPill(QFrame):
         self.file_packet = file_packet
         self.file_path = file_packet["path"]
 
-        self.setFixedHeight(26)
+        self.setFixedHeight(UI_ATTACHMENT_HEIGHT)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("%s · double-click to preview" % file_packet.get("name", "file"))
         self.setStyleSheet(f"""
@@ -146,14 +145,14 @@ class AttachmentPill(QFrame):
 
         name = file_packet.get("name", "file")
         label = QLabel()
-        label.setStyleSheet(f"color: {PILL_TEXT}; font-size: 11px; font-weight: 600; background: transparent; border: none;")
+        label.setStyleSheet(f"color: {PILL_TEXT}; font-size: {UI_ATTACHMENT_FONT_SIZE}px; font-weight: 600; background: transparent; border: none;")
         metrics = QFontMetrics(label.font())
         label.setText(metrics.elidedText(name, Qt.ElideMiddle, 120))
         label.setToolTip(name)
         row.addWidget(label)
 
         close_btn = QPushButton("×")
-        close_btn.setFixedSize(16, 16)
+        close_btn.setFixedSize(UI_ATTACHMENT_CLOSE_SIZE, UI_ATTACHMENT_CLOSE_SIZE)
         close_btn.setCursor(Qt.PointingHandCursor)
         close_btn.setToolTip("Remove file")
         close_btn.setStyleSheet(f"""
@@ -222,7 +221,7 @@ class ChatInput(QTextEdit):
                 background: transparent;
                 border: none;
                 padding: 4px;
-                font-size: 14px;
+                font-size: {UI_INPUT_FONT_SIZE}px;
                 color: #333;
             }
         """)
