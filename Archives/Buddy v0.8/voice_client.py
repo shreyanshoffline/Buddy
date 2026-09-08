@@ -272,18 +272,14 @@ def _gemini_transcribe(audio_bytes, cancel_check=None):
     return ""
 
 
-def transcribe_audio(audio_url, cancel_check=None, model="gemini"):
-    """model: 'gemini' (default — Gemini 2.5 Flash, falls back to Whisper
-    on failure) or 'whisper' (skip Gemini, go straight to Whisper via
-    Hack Club AI's Replicate proxy)."""
+def transcribe_audio(audio_url, cancel_check=None):
     audio_bytes = _audio_bytes(audio_url)
-    if model != "whisper":
-        try:
-            text = _gemini_transcribe(audio_bytes, cancel_check=cancel_check)
-            if text:
-                return text
-        except Exception:
-            pass
+    try:
+        text = _gemini_transcribe(audio_bytes, cancel_check=cancel_check)
+        if text:
+            return text
+    except Exception:
+        pass
 
     data_uri = audio_url
     if not (isinstance(audio_url, str) and audio_url.startswith("data:")):
@@ -316,31 +312,6 @@ def synthesize_speech(text, voice=DEFAULT_TTS_VOICE, cancel_check=None):
     if not url:
         raise VoiceError("The voice model responded but didn't return any audio.")
     return url
-
-
-def speak(text, model="system", voice=DEFAULT_TTS_VOICE, cancel_check=None):
-    """Resolves a reply into something the caller can actually play.
-
-    model: 'system' (default, free — the OS speech engine) or 'inworld'
-    (paid Replicate TTS). Returns a ('command', argv) tuple for system
-    voices, or ('audio_url', url) for Inworld. Falls back to the system
-    voice if Inworld fails, so voice mode never just goes silent.
-    Returns (None, None) if there's nothing to say or no voice is
-    available at all."""
-    spoken = (text or "").strip()
-    if not spoken:
-        return None, None
-    if model == "inworld":
-        try:
-            url = synthesize_speech(spoken, voice=voice, cancel_check=cancel_check)
-            if url:
-                return "audio_url", url
-        except VoiceError:
-            pass  # fall through to the free system voice
-    command = system_say_command(spoken)
-    if command:
-        return "command", command
-    return None, None
 
 
 def mac_premium_voice():

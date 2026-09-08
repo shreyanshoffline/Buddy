@@ -17,12 +17,14 @@ from PySide6.QtCore import Qt, QThread, Signal, QTimer, QProcess, QSize
 
 import core
 import voice_client
+from storage import db
 from .card_page import CardPage
 from ..icons import get_svg_icon, ICONS
 from ..theme import (
     CARD_TEXT_COLOR, CARD_SUBTITLE_COLOR, PRIMARY_COLOR, PRIMARY_COLOR_DARK,
     ON_PRIMARY_TEXT, BORDER_COLOR, SECTION_CARD_BG, HOVER_BG_COLOR,
-    PRESSED_BG_COLOR, TEXT_COLOR_DARK, DANGER_COLOR, DANGER_SOFT_BG, DANGER_BORDER,
+    PRESSED_BG_COLOR, TEXT_COLOR_DARK, INPUT_BG, ACTIVE_BG_COLOR,
+    DANGER_COLOR, DANGER_SOFT_BG, DANGER_BORDER,
     UI_CHAT_FONT_SIZE,
 )
 from ..widgets.voice_animation import VoiceAnimation
@@ -53,19 +55,18 @@ class _VoiceTurnWorker(QThread):
     reply_ready = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, wav_path, message_history, conversation_id=None, listening_model="gemini"):
+    def __init__(self, wav_path, message_history, conversation_id=None):
         super().__init__()
         self.wav_path = wav_path
         self.message_history = message_history
         self.conversation_id = conversation_id
-        self.listening_model = listening_model
         self.cancel_event = threading.Event()
 
     def run(self):
         try:
             self.stage.emit("Listening...")
             audio_url = voice_client.upload_audio_file(self.wav_path)
-            user_text = voice_client.transcribe_audio(audio_url, cancel_check=self.cancel_event.is_set, model=self.listening_model)
+            user_text = voice_client.transcribe_audio(audio_url, cancel_check=self.cancel_event.is_set)
             self.user_text_ready.emit(user_text)
 
             self.stage.emit("Thinking...")
@@ -110,11 +111,6 @@ class TalkToBuddyPage(CardPage):
         self._record_wav_path = None
         self._say_process = QProcess(self)
         self._say_process.finished.connect(lambda *_: self._style_idle())
-        self._media_player = None
-        self._audio_output = None
-        _profile = core.get_profile() if hasattr(core, "get_profile") else {}
-        self.listening_model = (_profile or {}).get("listening_model") or "gemini"
-        self.speaking_model = (_profile or {}).get("speaking_model") or "system"
         self._init_tts()
 
         if hasattr(self, "account_chip"):
@@ -125,6 +121,7 @@ class TalkToBuddyPage(CardPage):
 
     # --- UI ---
     def _build_ui(self):
+        self._build_voice_controls()
         self.transcript_container = QVBoxLayout()
         self.transcript_container.setSpacing(12)
         self.transcript_container.setContentsMargins(8, 4, 8, 8)
@@ -165,71 +162,87 @@ class TalkToBuddyPage(CardPage):
         self.main_layout.addLayout(mic_row)
         self._style_idle()
 
-        voice_settings_row = QHBoxLayout()
-        voice_settings_row.setSpacing(10)
-        combo_style = f"""
-            QComboBox {{
-                background-color: {SECTION_CARD_BG};
-                border: 1.2px solid {BORDER_COLOR};
-                border-radius: 8px;
-                padding: 4px 8px;
-                font-size: 11px;
-                color: {CARD_TEXT_COLOR};
-            }}
-        """
-        listening_col = QVBoxLayout()
-        listening_col.setSpacing(2)
-        listening_label = QLabel("Listening")
-        listening_label.setStyleSheet(f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; font-weight: bold; background: transparent; border: none;")
-        listening_col.addWidget(listening_label)
-        self.listening_select = QComboBox()
-        self.listening_select.setStyleSheet(combo_style)
-        self.listening_select.addItem("Gemini 2.5 Flash", "gemini")
-        self.listening_select.addItem("Whisper (Hack Club AI)", "whisper")
-        self.listening_select.setCurrentIndex(1 if self.listening_model == "whisper" else 0)
-        self.listening_select.currentIndexChanged.connect(self._on_listening_changed)
-        listening_col.addWidget(self.listening_select)
-        voice_settings_row.addLayout(listening_col)
-
-        speaking_col = QVBoxLayout()
-        speaking_col.setSpacing(2)
-        speaking_label = QLabel("Speaking")
-        speaking_label.setStyleSheet(f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; font-weight: bold; background: transparent; border: none;")
-        speaking_col.addWidget(speaking_label)
-        self.speaking_select = QComboBox()
-        self.speaking_select.setStyleSheet(combo_style)
-        self.speaking_select.addItem("System voice", "system")
-        self.speaking_select.addItem("Inworld", "inworld")
-        self.speaking_select.setCurrentIndex(1 if self.speaking_model == "inworld" else 0)
-        self.speaking_select.currentIndexChanged.connect(self._on_speaking_changed)
-        speaking_col.addWidget(self.speaking_select)
-        voice_settings_row.addLayout(speaking_col)
-        self.main_layout.addLayout(voice_settings_row)
-
         self.voice_hint = QLabel("")
         self.voice_hint.setWordWrap(True)
         self.voice_hint.setAlignment(Qt.AlignCenter)
         self.voice_hint.setStyleSheet(f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; background: transparent; border: none; margin-top: 8px;")
         self.main_layout.addWidget(self.voice_hint)
-        self._update_voice_hint()
+        self._refresh_voice_hint()
 
-    def _on_listening_changed(self, index):
-        self.listening_model = self.listening_select.currentData() or "gemini"
-        core.update_profile(listening_model=self.listening_model)
-        self._update_voice_hint()
+    def _build_voice_controls(self):
+        """Draft controls for choosing the voice input and output engines."""
+        card = QFrame()
+        card.setStyleSheet(f"QFrame {{ background: {SECTION_CARD_BG}; border: 1px solid {BORDER_COLOR}; border-radius: 14px; }}")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
 
-    def _on_speaking_changed(self, index):
-        self.speaking_model = self.speaking_select.currentData() or "system"
-        core.update_profile(speaking_model=self.speaking_model)
-        self._update_voice_hint()
+        title = QLabel("Voice engines")
+        title.setStyleSheet(f"color: {CARD_TEXT_COLOR}; font-size: 14px; font-weight: 700; background: transparent; border: none;")
+        layout.addWidget(title)
+        description = QLabel("Pick who is listening and who is speaking. These are visual draft controls for now.")
+        description.setWordWrap(True)
+        description.setStyleSheet(f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; background: transparent; border: none;")
+        layout.addWidget(description)
 
-    def _update_voice_hint(self):
-        listening_label = "Whisper (Hack Club AI)" if self.listening_model == "whisper" else "Gemini 2.5 Flash"
-        speaking_label = "Inworld" if self.speaking_model == "inworld" else "your Mac's system voice — $0"
+        fields = QHBoxLayout()
+        fields.setSpacing(8)
+        voice_settings = db.get_plugin_settings() or {}
+        self.listening_model_combo = self._voice_combo([
+            "Gemini 2.5 Flash",
+            "Whisper · Replicate / Hack Club AI",
+        ])
+        self.speaking_model_combo = self._voice_combo([
+            "System voice · macOS",
+            "Inworld",
+        ])
+        self.listening_model_combo.setCurrentIndex(1 if voice_settings.get("listening_model") == "whisper" else 0)
+        self.speaking_model_combo.setCurrentIndex(1 if voice_settings.get("speaking_model") == "inworld" else 0)
+        fields.addLayout(self._voice_field("Listening", self.listening_model_combo), 1)
+        fields.addLayout(self._voice_field("Speaking", self.speaking_model_combo), 1)
+        layout.addLayout(fields)
+        self.listening_model_combo.currentIndexChanged.connect(self._save_voice_models)
+        self.speaking_model_combo.currentIndexChanged.connect(self._save_voice_models)
+        self.main_layout.addWidget(card)
+
+    def _voice_combo(self, values):
+        combo = QComboBox()
+        combo.addItems(values)
+        combo.setCursor(Qt.PointingHandCursor)
+        combo.setStyleSheet(f"""
+            QComboBox {{ background: {INPUT_BG}; color: {TEXT_COLOR_DARK}; border: 1px solid {BORDER_COLOR};
+                border-radius: 8px; padding: 6px 8px; font-size: 10px; }}
+            QComboBox:hover {{ border: 1px solid {PRIMARY_COLOR}; }}
+            QComboBox QAbstractItemView {{ background: {INPUT_BG}; color: {TEXT_COLOR_DARK};
+                selection-background-color: {ACTIVE_BG_COLOR}; }}
+        """)
+        return combo
+
+    def _voice_field(self, label_text, combo):
+        field = QVBoxLayout()
+        field.setSpacing(3)
+        label = QLabel(label_text)
+        label.setStyleSheet(f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; font-weight: 700; background: transparent; border: none;")
+        field.addWidget(label)
+        field.addWidget(combo)
+        return field
+
+    def _refresh_voice_hint(self):
+        if not hasattr(self, "voice_hint"):
+            return
+        listener = self.listening_model_combo.currentText()
+        speaker = self.speaking_model_combo.currentText()
         self.voice_hint.setText(
-            f"Listening uses {listening_label}. Speaking uses {speaking_label}. "
-            "This session is saved in Library as a Voice chat."
+            f"Listening: {listener}. Speaking: {speaker}. "
+            "Your voice chat can be saved to Library as a Voice chat."
         )
+
+    def _save_voice_models(self):
+        db.update_plugin_settings(
+            listening_model="whisper" if self.listening_model_combo.currentIndex() == 1 else "gemini",
+            speaking_model="inworld" if self.speaking_model_combo.currentIndex() == 1 else "system",
+        )
+        self._refresh_voice_hint()
 
     def _mic_style(self, bg, hover_bg):
         return f"""
@@ -441,7 +454,7 @@ class TalkToBuddyPage(CardPage):
                 self.conversation_id = db.create_conversation(title="Voice chat", kind="voice")
             except Exception:
                 self.conversation_id = None
-        self._turn_worker = _VoiceTurnWorker(wav_path, self.message_history, self.conversation_id, listening_model=self.listening_model)
+        self._turn_worker = _VoiceTurnWorker(wav_path, self.message_history, self.conversation_id)
         self._turn_worker.stage.connect(lambda label: self._style_processing(label))
         self._turn_worker.user_text_ready.connect(self._on_user_text)
         self._turn_worker.reply_ready.connect(self._on_reply_ready)
@@ -470,41 +483,14 @@ class TalkToBuddyPage(CardPage):
             self._style_idle()
             return
         self._style_processing("Speaking...")
-        kind, payload = voice_client.speak(spoken, model=self.speaking_model)
-        if kind == "command":
-            self._say_process.start(payload[0], payload[1:])
-            return
-        if kind == "audio_url":
-            self._play_audio_url(payload)
+        command = voice_client.system_say_command(spoken)
+        if command:
+            self._say_process.start(command[0], command[1:])
             return
         if self._tts_engine is not None:
             self._tts_engine.say(spoken)
             return
         self._style_idle()
-
-    def _play_audio_url(self, url):
-        """Plays an Inworld-generated reply. Falls back to the system
-        voice's idle state if QtMultimedia playback isn't available."""
-        try:
-            from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
-            from PySide6.QtCore import QUrl
-            if self._media_player is None:
-                self._media_player = QMediaPlayer(self)
-                self._audio_output = QAudioOutput(self)
-                self._media_player.setAudioOutput(self._audio_output)
-                self._media_player.mediaStatusChanged.connect(self._on_media_status)
-            self._media_player.setSource(QUrl(url))
-            self._media_player.play()
-        except Exception:
-            self._style_idle()
-
-    def _on_media_status(self, status):
-        try:
-            from PySide6.QtMultimedia import QMediaPlayer
-            if status in (QMediaPlayer.EndOfMedia, QMediaPlayer.InvalidMedia):
-                self._style_idle()
-        except Exception:
-            self._style_idle()
 
     def _on_user_text(self, text):
         self._last_user_text = text
@@ -597,9 +583,4 @@ class TalkToBuddyPage(CardPage):
                 pass
         if self._say_process.state() != QProcess.NotRunning:
             self._say_process.kill()
-        if self._media_player is not None:
-            try:
-                self._media_player.stop()
-            except Exception:
-                pass
         super().hideEvent(event)

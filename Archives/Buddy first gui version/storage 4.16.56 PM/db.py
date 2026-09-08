@@ -36,7 +36,7 @@ def _safe_embed(texts):
         return models.embed_texts(texts)
     except Exception:
         return None
-MAX_FILE_CHARS = 60_000    # ~20-30 pages; more than this rarely gets retrieved
+MAX_FILE_CHARS = 200_000   # doubled — handle larger files
 CHUNK_CHARS = 3000         # bigger chunks = more context per retrieval hit
 CHUNK_OVERLAP = 400        # more overlap = less chance of splitting mid-thought
 
@@ -76,10 +76,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS conversations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL DEFAULT 'New chat',
-            kind TEXT NOT NULL DEFAULT 'chat',
             is_private INTEGER NOT NULL DEFAULT 0,
-            is_favorite INTEGER NOT NULL DEFAULT 0,
-            is_archived INTEGER NOT NULL DEFAULT 0,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         );
@@ -118,53 +115,11 @@ def init_db():
             theme_color TEXT DEFAULT 'blue',
             dark_mode INTEGER DEFAULT 0,
             subscription_tier TEXT DEFAULT 'free',
-            buddy_user_id TEXT,
             byo_api_key TEXT,
             privacy_pin_hash TEXT,             -- sha256 hex digest; NULL = no PIN set
             has_seen_intro_tip INTEGER DEFAULT 0,
             favorite_apps TEXT,                -- comma-separated, user's own "usual apps"
             quick_links TEXT                   -- comma-separated "Name: URL" pairs
-            ,auth_provider TEXT
-            ,hackclub_verified INTEGER DEFAULT 0
-            ,hackclub_verification_status TEXT
-            ,hackclub_identity_id TEXT
-            ,hackclub_slack_id TEXT
-            ,hackclub_ysws_eligible INTEGER DEFAULT 0
-            ,onboarding_complete INTEGER DEFAULT 0
-            ,thinking_level TEXT DEFAULT 'medium'
-            ,thinking_level_auto INTEGER DEFAULT 1
-            ,listening_model TEXT DEFAULT 'gemini'
-            ,speaking_model TEXT DEFAULT 'system'
-            ,daily_request_count INTEGER DEFAULT 0
-            ,daily_request_date TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS artifacts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            kind TEXT NOT NULL DEFAULT 'image',
-            content TEXT NOT NULL,
-            conversation_id INTEGER,
-            created_at REAL NOT NULL,
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS plugin_toggles (
-            key TEXT PRIMARY KEY,           -- e.g. 'gmail', 'web_search', 'app:slack', 'system:mic'
-            enabled INTEGER NOT NULL DEFAULT 0
-        );
-
-        CREATE TABLE IF NOT EXISTS plugin_folders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            path TEXT NOT NULL UNIQUE,
-            created_at REAL NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS plugin_websites (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            domain TEXT NOT NULL UNIQUE,
-            access TEXT NOT NULL DEFAULT 'read',   -- 'read' or 'read_write'
-            created_at REAL NOT NULL
         );
         """)
         # migration: add email column for older dbs created before this existed
@@ -179,45 +134,10 @@ def init_db():
             conn.execute("ALTER TABLE user_profile ADD COLUMN favorite_apps TEXT")
         if "quick_links" not in cols:
             conn.execute("ALTER TABLE user_profile ADD COLUMN quick_links TEXT")
-        if "buddy_user_id" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN buddy_user_id TEXT")
-        if "auth_provider" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN auth_provider TEXT")
-        if "hackclub_verified" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN hackclub_verified INTEGER DEFAULT 0")
-        if "hackclub_verification_status" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN hackclub_verification_status TEXT")
-        if "hackclub_identity_id" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN hackclub_identity_id TEXT")
-        if "hackclub_slack_id" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN hackclub_slack_id TEXT")
-        if "hackclub_ysws_eligible" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN hackclub_ysws_eligible INTEGER DEFAULT 0")
-        if "onboarding_complete" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN onboarding_complete INTEGER DEFAULT 0")
-        if "thinking_level" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN thinking_level TEXT DEFAULT 'medium'")
-        if "thinking_level_auto" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN thinking_level_auto INTEGER DEFAULT 1")
-        if "listening_model" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN listening_model TEXT DEFAULT 'gemini'")
-        if "speaking_model" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN speaking_model TEXT DEFAULT 'system'")
-        if "daily_request_count" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN daily_request_count INTEGER DEFAULT 0")
-        if "daily_request_date" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN daily_request_date TEXT")
         # migration: add is_private column for older dbs
         conv_cols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)")]
         if "is_private" not in conv_cols:
             conn.execute("ALTER TABLE conversations ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0")
-        conv_cols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)")]
-        if "is_favorite" not in conv_cols:
-            conn.execute("ALTER TABLE conversations ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0")
-        if "is_archived" not in conv_cols:
-            conn.execute("ALTER TABLE conversations ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0")
-        if "kind" not in conv_cols:
-            conn.execute("ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'")
         # migration: add feedback column for older dbs
         msg_cols = [r["name"] for r in conn.execute("PRAGMA table_info(messages)")]
         if "feedback" not in msg_cols:
@@ -230,18 +150,6 @@ def init_db():
             INSERT OR IGNORE INTO user_profile (id, name, theme_color, dark_mode, subscription_tier)
             VALUES (1, NULL, 'blue', 0, 'free')
         """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS memory_facts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                content TEXT NOT NULL,
-                category TEXT NOT NULL DEFAULT 'general',
-                keywords TEXT,
-                embedding TEXT,
-                created_at REAL NOT NULL
-            )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_facts_created ON memory_facts(created_at)")
-
         conn.execute("""
             CREATE TABLE IF NOT EXISTS attachments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -278,13 +186,12 @@ def init_db():
 
 # --- Conversations ---
 
-def create_conversation(title="New chat", kind="chat"):
+def create_conversation(title="New chat"):
     now = time.time()
-    kind = kind if kind in ("chat", "voice") else "chat"
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO conversations (title, kind, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (title, kind, now, now)
+            "INSERT INTO conversations (title, created_at, updated_at) VALUES (?, ?, ?)",
+            (title, now, now)
         )
         return cur.lastrowid
 
@@ -303,61 +210,30 @@ def touch_conversation(conversation_id, title=None):
             )
 
 
-def list_conversations(limit=30, exclude_private=False, filter_mode="all"):
-    """filter_mode: 'all' (excludes archived), 'favorites' (favorited,
-    non-archived), or 'archived' (archived only)."""
+def list_conversations(limit=30, exclude_private=False):
     with _connect() as conn:
-        query = "SELECT id, title, created_at, updated_at, is_private, is_favorite, is_archived, kind FROM conversations WHERE 1=1 "
+        query = "SELECT id, title, created_at, updated_at, is_private FROM conversations "
         if exclude_private:
-            query += "AND is_private = 0 "
-        if filter_mode == "favorites":
-            query += "AND is_favorite = 1 AND is_archived = 0 "
-        elif filter_mode == "archived":
-            query += "AND is_archived = 1 "
-        elif filter_mode == "voice":
-            query += "AND kind = 'voice' AND is_archived = 0 "
-        else:
-            query += "AND is_archived = 0 "
+            query += "WHERE is_private = 0 "
         query += "ORDER BY updated_at DESC LIMIT ?"
         rows = conn.execute(query, (limit,)).fetchall()
         return [dict(r) for r in rows]
 
 
-def set_conversation_favorite(conversation_id, is_favorite):
-    with _connect() as conn:
-        conn.execute(
-            "UPDATE conversations SET is_favorite = ? WHERE id = ?",
-            (1 if is_favorite else 0, conversation_id)
-        )
-
-
-def set_conversation_archived(conversation_id, is_archived):
-    with _connect() as conn:
-        conn.execute(
-            "UPDATE conversations SET is_archived = ? WHERE id = ?",
-            (1 if is_archived else 0, conversation_id)
-        )
-
-
-def search_conversations(query, limit=50, filter_mode="all"):
+def search_conversations(query, limit=50):
     """Matches on chat title OR any message content in the chat."""
     like = f"%{query}%"
     with _connect() as conn:
-        sql = """
-            SELECT DISTINCT c.id, c.title, c.created_at, c.updated_at, c.is_private, c.is_favorite, c.is_archived, c.kind
+        rows = conn.execute(
+            """
+            SELECT DISTINCT c.id, c.title, c.created_at, c.updated_at, c.is_private
             FROM conversations c
             LEFT JOIN messages m ON m.conversation_id = c.id
-            WHERE (c.title LIKE ? OR m.content LIKE ?) """
-        if filter_mode == "favorites":
-            sql += "AND c.is_favorite = 1 AND c.is_archived = 0 "
-        elif filter_mode == "archived":
-            sql += "AND c.is_archived = 1 "
-        elif filter_mode == "voice":
-            sql += "AND c.kind = 'voice' AND c.is_archived = 0 "
-        else:
-            sql += "AND c.is_archived = 0 "
-        sql += "ORDER BY c.updated_at DESC LIMIT ?"
-        rows = conn.execute(sql, (like, like, limit)).fetchall()
+            WHERE c.title LIKE ? OR m.content LIKE ?
+            ORDER BY c.updated_at DESC LIMIT ?
+            """,
+            (like, like, limit)
+        ).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -393,16 +269,6 @@ def get_conversation_is_private(conversation_id):
         return bool(row["is_private"]) if row else False
 
 
-def get_conversation_kind(conversation_id):
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT kind FROM conversations WHERE id = ?", (conversation_id,)
-        ).fetchone()
-        if not row:
-            return "chat"
-        return row["kind"] if "kind" in row.keys() else "chat"
-
-
 def delete_conversation(conversation_id):
     with _connect() as conn:
         conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
@@ -432,29 +298,6 @@ def save_message(conversation_id, role, content=None, tool_calls=None, tool_call
         message_id = cur.lastrowid
     touch_conversation(conversation_id)
     return message_id
-
-
-def save_artifact(title, content, kind="image", conversation_id=None):
-    with _connect() as conn:
-        cur = conn.execute(
-            "INSERT INTO artifacts (title, kind, content, conversation_id, created_at) VALUES (?, ?, ?, ?, ?)",
-            (title or "Untitled artifact", kind, content, conversation_id, time.time()),
-        )
-        return cur.lastrowid
-
-
-def list_artifacts(limit=100):
-    with _connect() as conn:
-        rows = conn.execute(
-            "SELECT id, title, kind, content, conversation_id, created_at FROM artifacts ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-
-def delete_artifact(artifact_id):
-    with _connect() as conn:
-        conn.execute("DELETE FROM artifacts WHERE id = ?", (artifact_id,))
 
 
 def set_message_feedback(message_id, feedback):
@@ -525,20 +368,6 @@ def get_profile():
         return profile
 
 
-def get_or_create_buddy_user_id():
-    """Stable anonymous ID identifying this Buddy install to the billing
-    backend — generated once, stored locally, never tied to real identity
-    beyond what Stripe Checkout itself collects (email, card)."""
-    import uuid
-    profile = get_profile()
-    uid = profile.get("buddy_user_id")
-    if uid:
-        return uid
-    uid = uuid.uuid4().hex
-    update_profile(buddy_user_id=uid)
-    return uid
-
-
 def update_profile(**fields):
     """update_profile(name='Alex', age=14, theme_color='purple', dark_mode=True)"""
     if not fields:
@@ -546,23 +375,13 @@ def update_profile(**fields):
     allowed = {
         "name", "age", "bio", "email", "theme_color", "dark_mode",
         "subscription_tier", "byo_api_key", "has_seen_intro_tip",
-        "favorite_apps", "quick_links", "buddy_user_id",
-        "auth_provider", "hackclub_verified", "hackclub_verification_status",
-        "hackclub_identity_id", "hackclub_slack_id", "hackclub_ysws_eligible",
-        "onboarding_complete", "thinking_level", "thinking_level_auto",
-        "listening_model", "speaking_model",
+        "favorite_apps", "quick_links",
     }
     fields = {k: v for k, v in fields.items() if k in allowed}
     if "dark_mode" in fields:
         fields["dark_mode"] = 1 if fields["dark_mode"] else 0
     if "has_seen_intro_tip" in fields:
         fields["has_seen_intro_tip"] = 1 if fields["has_seen_intro_tip"] else 0
-    if "hackclub_verified" in fields:
-        fields["hackclub_verified"] = 1 if fields["hackclub_verified"] else 0
-    if "onboarding_complete" in fields:
-        fields["onboarding_complete"] = 1 if fields["onboarding_complete"] else 0
-    if "thinking_level_auto" in fields:
-        fields["thinking_level_auto"] = 1 if fields["thinking_level_auto"] else 0
     if not fields:
         return
 
@@ -574,140 +393,6 @@ def update_profile(**fields):
 
 def _hash_pin(pin):
     return hashlib.sha256(pin.encode("utf-8")).hexdigest()
-
-
-# --- Free-tier usage tracking (drives the thinking-level auto step-down) ---
-# No real metering/billing backend exists yet for request credits, so this
-# is a simple local daily counter — good enough to make "auto-switches to
-# Low when free-tier credits run low" true, without pretending to be a
-# real quota system. Replace with real billing-backed usage later.
-FREE_DAILY_SOFT_LIMIT = 40  # matches the website's "daily free usage resets" copy
-FREE_DAILY_LOW_RATIO = 0.8  # "low" once 80% of the daily soft limit is used
-
-
-def _today_str():
-    import datetime
-    return datetime.date.today().isoformat()
-
-
-def record_free_tier_request():
-    """Call once per completed turn when the user is on the free tier.
-    Resets automatically at the start of a new day."""
-    today = _today_str()
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT daily_request_count, daily_request_date FROM user_profile WHERE id = 1"
-        ).fetchone()
-        count = (row["daily_request_count"] or 0) if row else 0
-        date = row["daily_request_date"] if row else None
-        if date != today:
-            count = 0
-        count += 1
-        conn.execute(
-            "UPDATE user_profile SET daily_request_count = ?, daily_request_date = ? WHERE id = 1",
-            (count, today),
-        )
-
-
-def free_tier_credits_low():
-    """True once today's free-tier usage has crossed the low-credits threshold."""
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT daily_request_count, daily_request_date FROM user_profile WHERE id = 1"
-        ).fetchone()
-    if not row or row["daily_request_date"] != _today_str():
-        return False
-    return (row["daily_request_count"] or 0) >= int(FREE_DAILY_SOFT_LIMIT * FREE_DAILY_LOW_RATIO)
-
-
-def effective_thinking_level(profile=None):
-    """The thinking level actually used this turn.
-
-    - If the user has manually picked a level (thinking_level_auto = 0),
-      that choice always wins — "users can always change it".
-    - Otherwise they're on the floating "medium" default: on the free
-      tier, once today's usage runs low, the default quietly steps down
-      to "low" for the rest of the day and back up to "medium" tomorrow.
-    """
-    profile = profile if profile is not None else get_profile()
-    level = (profile.get("thinking_level") or "medium").lower()
-    is_auto = bool(profile.get("thinking_level_auto", 1))
-    tier = profile.get("subscription_tier") or "free"
-    if is_auto and level == "medium" and tier == "free" and free_tier_credits_low():
-        return "low"
-    return level
-
-
-# --- Plugins page persistence -----------------------------------------
-# These flags are what the USER has granted Buddy — a permission gate the
-# tool-calling code can check before acting, not a read of macOS's real
-# TCC permission database (querying that reliably needs Full Disk Access
-# itself). Good enough for a first draft; tool-side enforcement is a
-# follow-up.
-
-def get_plugin_toggle(key, default=False):
-    with _connect() as conn:
-        row = conn.execute("SELECT enabled FROM plugin_toggles WHERE key = ?", (key,)).fetchone()
-    if row is None:
-        return default
-    return bool(row["enabled"])
-
-
-def set_plugin_toggle(key, enabled):
-    with _connect() as conn:
-        conn.execute(
-            "INSERT INTO plugin_toggles (key, enabled) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET enabled = excluded.enabled",
-            (key, 1 if enabled else 0),
-        )
-
-
-def list_plugin_toggles():
-    with _connect() as conn:
-        rows = conn.execute("SELECT key, enabled FROM plugin_toggles").fetchall()
-    return {row["key"]: bool(row["enabled"]) for row in rows}
-
-
-def add_plugin_folder(path):
-    with _connect() as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO plugin_folders (path, created_at) VALUES (?, ?)",
-            (path, time.time()),
-        )
-
-
-def remove_plugin_folder(folder_id):
-    with _connect() as conn:
-        conn.execute("DELETE FROM plugin_folders WHERE id = ?", (folder_id,))
-
-
-def list_plugin_folders():
-    with _connect() as conn:
-        rows = conn.execute("SELECT id, path FROM plugin_folders ORDER BY created_at").fetchall()
-    return [dict(row) for row in rows]
-
-
-def add_plugin_website(domain, access="read"):
-    domain = (domain or "").strip().lower()
-    if not domain:
-        return
-    with _connect() as conn:
-        conn.execute(
-            "INSERT INTO plugin_websites (domain, access, created_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(domain) DO UPDATE SET access = excluded.access",
-            (domain, access, time.time()),
-        )
-
-
-def remove_plugin_website(website_id):
-    with _connect() as conn:
-        conn.execute("DELETE FROM plugin_websites WHERE id = ?", (website_id,))
-
-
-def list_plugin_websites():
-    with _connect() as conn:
-        rows = conn.execute("SELECT id, domain, access FROM plugin_websites ORDER BY created_at").fetchall()
-    return [dict(row) for row in rows]
 
 
 def set_privacy_pin(pin):
@@ -824,7 +509,7 @@ def chunk_text(text, chunk_size=CHUNK_CHARS, overlap=CHUNK_OVERLAP):
 
 def save_conversation_attachments(conversation_id, message_id, files):
     """files = [{name, extension, contents, path}, ...]"""
-    conn = sqlite3.connect(get_db_path())
+    conn = sqlite3.connect(_DB_PATH)
     saved_ids = []
     now = time.time()
     for item in files or []:
@@ -866,7 +551,7 @@ def save_conversation_attachments(conversation_id, message_id, files):
 
 
 def latest_user_message_id(conversation_id):
-    conn = sqlite3.connect(get_db_path())
+    conn = sqlite3.connect(_DB_PATH)
     row = conn.execute(
         """
         SELECT id FROM messages
@@ -984,118 +669,3 @@ def find_relevant_chunks(conversation_id, query, limit=8):
     # Re-sort picked by (attachment_id, chunk_index) so context reads in order
     picked.sort(key=lambda c: (c["attachment_id"], c["chunk_index"]))
     return picked
-
-# --- Durable memory facts (layered RAG: identity + facts + episodes + files) ---
-
-def save_memory_fact(content, category="general"):
-    text = (content or "").strip()
-    if not text:
-        return None
-    keywords = " ".join(_extract_keywords(text))
-    embedding = _safe_embed([text])
-    emb_json = json.dumps(embedding[0]) if embedding else None
-    with _connect() as conn:
-        cur = conn.execute(
-            "INSERT INTO memory_facts (content, category, keywords, embedding, created_at) VALUES (?, ?, ?, ?, ?)",
-            (text, (category or "general").strip() or "general", keywords, emb_json, time.time()),
-        )
-        return cur.lastrowid
-
-
-def list_memory_facts(limit=40):
-    with _connect() as conn:
-        rows = conn.execute(
-            "SELECT id, content, category, keywords, created_at FROM memory_facts ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def delete_memory_facts(query):
-    """Delete facts whose content or keywords overlap the query. Returns the removed rows."""
-    q = (query or "").strip().lower()
-    if not q:
-        return []
-    tokens = set(_extract_keywords(q)) | {q}
-    with _connect() as conn:
-        rows = [dict(r) for r in conn.execute(
-            "SELECT id, content, category, keywords FROM memory_facts"
-        ).fetchall()]
-        removed = []
-        for row in rows:
-            hay = f"{row['content']} {row.get('keywords') or ''}".lower()
-            if q in hay or (tokens and tokens & set((row.get("keywords") or "").split())):
-                conn.execute("DELETE FROM memory_facts WHERE id = ?", (row["id"],))
-                removed.append(row)
-    return removed
-
-
-def find_relevant_facts(query_text, limit=8):
-    with _connect() as conn:
-        rows = [dict(r) for r in conn.execute(
-            "SELECT id, content, category, keywords, embedding, created_at FROM memory_facts ORDER BY created_at DESC"
-        ).fetchall()]
-    if not rows:
-        return []
-    has_all = all(r.get("embedding") for r in rows)
-    if has_all:
-        query_embedding = _safe_embed([query_text])
-        if query_embedding:
-            q_vec = query_embedding[0]
-            scored = []
-            for r in rows:
-                try:
-                    vec = json.loads(r["embedding"])
-                except Exception:
-                    continue
-                scored.append((_cosine(q_vec, vec), r))
-            scored.sort(key=lambda pair: pair[0], reverse=True)
-            return [row for score, row in scored[:limit] if score > 0.15]
-    query_keywords = set(_extract_keywords(query_text))
-    scored = []
-    for r in rows:
-        row_keywords = set((r.get("keywords") or "").split())
-        overlap = len(query_keywords & row_keywords)
-        # always keep a few newest facts even without overlap
-        scored.append((overlap, r["created_at"], r))
-    scored.sort(key=lambda pair: (pair[0], pair[1]), reverse=True)
-    picked = []
-    for overlap, _created, row in scored:
-        if overlap >= 1 or len(picked) < min(3, limit):
-            picked.append(row)
-        if len(picked) >= limit:
-            break
-    return picked
-
-
-def find_recent_chat_snippets(query_text, limit=3, exclude_conversation_id=None):
-    """Lightweight cross-chat recall: recent user/assistant lines that share keywords."""
-    query_keywords = set(_extract_keywords(query_text or ""))
-    if not query_keywords:
-        return []
-    with _connect() as conn:
-        sql = (
-            "SELECT m.role, m.content, m.conversation_id FROM messages m "
-            "JOIN conversations c ON c.id = m.conversation_id "
-            "WHERE m.role IN ('user', 'assistant') AND IFNULL(c.is_private, 0) = 0 "
-        )
-        params = []
-        if exclude_conversation_id:
-            sql += "AND m.conversation_id != ? "
-            params.append(exclude_conversation_id)
-        sql += "ORDER BY m.id DESC LIMIT 80"
-        rows = conn.execute(sql, params).fetchall()
-    scored = []
-    for r in rows:
-        content = (r["content"] or "").strip()
-        if not content or len(content) < 12:
-            continue
-        if content.startswith("Memory layers") or content.startswith("Relevant past"):
-            continue
-        overlap = len(query_keywords & set(_extract_keywords(content)))
-        if overlap >= 2:
-            snippet = content if len(content) <= 220 else content[:217] + "…"
-            scored.append((overlap, {"role": r["role"], "content": snippet}))
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    return [item for _, item in scored[:limit]]
-

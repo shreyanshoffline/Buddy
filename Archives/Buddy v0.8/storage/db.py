@@ -131,12 +131,8 @@ def init_db():
             ,hackclub_slack_id TEXT
             ,hackclub_ysws_eligible INTEGER DEFAULT 0
             ,onboarding_complete INTEGER DEFAULT 0
-            ,thinking_level TEXT DEFAULT 'medium'
-            ,thinking_level_auto INTEGER DEFAULT 1
-            ,listening_model TEXT DEFAULT 'gemini'
-            ,speaking_model TEXT DEFAULT 'system'
-            ,daily_request_count INTEGER DEFAULT 0
-            ,daily_request_date TEXT
+            ,plugin_settings TEXT DEFAULT '{}'
+            ,preference_profile TEXT DEFAULT '{}'
         );
 
         CREATE TABLE IF NOT EXISTS artifacts (
@@ -147,24 +143,6 @@ def init_db():
             conversation_id INTEGER,
             created_at REAL NOT NULL,
             FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS plugin_toggles (
-            key TEXT PRIMARY KEY,           -- e.g. 'gmail', 'web_search', 'app:slack', 'system:mic'
-            enabled INTEGER NOT NULL DEFAULT 0
-        );
-
-        CREATE TABLE IF NOT EXISTS plugin_folders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            path TEXT NOT NULL UNIQUE,
-            created_at REAL NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS plugin_websites (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            domain TEXT NOT NULL UNIQUE,
-            access TEXT NOT NULL DEFAULT 'read',   -- 'read' or 'read_write'
-            created_at REAL NOT NULL
         );
         """)
         # migration: add email column for older dbs created before this existed
@@ -195,18 +173,10 @@ def init_db():
             conn.execute("ALTER TABLE user_profile ADD COLUMN hackclub_ysws_eligible INTEGER DEFAULT 0")
         if "onboarding_complete" not in cols:
             conn.execute("ALTER TABLE user_profile ADD COLUMN onboarding_complete INTEGER DEFAULT 0")
-        if "thinking_level" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN thinking_level TEXT DEFAULT 'medium'")
-        if "thinking_level_auto" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN thinking_level_auto INTEGER DEFAULT 1")
-        if "listening_model" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN listening_model TEXT DEFAULT 'gemini'")
-        if "speaking_model" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN speaking_model TEXT DEFAULT 'system'")
-        if "daily_request_count" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN daily_request_count INTEGER DEFAULT 0")
-        if "daily_request_date" not in cols:
-            conn.execute("ALTER TABLE user_profile ADD COLUMN daily_request_date TEXT")
+        if "plugin_settings" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN plugin_settings TEXT DEFAULT '{}'")
+        if "preference_profile" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN preference_profile TEXT DEFAULT '{}'")
         # migration: add is_private column for older dbs
         conv_cols = [r["name"] for r in conn.execute("PRAGMA table_info(conversations)")]
         if "is_private" not in conv_cols:
@@ -549,8 +519,7 @@ def update_profile(**fields):
         "favorite_apps", "quick_links", "buddy_user_id",
         "auth_provider", "hackclub_verified", "hackclub_verification_status",
         "hackclub_identity_id", "hackclub_slack_id", "hackclub_ysws_eligible",
-        "onboarding_complete", "thinking_level", "thinking_level_auto",
-        "listening_model", "speaking_model",
+        "onboarding_complete", "plugin_settings", "preference_profile",
     }
     fields = {k: v for k, v in fields.items() if k in allowed}
     if "dark_mode" in fields:
@@ -561,8 +530,6 @@ def update_profile(**fields):
         fields["hackclub_verified"] = 1 if fields["hackclub_verified"] else 0
     if "onboarding_complete" in fields:
         fields["onboarding_complete"] = 1 if fields["onboarding_complete"] else 0
-    if "thinking_level_auto" in fields:
-        fields["thinking_level_auto"] = 1 if fields["thinking_level_auto"] else 0
     if not fields:
         return
 
@@ -572,142 +539,44 @@ def update_profile(**fields):
         conn.execute(f"UPDATE user_profile SET {set_clause} WHERE id = ?", values)
 
 
+def _json_profile_value(key, default=None):
+    """Read one JSON-backed profile setting without leaking parse errors into the UI."""
+    raw = (get_profile() or {}).get(key)
+    if not raw:
+        return default.copy() if isinstance(default, dict) else default
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return default.copy() if isinstance(default, dict) else default
+    return value if isinstance(value, dict) else (default.copy() if isinstance(default, dict) else default)
+
+
+def get_plugin_settings():
+    return _json_profile_value("plugin_settings", {})
+
+
+def update_plugin_settings(**fields):
+    """Persist plugin switches and small plugin preferences as JSON."""
+    settings = get_plugin_settings()
+    settings.update(fields)
+    update_profile(plugin_settings=json.dumps(settings, sort_keys=True))
+    return settings
+
+
+def get_preference_profile():
+    return _json_profile_value("preference_profile", {})
+
+
+def save_preference_profile(**fields):
+    """Persist the short onboarding answers used for plugin recommendations."""
+    profile = get_preference_profile()
+    profile.update(fields)
+    update_profile(preference_profile=json.dumps(profile, sort_keys=True))
+    return profile
+
+
 def _hash_pin(pin):
     return hashlib.sha256(pin.encode("utf-8")).hexdigest()
-
-
-# --- Free-tier usage tracking (drives the thinking-level auto step-down) ---
-# No real metering/billing backend exists yet for request credits, so this
-# is a simple local daily counter — good enough to make "auto-switches to
-# Low when free-tier credits run low" true, without pretending to be a
-# real quota system. Replace with real billing-backed usage later.
-FREE_DAILY_SOFT_LIMIT = 40  # matches the website's "daily free usage resets" copy
-FREE_DAILY_LOW_RATIO = 0.8  # "low" once 80% of the daily soft limit is used
-
-
-def _today_str():
-    import datetime
-    return datetime.date.today().isoformat()
-
-
-def record_free_tier_request():
-    """Call once per completed turn when the user is on the free tier.
-    Resets automatically at the start of a new day."""
-    today = _today_str()
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT daily_request_count, daily_request_date FROM user_profile WHERE id = 1"
-        ).fetchone()
-        count = (row["daily_request_count"] or 0) if row else 0
-        date = row["daily_request_date"] if row else None
-        if date != today:
-            count = 0
-        count += 1
-        conn.execute(
-            "UPDATE user_profile SET daily_request_count = ?, daily_request_date = ? WHERE id = 1",
-            (count, today),
-        )
-
-
-def free_tier_credits_low():
-    """True once today's free-tier usage has crossed the low-credits threshold."""
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT daily_request_count, daily_request_date FROM user_profile WHERE id = 1"
-        ).fetchone()
-    if not row or row["daily_request_date"] != _today_str():
-        return False
-    return (row["daily_request_count"] or 0) >= int(FREE_DAILY_SOFT_LIMIT * FREE_DAILY_LOW_RATIO)
-
-
-def effective_thinking_level(profile=None):
-    """The thinking level actually used this turn.
-
-    - If the user has manually picked a level (thinking_level_auto = 0),
-      that choice always wins — "users can always change it".
-    - Otherwise they're on the floating "medium" default: on the free
-      tier, once today's usage runs low, the default quietly steps down
-      to "low" for the rest of the day and back up to "medium" tomorrow.
-    """
-    profile = profile if profile is not None else get_profile()
-    level = (profile.get("thinking_level") or "medium").lower()
-    is_auto = bool(profile.get("thinking_level_auto", 1))
-    tier = profile.get("subscription_tier") or "free"
-    if is_auto and level == "medium" and tier == "free" and free_tier_credits_low():
-        return "low"
-    return level
-
-
-# --- Plugins page persistence -----------------------------------------
-# These flags are what the USER has granted Buddy — a permission gate the
-# tool-calling code can check before acting, not a read of macOS's real
-# TCC permission database (querying that reliably needs Full Disk Access
-# itself). Good enough for a first draft; tool-side enforcement is a
-# follow-up.
-
-def get_plugin_toggle(key, default=False):
-    with _connect() as conn:
-        row = conn.execute("SELECT enabled FROM plugin_toggles WHERE key = ?", (key,)).fetchone()
-    if row is None:
-        return default
-    return bool(row["enabled"])
-
-
-def set_plugin_toggle(key, enabled):
-    with _connect() as conn:
-        conn.execute(
-            "INSERT INTO plugin_toggles (key, enabled) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET enabled = excluded.enabled",
-            (key, 1 if enabled else 0),
-        )
-
-
-def list_plugin_toggles():
-    with _connect() as conn:
-        rows = conn.execute("SELECT key, enabled FROM plugin_toggles").fetchall()
-    return {row["key"]: bool(row["enabled"]) for row in rows}
-
-
-def add_plugin_folder(path):
-    with _connect() as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO plugin_folders (path, created_at) VALUES (?, ?)",
-            (path, time.time()),
-        )
-
-
-def remove_plugin_folder(folder_id):
-    with _connect() as conn:
-        conn.execute("DELETE FROM plugin_folders WHERE id = ?", (folder_id,))
-
-
-def list_plugin_folders():
-    with _connect() as conn:
-        rows = conn.execute("SELECT id, path FROM plugin_folders ORDER BY created_at").fetchall()
-    return [dict(row) for row in rows]
-
-
-def add_plugin_website(domain, access="read"):
-    domain = (domain or "").strip().lower()
-    if not domain:
-        return
-    with _connect() as conn:
-        conn.execute(
-            "INSERT INTO plugin_websites (domain, access, created_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(domain) DO UPDATE SET access = excluded.access",
-            (domain, access, time.time()),
-        )
-
-
-def remove_plugin_website(website_id):
-    with _connect() as conn:
-        conn.execute("DELETE FROM plugin_websites WHERE id = ?", (website_id,))
-
-
-def list_plugin_websites():
-    with _connect() as conn:
-        rows = conn.execute("SELECT id, domain, access FROM plugin_websites ORDER BY created_at").fetchall()
-    return [dict(row) for row in rows]
 
 
 def set_privacy_pin(pin):
@@ -1098,4 +967,3 @@ def find_recent_chat_snippets(query_text, limit=3, exclude_conversation_id=None)
             scored.append((overlap, {"role": r["role"], "content": snippet}))
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return [item for _, item in scored[:limit]]
-

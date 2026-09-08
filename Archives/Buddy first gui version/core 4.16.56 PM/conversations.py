@@ -45,8 +45,7 @@ def send_and_save_message(conversation_id, user_text, on_event=None, attachments
     excerpts = db.find_relevant_chunks(conversation_id, user_text, limit=6)
     file_context = format_attachment_context(excerpts)
 
-    image_attachments = [item for item in (attachments or []) if item.get("mime_type", "").startswith("image/")]
-    result = process_message(user_text, history, on_event=on_event, file_context=file_context, cancel_check=cancel_check, image_attachments=image_attachments, conversation_id=conversation_id)
+    result = process_message(user_text, history, on_event=on_event, file_context=file_context, cancel_check=cancel_check)
 
     assistant_metadata = None
     if result.get("plan_text") or result.get("tools_used") or result.get("stats"):
@@ -54,8 +53,7 @@ def send_and_save_message(conversation_id, user_text, on_event=None, attachments
             "plan_text": result.get("plan_text"),
             "tools_used": result.get("tools_used"),
             "tool_log": result.get("tool_log"),
-            "stats": result.get("stats"),
-            "images": result.get("images", []),
+            "stats": result.get("stats")
         }
 
     result["message_id"] = db.save_message(
@@ -64,8 +62,6 @@ def send_and_save_message(conversation_id, user_text, on_event=None, attachments
         content=result["reply"],
         metadata=assistant_metadata
     )
-    for index, image_url in enumerate(result.get("images", []), start=1):
-        db.save_artifact(f"Buddy creation {index}", image_url, "image", conversation_id)
 
     title = _ensure_conversation_title(conversation_id, user_text, result.get("chat_title"))
     if title:
@@ -78,7 +74,7 @@ def redo_assistant_response(conversation_id, user_text, on_event=None, cancel_ch
     """Regenerates the assistant response for the same user query and saves it as a new assistant message."""
     previous_history = db.load_messages(conversation_id)
     history = new_message_history() + _sanitize_history_for_model(previous_history)
-    result = process_message(user_text, history, on_event=on_event, cancel_check=cancel_check, conversation_id=conversation_id)
+    result = process_message(user_text, history, on_event=on_event, cancel_check=cancel_check)
  
     assistant_metadata = None
     if result.get("plan_text") or result.get("tools_used") or result.get("stats"):
@@ -104,25 +100,16 @@ def redo_assistant_response(conversation_id, user_text, on_event=None, cancel_ch
     return result
  
  
-def get_recent_conversations(limit=5, exclude_private=False, filter_mode="all"):
+def get_recent_conversations(limit=5, exclude_private=False):
     """Fetches real chat history titles and IDs. Library passes the default
     (shows everything, with a lock glyph); the sidebar passes
-    exclude_private=True so private chats don't casually surface there.
-    filter_mode: 'all' | 'favorites' | 'archived'."""
-    return db.list_conversations(limit=limit, exclude_private=exclude_private, filter_mode=filter_mode)
+    exclude_private=True so private chats don't casually surface there."""
+    return db.list_conversations(limit=limit, exclude_private=exclude_private)
 
 
-def search_conversations(query, limit=50, filter_mode="all"):
+def search_conversations(query, limit=50):
     """Searches chat titles AND message content."""
-    return db.search_conversations(query, limit=limit, filter_mode=filter_mode)
-
-
-def set_conversation_favorite(conversation_id, is_favorite):
-    return db.set_conversation_favorite(conversation_id, is_favorite)
-
-
-def set_conversation_archived(conversation_id, is_archived):
-    return db.set_conversation_archived(conversation_id, is_archived)
+    return db.search_conversations(query, limit=limit)
 
 
 def set_conversation_private(conversation_id, is_private):
@@ -162,18 +149,6 @@ def new_message_history():
     return [{"role": "system", "content": build_manager_instruction(db.get_profile())}]
 
 
-def refresh_history_profile(message_history):
-    """Replace the system prompt so a Settings name/apps change applies now."""
-    prompt = build_manager_instruction(db.get_profile())
-    if not message_history:
-        return [{"role": "system", "content": prompt}]
-    if message_history[0].get("role") == "system":
-        message_history[0]["content"] = prompt
-    else:
-        message_history.insert(0, {"role": "system", "content": prompt})
-    return message_history
-
-
 def get_profile():
     return db.get_profile()
 
@@ -192,51 +167,3 @@ def has_privacy_pin():
 
 def verify_privacy_pin(pin):
     return db.verify_privacy_pin(pin)
-
-
-def effective_thinking_level():
-    return db.effective_thinking_level()
-
-
-def get_plugin_toggle(key, default=False):
-    return db.get_plugin_toggle(key, default)
-
-
-def set_plugin_toggle(key, enabled):
-    return db.set_plugin_toggle(key, enabled)
-
-
-def list_plugin_toggles():
-    return db.list_plugin_toggles()
-
-
-def add_plugin_folder(path):
-    return db.add_plugin_folder(path)
-
-
-def remove_plugin_folder(folder_id):
-    return db.remove_plugin_folder(folder_id)
-
-
-def list_plugin_folders():
-    return db.list_plugin_folders()
-
-
-def add_plugin_website(domain, access="read"):
-    return db.add_plugin_website(domain, access)
-
-
-def remove_plugin_website(website_id):
-    return db.remove_plugin_website(website_id)
-
-
-def list_plugin_websites():
-    return db.list_plugin_websites()
-
-
-def list_artifacts(limit=100):
-    return db.list_artifacts(limit)
-
-
-def delete_artifact(artifact_id):
-    return db.delete_artifact(artifact_id)

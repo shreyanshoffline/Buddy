@@ -3,10 +3,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 from .theme import (
-    SIDEBAR_BG, BORDER_COLOR, HOVER_BG_COLOR, PRESSED_BG_COLOR, ACTIVE_BG_COLOR, PRIMARY_COLOR,
-    SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_EXPANDED_WIDTH, ICON_SIZE, TEXT_COLOR_MUTED, TEXT_COLOR_DARK,
-    UI_NAV_BUTTON_HEIGHT, UI_NAV_FONT_SIZE, UI_RECENT_FONT_SIZE, UI_LABEL_FONT_SIZE,
-    UI_LAYOUT_MARGIN, UI_LAYOUT_SPACING
+    SIDEBAR_BG, BORDER_COLOR, HOVER_BG_COLOR, SIDEBAR_COLLAPSED_WIDTH,
+     SIDEBAR_EXPANDED_WIDTH, ICON_SIZE, TEXT_COLOR_MUTED
 )
 
 from .icons import get_svg_icon, ICONS
@@ -17,22 +15,14 @@ class NavButton(QPushButton):
         self.label_text = label
         self.icon_path = icon_path
         self.small = small
-        self.is_active = False
         self.setIcon(get_svg_icon(icon_path, size=ICON_SIZE if not small else 14))
         self.setIconSize(self.iconSize())
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(UI_NAV_BUTTON_HEIGHT)
+        self.setFixedHeight(32)
         self.set_collapsed(True)
 
-    def set_active(self, active: bool):
-        self.is_active = active
-        self.set_collapsed(not self._expanded if hasattr(self, '_expanded') else True)
-
     def set_collapsed(self, collapsed: bool):
-        self._expanded = not collapsed
-        active_bg = f"background: {ACTIVE_BG_COLOR};" if self.is_active else "background: transparent;"
-        active_border = f"border-left: 2px solid {PRIMARY_COLOR};" if self.is_active else "border-left: 2px solid transparent;"
-
+        
         if collapsed:
             self.setText("")
             self.setToolTip(self.label_text)
@@ -41,31 +31,28 @@ class NavButton(QPushButton):
                     text-align: center;
                     padding: 0px;
                     border-radius: 8px;
-                    {active_border}
-                    {active_bg}
-                    font-size: {"12px" if self.small else f"{UI_NAV_FONT_SIZE}px"};
-                    font-weight: {"600" if self.is_active else ("normal" if self.small else "500")};
-                    color: {PRIMARY_COLOR if self.is_active else TEXT_COLOR_DARK};
+                    border: none;
+                    background: transparent;
+                    font-size: {"12px" if self.small else "13px"};
+                    color: #444;
                 }}
                 QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
-                QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
             """)
         else:
             self.setText(f"  {self.label_text}")
-            self.setToolTip(self.label_text)
+            self.setToolTip("")
             self.setStyleSheet(f"""
                 QPushButton {{
                     text-align: left;
                     padding: 0px 8px;
                     border-radius: 8px;
-                    {active_border}
-                    {active_bg}
-                    font-size: {"12px" if self.small else f"{UI_NAV_FONT_SIZE}px"};
-                    font-weight: {"600" if self.is_active else ("normal" if self.small else "500")};
-                    color: {PRIMARY_COLOR if self.is_active else TEXT_COLOR_DARK};
+                    border: none;
+                    background: transparent;
+                    font-size: {"12px" if self.small else "13px"};
+                    font-weight: {"normal" if self.small else "500"};
+                    color: #444;
                 }}
                 QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
-                QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
             """)
 
 
@@ -92,39 +79,32 @@ class Sidebar(QFrame):
                 text-align: left; 
                 padding: 6px 5px; 
                 border-radius: 8px; 
-                color: {TEXT_COLOR_DARK}; 
+                color: #444; 
                 font-size: 13px; 
                 font-weight: 500; 
                 border: none; 
                 background: transparent; 
             }}
             QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
-            QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
         """)
-        self.setToolTip("Click to expand/collapse")
+        
+        self.setFixedWidth(SIDEBAR_COLLAPSED_WIDTH)
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(UI_LAYOUT_MARGIN // 2, 14, UI_LAYOUT_MARGIN // 2, 14)
-        self.layout.setSpacing(UI_LAYOUT_SPACING)
+        self.layout.setContentsMargins(5, 14, 5, 14)
+        self.layout.setSpacing(6)
 
         # Main Navigation Buttons
         self.btn_new = NavButton("New chat", ICONS["plus"])
         self.btn_lib = NavButton("Library", ICONS["library"])
-        self.btn_artifacts = NavButton("Artifacts", ICONS["artifacts"])
-        self.btn_talk = NavButton("Talk", ICONS["mic"])
-        self.btn_billing = NavButton("Pricing", ICONS["pricing"])
-        self.btn_plugins = NavButton("Plugins", ICONS["plugins"])
         self.btn_settings = NavButton("Settings", ICONS["settings"])
         
         # Recent Chats Section Header
         self.lbl_recents = QLabel("Recents")
-        self.lbl_recents.setStyleSheet(f"color: {TEXT_COLOR_MUTED}; font-size: {UI_LABEL_FONT_SIZE}px; font-weight: bold; background: transparent; border: none; margin-top: 8px; margin-bottom: 2px;")
+        self.lbl_recents.setStyleSheet(f"color: {TEXT_COLOR_MUTED}; font-size: 11px; font-weight: bold; margin-top: 8px; margin-bottom: 2px;")
         self.lbl_recents.hide()
 
         self.layout.addWidget(self.btn_new)
         self.layout.addWidget(self.btn_lib)
-        self.layout.addWidget(self.btn_artifacts)
-        self.layout.addWidget(self.btn_talk)
-        self.layout.addWidget(self.btn_billing)
         self.layout.addWidget(self.lbl_recents)
         
         # Vertical box to hold dynamic recent chat buttons
@@ -134,7 +114,6 @@ class Sidebar(QFrame):
         self.layout.addLayout(self.recents_container)
 
         self.layout.addStretch()
-        self.layout.addWidget(self.btn_plugins)
         self.layout.addWidget(self.btn_settings)
         if self.on_new_chat_callback:
             self.btn_new.clicked.connect(self.on_new_chat_callback)
@@ -169,19 +148,16 @@ class Sidebar(QFrame):
             btn = QPushButton(title)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setContextMenuPolicy(Qt.CustomContextMenu)
-            btn.setToolTip(f"{title}\n(right-click to delete)")
             btn.setStyleSheet(f"""
                 QPushButton {{
                     font-weight: normal;
-                    font-size: {UI_RECENT_FONT_SIZE}px;
+                    font-size: 12px;
                     padding: 6px 8px;
                     text-align: left;
                     border: none;
                     background: transparent;
-                    color: {TEXT_COLOR_DARK};
                 }}
                 QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
-                QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
             """)
             if self.on_chat_click_callback:
                 btn.clicked.connect(lambda checked=False, cid=chat_id: self.on_chat_click_callback(cid))
@@ -206,10 +182,6 @@ class Sidebar(QFrame):
             self.lbl_recents.setVisible(self.is_expanded)
             self.btn_new.set_collapsed(not self.is_expanded)
             self.btn_lib.set_collapsed(not self.is_expanded)
-            self.btn_artifacts.set_collapsed(not self.is_expanded)
-            self.btn_talk.set_collapsed(not self.is_expanded)
-            self.btn_billing.set_collapsed(not self.is_expanded)
-            self.btn_plugins.set_collapsed(not self.is_expanded)
             self.btn_settings.set_collapsed(not self.is_expanded)
             for row in self.recent_buttons:
                 row.setVisible(self.is_expanded)

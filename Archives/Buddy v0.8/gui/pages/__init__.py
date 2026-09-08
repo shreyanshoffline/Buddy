@@ -1,10 +1,10 @@
 from .card_page import CardPage
 from .settings_page import SettingsPage
-from .plugins_page import PluginsPage
 from .library_page import LibraryPage
 from .billing_page import BillingPage
 from .artifacts_page import ArtifactsPage
 from .onboarding_page import OnboardingPage
 from .talk_to_buddy_page import TalkToBuddyPage
+from .plugins_page import PluginsPage
 
-__all__ = ["CardPage", "SettingsPage", "PluginsPage", "LibraryPage", "BillingPage", "ArtifactsPage", "OnboardingPage", "TalkToBuddyPage"]
+__all__ = ["CardPage", "SettingsPage", "LibraryPage", "BillingPage", "ArtifactsPage", "OnboardingPage", "TalkToBuddyPage", "PluginsPage"]

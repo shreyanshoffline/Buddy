@@ -194,46 +194,6 @@ def verify_privacy_pin(pin):
     return db.verify_privacy_pin(pin)
 
 
-def effective_thinking_level():
-    return db.effective_thinking_level()
-
-
-def get_plugin_toggle(key, default=False):
-    return db.get_plugin_toggle(key, default)
-
-
-def set_plugin_toggle(key, enabled):
-    return db.set_plugin_toggle(key, enabled)
-
-
-def list_plugin_toggles():
-    return db.list_plugin_toggles()
-
-
-def add_plugin_folder(path):
-    return db.add_plugin_folder(path)
-
-
-def remove_plugin_folder(folder_id):
-    return db.remove_plugin_folder(folder_id)
-
-
-def list_plugin_folders():
-    return db.list_plugin_folders()
-
-
-def add_plugin_website(domain, access="read"):
-    return db.add_plugin_website(domain, access)
-
-
-def remove_plugin_website(website_id):
-    return db.remove_plugin_website(website_id)
-
-
-def list_plugin_websites():
-    return db.list_plugin_websites()
-
-
 def list_artifacts(limit=100):
     return db.list_artifacts(limit)
 
