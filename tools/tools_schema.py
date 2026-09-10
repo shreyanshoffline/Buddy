@@ -88,6 +88,21 @@ tools_schema = [
     {
         "type": "function",
         "function": {
+            "name": "get_weather",
+            "description": "Gets current weather and today's high/low for a named city, state, or region using a live weather service.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City, state, country, or region to look up."},
+                    "units": {"type": "string", "enum": ["fahrenheit", "celsius"], "description": "Temperature units; default is fahrenheit."},
+                },
+                "required": ["location"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "web_search",
             "description": "Searches the live web via Hack Club Search (search.hackclub.com) for current facts or links.",
             "parameters": {

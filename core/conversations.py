@@ -234,6 +234,22 @@ def list_plugin_websites():
     return db.list_plugin_websites()
 
 
+def set_plugin_connection(service, access_token, account_label=None):
+    return db.set_plugin_connection(service, access_token, account_label)
+
+
+def remove_plugin_connection(service):
+    return db.remove_plugin_connection(service)
+
+
+def get_plugin_connection(service):
+    return db.get_plugin_connection(service)
+
+
+def list_plugin_connections():
+    return db.list_plugin_connections()
+
+
 def list_artifacts(limit=100):
     return db.list_artifacts(limit)
 

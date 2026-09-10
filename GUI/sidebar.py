@@ -111,8 +111,8 @@ class Sidebar(QFrame):
         self.btn_lib = NavButton("Library", ICONS["library"])
         self.btn_artifacts = NavButton("Artifacts", ICONS["artifacts"])
         self.btn_talk = NavButton("Talk", ICONS["mic"])
-        self.btn_billing = NavButton("Pricing", ICONS["pricing"])
         self.btn_plugins = NavButton("Plugins", ICONS["plugins"])
+        self.btn_billing = NavButton("Pricing", ICONS["pricing"])
         self.btn_settings = NavButton("Settings", ICONS["settings"])
         
         # Recent Chats Section Header
@@ -124,6 +124,7 @@ class Sidebar(QFrame):
         self.layout.addWidget(self.btn_lib)
         self.layout.addWidget(self.btn_artifacts)
         self.layout.addWidget(self.btn_talk)
+        self.layout.addWidget(self.btn_plugins)
         self.layout.addWidget(self.btn_billing)
         self.layout.addWidget(self.lbl_recents)
         
@@ -134,7 +135,6 @@ class Sidebar(QFrame):
         self.layout.addLayout(self.recents_container)
 
         self.layout.addStretch()
-        self.layout.addWidget(self.btn_plugins)
         self.layout.addWidget(self.btn_settings)
         if self.on_new_chat_callback:
             self.btn_new.clicked.connect(self.on_new_chat_callback)
@@ -208,8 +208,8 @@ class Sidebar(QFrame):
             self.btn_lib.set_collapsed(not self.is_expanded)
             self.btn_artifacts.set_collapsed(not self.is_expanded)
             self.btn_talk.set_collapsed(not self.is_expanded)
-            self.btn_billing.set_collapsed(not self.is_expanded)
             self.btn_plugins.set_collapsed(not self.is_expanded)
+            self.btn_billing.set_collapsed(not self.is_expanded)
             self.btn_settings.set_collapsed(not self.is_expanded)
             for row in self.recent_buttons:
                 row.setVisible(self.is_expanded)

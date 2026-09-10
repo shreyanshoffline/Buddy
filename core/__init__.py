@@ -43,6 +43,10 @@ from core.conversations import (
     add_plugin_website,
     remove_plugin_website,
     list_plugin_websites,
+    set_plugin_connection,
+    remove_plugin_connection,
+    get_plugin_connection,
+    list_plugin_connections,
 )
 
 try:
@@ -70,4 +74,6 @@ __all__ = [
     "get_plugin_toggle", "set_plugin_toggle", "list_plugin_toggles",
     "add_plugin_folder", "remove_plugin_folder", "list_plugin_folders",
     "add_plugin_website", "remove_plugin_website", "list_plugin_websites",
+    "set_plugin_connection", "remove_plugin_connection",
+    "get_plugin_connection", "list_plugin_connections",
 ]

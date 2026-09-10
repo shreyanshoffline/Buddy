@@ -84,6 +84,29 @@ def _with_retry(fn, cancel_check=None):
 EMBED_MODEL = "openai/text-embedding-3-small"
 
 
+def validate_api_key(api_key):
+    """Cheap live check used by Settings after the user pastes a key."""
+    key = (api_key or "").strip()
+    if not key:
+        return False, "No API key entered."
+    try:
+        client = OpenRouter(api_key=key, server_url=os.getenv("SERVER_URL"))
+        client.chat.send(
+            model="google/gemini-2.5-flash-lite",
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=8,
+            timeout_ms=12_000,
+        )
+        return True, "Key works."
+    except Exception as exc:
+        msg = str(exc)
+        if "401" in msg or "unauthorized" in msg.lower():
+            return False, "That key was rejected."
+        if "429" in msg or "rate" in msg.lower():
+            return True, "Key accepted (rate limited on the test call)."
+        return False, msg[:160]
+
+
 def embed_texts(texts, cancel_check=None):
     """Returns a list of embedding vectors for the given texts.
     NOTE: assumes an OpenAI-compatible embeddings endpoint

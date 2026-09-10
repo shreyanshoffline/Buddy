@@ -17,6 +17,7 @@ import sqlite3
 import time
 import secrets
 import json
+from pathlib import Path
 from urllib.parse import urlencode
 import stripe
 import requests
@@ -46,7 +47,23 @@ PRICE_TO_TIER = {
     if price_id
 }
 
-DB_PATH = os.environ.get("BILLING_DB_PATH") or os.path.join(_ROOT, "billing.db")
+
+
+def _resolve_db_path(configured_path):
+    """Resolve the billing database to one stable location.
+
+    A relative BILLING_DB_PATH used to be resolved against the process's
+    current working directory. That could make two launches use two different
+    databases. Relative paths are now rooted at the project directory.
+    """
+    path = Path(configured_path or "billing.db").expanduser()
+    if not path.is_absolute():
+        path = Path(_ROOT) / path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
+DB_PATH = _resolve_db_path(os.environ.get("BILLING_DB_PATH"))
 HACKCLUB_CLIENT_ID = os.environ.get("HACKCLUB_CLIENT_ID", "")
 HACKCLUB_CLIENT_SECRET = os.environ.get("HACKCLUB_CLIENT_SECRET", "")
 DEFAULT_HACKCLUB_REDIRECT_URI = "http://127.0.0.1:5000/auth/hackclub/callback"
@@ -65,14 +82,24 @@ HACKCLUB_SCOPES = (
 
 
 def _connect():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
+    # Re-run the lightweight schema check for every connection. If the file
+    # was removed while the server stayed alive, SQLite creates an empty file;
+    # this makes that situation self-healing instead of returning 500 errors.
+    init_db(conn)
     return conn
 
 
-def init_db():
-    conn = _connect()
-    conn.execute("""
+def init_db(conn=None):
+    owns_connection = conn is None
+    if owns_connection:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
+    try:
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             buddy_user_id TEXT PRIMARY KEY,
             stripe_customer_id TEXT,
@@ -88,37 +115,44 @@ def init_db():
             hackclub_refresh_token TEXT,
             updated_at REAL
         )
-    """)
-    cols = [row["name"] for row in conn.execute("PRAGMA table_info(users)")]
-    for col, decl in (
-        ("hackclub_verified", "INTEGER DEFAULT 0"),
-        ("hackclub_verification_status", "TEXT"),
-        ("hackclub_email", "TEXT"),
-        ("hackclub_name", "TEXT"),
-        ("hackclub_signed_in_at", "REAL"),
-        ("hackclub_identity_id", "TEXT"),
-        ("hackclub_slack_id", "TEXT"),
-        ("hackclub_ysws_eligible", "INTEGER DEFAULT 0"),
-        ("hackclub_refresh_token", "TEXT"),
-    ):
-        if col not in cols:
-            conn.execute(f"ALTER TABLE users ADD COLUMN {col} {decl}")
-    conn.execute("""
+        """)
+        cols = [row["name"] for row in conn.execute("PRAGMA table_info(users)")]
+        for col, decl in (
+            ("hackclub_verified", "INTEGER DEFAULT 0"),
+            ("hackclub_verification_status", "TEXT"),
+            ("hackclub_email", "TEXT"),
+            ("hackclub_name", "TEXT"),
+            ("hackclub_signed_in_at", "REAL"),
+            ("hackclub_identity_id", "TEXT"),
+            ("hackclub_slack_id", "TEXT"),
+            ("hackclub_ysws_eligible", "INTEGER DEFAULT 0"),
+            ("hackclub_refresh_token", "TEXT"),
+        ):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE users ADD COLUMN {col} {decl}")
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS oauth_states (
             state TEXT PRIMARY KEY,
             buddy_user_id TEXT,
             created_at REAL
         )
-    """)
-    conn.execute("""
+        """)
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS oauth_latest (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             payload TEXT,
             updated_at REAL
         )
-    """)
-    conn.commit()
-    conn.close()
+        """)
+        if owns_connection:
+            conn.commit()
+    except Exception:
+        if owns_connection:
+            conn.rollback()
+        raise
+    finally:
+        if owns_connection:
+            conn.close()
 
 
 init_db()

@@ -13,6 +13,8 @@ from tools.tools_schema import tools_schema
 from core.instruction import build_action_instruction
 from models import run_manager_step, run_action_step, BuddyCancelled, extract_image_urls, message_text
 from storage import db
+from core.thinking import thinking_config
+from core.plugins import active_tools_schema, blocked_reason
 
 GREETER_MODEL = "google/gemini-2.5-flash-lite"
 MANAGER_MODEL = "google/gemini-3.5-flash-lite"
@@ -33,67 +35,6 @@ MAX_PLAN_RETRIES = 1
 MAX_WORKER_STEPS = 8
 OVERALL_TIMEOUT_SECONDS = 150  # 2.5 min hard ceiling on a whole turn, no matter
                                 # how many manager/worker steps or retries happen
-
-# --- Thinking levels ---------------------------------------------------
-# A user-facing dial on top of the existing Manager/Worker pipeline.
-# "medium" is exactly today's behavior (the constants above) — Low/High/
-# Extra/MAX only override what a level actually controls: which models
-# get used, how many retries/steps are allowed, how much room replies
-# get, and (for MAX) the overall time ceiling. Every model name here is
-# one already used elsewhere in this file — no new models introduced.
-THINKING_LEVELS = {
-    "low": {
-        "manager_model": GREETER_MODEL,
-        "worker_overrides": {"heavy_task": "google/gemini-3.5-flash-lite"},
-        "max_plan_retries": 0,
-        "max_worker_steps": 4,
-        "manager_max_tokens": 400,
-        "worker_max_tokens": 350,
-        "overall_timeout": OVERALL_TIMEOUT_SECONDS,
-    },
-    "medium": {
-        "manager_model": MANAGER_MODEL,
-        "worker_overrides": {},
-        "max_plan_retries": MAX_PLAN_RETRIES,
-        "max_worker_steps": MAX_WORKER_STEPS,
-        "manager_max_tokens": MANAGER_MAX_TOKENS,
-        "worker_max_tokens": WORKER_MAX_TOKENS,
-        "overall_timeout": OVERALL_TIMEOUT_SECONDS,
-    },
-    "high": {
-        "manager_model": "google/gemini-3.8-flash",
-        "worker_overrides": {"simple_task": "google/gemini-3.5-flash-lite", "moderate_task": "google/gemini-3.8-flash"},
-        "max_plan_retries": 2,
-        "max_worker_steps": 10,
-        "manager_max_tokens": 800,
-        "worker_max_tokens": 700,
-        "overall_timeout": OVERALL_TIMEOUT_SECONDS,
-    },
-    "extra": {
-        "manager_model": "google/gemini-3.8-flash",
-        "worker_overrides": {"simple_task": "google/gemini-3.8-flash", "moderate_task": "google/gemini-3.8-flash", "heavy_task": "google/gemini-3.8-flash"},
-        "max_plan_retries": 2,
-        "max_worker_steps": 12,
-        "manager_max_tokens": 1000,
-        "worker_max_tokens": 900,
-        "overall_timeout": 200,
-    },
-    "max": {
-        "manager_model": "google/gemini-3.8-flash",
-        "worker_overrides": {"simple_task": "google/gemini-3.8-flash", "moderate_task": "google/gemini-3.8-flash", "heavy_task": "google/gemini-3.8-flash", "vision_task": "google/gemini-3.8-flash"},
-        "max_plan_retries": 3,
-        "max_worker_steps": 14,
-        "manager_max_tokens": 1200,
-        "worker_max_tokens": 1100,
-        "overall_timeout": 240,
-    },
-}
-
-
-def get_thinking_level_config(level):
-    return THINKING_LEVELS.get((level or "medium").lower(), THINKING_LEVELS["medium"])
-
-
 MEMORY_RETRIEVAL_MIN_OVERLAP = 2
 MEMORY_RETRIEVAL_LIMIT = 2
 
@@ -195,8 +136,8 @@ def route_first_pass(user_input, cancel_check=None):
     return "say", raw, usage
 
 
-def get_manager_output(message_history, cancel_check=None, model=MANAGER_MODEL, max_tokens=MANAGER_MAX_TOKENS):
-    plan_response = run_manager_step(model, message_history, max_tokens, cancel_check=cancel_check)
+def get_manager_output(message_history, cancel_check=None, model=MANAGER_MODEL):
+    plan_response = run_manager_step(model, message_history, MANAGER_MAX_TOKENS, cancel_check=cancel_check)
     manager_message = plan_response.choices[0].message
  
     # Safely extract token usage if the LLM provider returns it
@@ -204,8 +145,7 @@ def get_manager_output(message_history, cancel_check=None, model=MANAGER_MODEL, 
     return message_text(manager_message).strip(), usage
  
  
-def parse_manager_output(manager_output, worker_models=None):
-    worker_models = worker_models or WORKER_MODELS
+def parse_manager_output(manager_output):
     cleaned_output = manager_output.strip()
  
     # Force normalize legacy tags for easier parsing
@@ -242,7 +182,7 @@ def parse_manager_output(manager_output, worker_models=None):
  
         # Determine worker model tag from the cleaned plan content
         selected_model = DEFAULT_WORKER_MODEL
-        for tag, model in worker_models.items():
+        for tag, model in WORKER_MODELS.items():
             if plan_content.startswith(f"[{tag}]"):
                 selected_model = model
                 break
@@ -328,6 +268,9 @@ def execute_tool(tool_name, tool_args):
     for module in (tools, gmail_tools):
         if hasattr(module, cleaned):
             try:
+                blocked = blocked_reason(cleaned, tool_args)
+                if blocked:
+                    return blocked
                 func = getattr(module, cleaned)
                 return func(**tool_args)
             except Exception as e:
@@ -335,24 +278,27 @@ def execute_tool(tool_name, tool_args):
     return f"Error: Tool '{tool_name}' not found."
  
  
-def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadline=None, max_steps=MAX_WORKER_STEPS, worker_max_tokens=WORKER_MAX_TOKENS):
+def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadline=None, max_steps=None, max_tokens=None):
     action_history = [
         {"role": "system", "content": build_action_instruction(db.get_profile())},
         {"role": "user", "content": f"Execute this plan:\n{plan_text}"}
     ]
     step_count = 0
+    step_limit = max_steps or MAX_WORKER_STEPS
+    token_limit = max_tokens or WORKER_MAX_TOKENS
+    schema = active_tools_schema()
  
     # Track stats for the Dev Chamber
     stats = {"tools": [], "tool_log": [], "tokens_in": 0, "tokens_out": 0, "requests": 0}
  
-    while step_count < max_steps:
+    while step_count < step_limit:
         if cancel_check and cancel_check():
             return {"status": "cancelled", "message": "Cancelled by user.", "step_count": step_count, **stats}
         if deadline and time.time() > deadline:
             return {"status": "timeout", "message": "This is taking longer than expected, so I stopped. Want me to try again?", "step_count": step_count, **stats}
         step_count += 1
         try:
-            action_response = run_action_step(worker_model, action_history, worker_max_tokens, tools_schema, cancel_check=cancel_check)
+            action_response = run_action_step(worker_model, action_history, token_limit, schema, cancel_check=cancel_check)
         except BuddyCancelled:
             return {"status": "cancelled", "message": "Cancelled by user.", "step_count": step_count, **stats}
         action_msg = action_response.choices[0].message
@@ -418,25 +364,12 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
     return {"status": "incomplete", "message": "Reached max steps without finishing.", "step_count": step_count, **stats}
  
  
-def process_message(user_input, message_history, on_event=None, file_context=None, cancel_check=None, incognito=False, image_attachments=None, conversation_id=None, thinking_level=None):
+def process_message(user_input, message_history, on_event=None, file_context=None, cancel_check=None, incognito=False, image_attachments=None, conversation_id=None):
     """Pure model-facing turn: takes a message + history, talks to the
     Manager/Worker pipeline, returns a result dict. Knows nothing about
     conversation_id or the database — that's send_and_save_message's job.
-    If incognito=True, never reads or writes long-term memory / db.
-
-    thinking_level: "low" | "medium" | "high" | "extra" | "max". Defaults
-    to the user's effective level from Plugins/Settings (their own choice,
-    or the free-tier auto step-down) when not passed explicitly."""
+    If incognito=True, never reads or writes long-term memory / db."""
     start_time = time.time()
-    profile_for_level = None
-    if thinking_level is None:
-        try:
-            profile_for_level = db.get_profile()
-            thinking_level = db.effective_thinking_level(profile_for_level)
-        except Exception:
-            thinking_level = "medium"
-    level_cfg = get_thinking_level_config(thinking_level)
-    level_worker_models = {**WORKER_MODELS, **level_cfg["worker_overrides"]}
     try:
         from core.conversations import refresh_history_profile
         refresh_history_profile(message_history)
@@ -470,14 +403,6 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         ]
 
     if not incognito:
-        try:
-            profile_for_level = profile_for_level or db.get_profile()
-            if (profile_for_level.get("subscription_tier") or "free") == "free":
-                db.record_free_tier_request()
-        except Exception:
-            pass
-
-    if not incognito:
         # Layered RAG: identity + facts + episodes + files + recent chats.
         try:
             from storage.memory import build_memory_context
@@ -494,7 +419,8 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         if memory_note:
             message_history.append({"role": "system", "content": memory_note})
 
-    deadline = start_time + level_cfg["overall_timeout"]
+    cfg = thinking_config()
+    deadline = start_time + cfg["timeout"]
 
     if not image_attachments:
         try:
@@ -517,7 +443,7 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
                 deep_history = list(message_history) + [
                     {"role": "system", "content": "Give a complete, careful reply. No tools. No PLAN tags."}
                 ]
-                deep_out, deep_usage = get_manager_output(deep_history, cancel_check=cancel_check, model=level_cfg["manager_model"], max_tokens=level_cfg["manager_max_tokens"])
+                deep_out, deep_usage = get_manager_output(deep_history, cancel_check=cancel_check, model=DEEP_CHAT_MODEL)
                 metrics["requests"] += 1
                 if deep_usage:
                     metrics["tokens_in"] += getattr(deep_usage, "prompt_tokens", 0)
@@ -537,7 +463,7 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
             pass
 
     attempt = 0
-    while attempt <= level_cfg["max_plan_retries"]:
+    while attempt <= MAX_PLAN_RETRIES:
         attempt += 1
  
         if cancel_check and cancel_check():
@@ -554,8 +480,8 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
             on_event({"type": "thinking"})
  
         try:
-            manager_model = "google/gemini-3.8-flash" if image_attachments else level_cfg["manager_model"]
-            manager_output, usage = get_manager_output(message_history, cancel_check=cancel_check, model=manager_model, max_tokens=level_cfg["manager_max_tokens"])
+            manager_model = "google/gemini-3.8-flash" if image_attachments else cfg["manager"]
+            manager_output, usage = get_manager_output(message_history, cancel_check=cancel_check, model=manager_model)
         except BuddyCancelled:
             reply = "Cancelled."
             message_history.append({"role": "assistant", "content": reply})
@@ -566,7 +492,9 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
             metrics["tokens_in"] += getattr(usage, 'prompt_tokens', 0)
             metrics["tokens_out"] += getattr(usage, 'completion_tokens', 0)
  
-        route, content, worker_model, response_title = parse_manager_output(manager_output, worker_models=level_worker_models)
+        route, content, worker_model, response_title = parse_manager_output(manager_output)
+        if worker_model != IMAGE_GEN_MODEL:
+            worker_model = cfg["worker"]
  
         if route == "invalid":
             if on_event:
@@ -599,7 +527,15 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
                 cancel_check=cancel_check,
             )
             if worker_model == IMAGE_GEN_MODEL
-            else run_worker(plan_text, worker_model, on_event=on_event, cancel_check=cancel_check, deadline=deadline, max_steps=level_cfg["max_worker_steps"], worker_max_tokens=level_cfg["worker_max_tokens"])
+            else run_worker(
+                plan_text,
+                worker_model,
+                on_event=on_event,
+                cancel_check=cancel_check,
+                deadline=deadline,
+                max_steps=cfg["max_steps"],
+                max_tokens=cfg["max_tokens"],
+            )
         )
  
         # Merge worker metrics
@@ -653,12 +589,12 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
     return format_response(reply, metrics, start_time)
  
 
-def process_message_incognito(user_text, message_history, on_event=None, cancel_check=None, image_attachments=None, thinking_level=None):
+def process_message_incognito(user_text, message_history, on_event=None, cancel_check=None, image_attachments=None):
     """Runs the full Manager/Worker pipeline entirely in-memory: no message
     save, no title generation, no long-term memory read/write, no attachment
     storage. `message_history` must be the running list the caller owns —
     this appends to it in place, same contract as process_message."""
-    return process_message(user_text, message_history, on_event=on_event, cancel_check=cancel_check, incognito=True, image_attachments=image_attachments, thinking_level=thinking_level)
+    return process_message(user_text, message_history, on_event=on_event, cancel_check=cancel_check, incognito=True, image_attachments=image_attachments)
 
 
 

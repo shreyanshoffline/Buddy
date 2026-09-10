@@ -46,7 +46,7 @@ from .theme import (
     PREVIEW_PANEL_WIDTH_RATIO, PREVIEW_PANEL_HEIGHT_RATIO
 )
 from .sidebar import Sidebar
-from .pages import SettingsPage, PluginsPage, LibraryPage, BillingPage, ArtifactsPage, OnboardingPage, TalkToBuddyPage
+from .pages import SettingsPage, LibraryPage, BillingPage, ArtifactsPage, OnboardingPage, TalkToBuddyPage, PluginsPage
 
 class SendWorker(QThread):
     """Runs send_and_save_message off the main thread so the UI stays responsive."""
@@ -402,35 +402,42 @@ class BuddyWindow(QWidget):
         """)
         self.incognito_btn.clicked.connect(self._toggle_incognito_mode)
 
-        self.thinking_select = QComboBox()
-        self.thinking_select.setToolTip(
-            "How much Buddy thinks before replying. Medium is the default for "
-            "everyone and quietly drops to Low when free-tier credits run low "
-            "for the day — pick a level here and it's yours until you change it."
-        )
-        self.thinking_select.setCursor(Qt.PointingHandCursor)
-        for key, label in (("low", "Low"), ("medium", "Medium"), ("high", "High"), ("extra", "Extra"), ("max", "MAX")):
-            self.thinking_select.addItem(label, key)
-        current_level = (core.get_profile().get("thinking_level") or "medium").lower()
-        idx = self.thinking_select.findData(current_level)
-        self.thinking_select.setCurrentIndex(idx if idx >= 0 else 1)
-        self.thinking_select.setStyleSheet(f"""
-            QComboBox {{
-                border: none;
-                background: {HOVER_BG_COLOR};
-                border-radius: 10px;
-                padding: 3px 8px;
-                font-size: 11px;
-                font-weight: 600;
-                color: {TEXT_COLOR_DARK};
-            }}
-            QComboBox:hover {{ background: {PRESSED_BG_COLOR}; }}
-        """)
-        self.thinking_select.currentIndexChanged.connect(self._on_thinking_level_changed)
-
         self.header_layout.addWidget(self.title_label)
         self.header_layout.addStretch()
-        self.header_layout.addWidget(self.thinking_select)
+
+        self.thinking_combo = QComboBox()
+        self.thinking_combo.setToolTip(
+            "Thinking level. Medium is the default. Free may drop to Low when credits are low."
+        )
+        self.thinking_combo.setCursor(Qt.PointingHandCursor)
+        self.thinking_combo.setFixedWidth(92)
+        self.thinking_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {INPUT_BG};
+                color: {TEXT_COLOR_DARK};
+                border: 1px solid {BORDER_COLOR};
+                border-radius: 8px;
+                padding: 4px 8px;
+                font-size: 10px;
+                font-weight: 600;
+            }}
+            QComboBox:hover {{ border: 1px solid {PRIMARY_COLOR}; }}
+            QComboBox QAbstractItemView {{
+                background: {INPUT_BG};
+                color: {TEXT_COLOR_DARK};
+                selection-background-color: {ACTIVE_BG_COLOR};
+            }}
+        """)
+        try:
+            from core.thinking import LEVELS, LEVEL_LABELS, stored_thinking_level, set_thinking_level
+            for key in LEVELS:
+                self.thinking_combo.addItem(LEVEL_LABELS[key], key)
+            self.thinking_combo.setCurrentText(LEVEL_LABELS[stored_thinking_level()])
+            self.thinking_combo.currentIndexChanged.connect(self._on_thinking_changed)
+        except Exception:
+            self.thinking_combo.addItems(["Low", "Medium", "High", "Extra", "MAX"])
+            self.thinking_combo.setCurrentText("Medium")
+        self.header_layout.addWidget(self.thinking_combo)
         self.header_layout.addWidget(self.incognito_btn)
         self.header_layout.addWidget(self.privacy_btn)
         self.header_layout.addWidget(self.close_btn)
@@ -678,26 +685,26 @@ class BuddyWindow(QWidget):
         self.main_layout.addLayout(footer_layout)
  
         self.settings_page = SettingsPage(close_callback=self.hide, on_theme_changed=self.restart_app)
-        self.plugins_page = PluginsPage(close_callback=self.hide)
         self.library_page = LibraryPage(close_callback=self.hide, on_chat_selected=self._request_open_chat, on_delete_chat=self._delete_chat_from_library)
         self.billing_page = BillingPage(close_callback=self.hide)
         self.artifacts_page = ArtifactsPage(close_callback=self.hide)
         self.talk_page = TalkToBuddyPage(close_callback=self.hide)
+        self.plugins_page = PluginsPage(close_callback=self.hide)
         self.onboarding_page = OnboardingPage(close_callback=self.hide, on_complete=self.show_chat_view)
         self.content_stack.addWidget(self.settings_page)
-        self.content_stack.addWidget(self.plugins_page)
         self.content_stack.addWidget(self.library_page)
         self.content_stack.addWidget(self.billing_page)
         self.content_stack.addWidget(self.artifacts_page)
         self.content_stack.addWidget(self.talk_page)
+        self.content_stack.addWidget(self.plugins_page)
         self.content_stack.addWidget(self.onboarding_page)
  
         self.sidebar.btn_new.clicked.connect(self.show_chat_view)
         self.sidebar.btn_lib.clicked.connect(self.show_library_view)
         self.sidebar.btn_artifacts.clicked.connect(self.show_artifacts_view)
         self.sidebar.btn_talk.clicked.connect(self.show_talk_view)
-        self.sidebar.btn_billing.clicked.connect(self.show_billing_view)
         self.sidebar.btn_plugins.clicked.connect(self.show_plugins_view)
+        self.sidebar.btn_billing.clicked.connect(self.show_billing_view)
         self.sidebar.btn_settings.clicked.connect(self.show_settings_view)
  
         self.show_chat_view()
@@ -828,7 +835,6 @@ class BuddyWindow(QWidget):
                 self.message_history = core.new_message_history()
         for page in (
             getattr(self, "settings_page", None),
-            getattr(self, "plugins_page", None),
             getattr(self, "library_page", None),
             getattr(self, "billing_page", None),
             getattr(self, "artifacts_page", None),
@@ -843,10 +849,6 @@ class BuddyWindow(QWidget):
             self.settings_page.reload_from_db()
         self.content_stack.setCurrentWidget(self.settings_page)
         self._set_active_nav(self.sidebar.btn_settings)
- 
-    def show_plugins_view(self):
-        self.content_stack.setCurrentWidget(self.plugins_page)
-        self._set_active_nav(self.sidebar.btn_plugins)
  
     def show_billing_view(self):
         self.content_stack.setCurrentWidget(self.billing_page)
@@ -876,11 +878,24 @@ class BuddyWindow(QWidget):
         self.content_stack.setCurrentWidget(self.talk_page)
         self._set_active_nav(self.sidebar.btn_talk)
 
+    def _on_thinking_changed(self):
+        try:
+            from core.thinking import set_thinking_level
+            set_thinking_level(self.thinking_combo.currentData(), manual=True)
+        except Exception:
+            pass
+
+    def show_plugins_view(self):
+        if hasattr(self.plugins_page, "reload_from_db"):
+            self.plugins_page.reload_from_db()
+        self.content_stack.setCurrentWidget(self.plugins_page)
+        self._set_active_nav(self.sidebar.btn_plugins)
+
     def _set_active_nav(self, active_btn):
         for btn in (
             self.sidebar.btn_new, self.sidebar.btn_lib, self.sidebar.btn_artifacts,
-            self.sidebar.btn_talk, self.sidebar.btn_billing, self.sidebar.btn_plugins,
-            self.sidebar.btn_settings,
+            self.sidebar.btn_talk, self.sidebar.btn_plugins,
+            self.sidebar.btn_billing, self.sidebar.btn_settings,
         ):
             btn.set_active(btn is active_btn)
 
@@ -944,12 +959,6 @@ class BuddyWindow(QWidget):
         self.greeting.setVisible(False)
         self.greeting_spacer.setVisible(False)
         self.greeting_spacer_bottom.setVisible(False)
-
-    def _on_thinking_level_changed(self, index):
-        level = self.thinking_select.itemData(index) or "medium"
-        # Picking a level here is always an explicit override — it wins
-        # over the free-tier auto step-down until the user changes it again.
-        core.update_profile(thinking_level=level, thinking_level_auto=False)
 
     def _toggle_incognito_mode(self):
         if self.current_conversation_id is not None:

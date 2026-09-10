@@ -272,19 +272,7 @@ def _gemini_transcribe(audio_bytes, cancel_check=None):
     return ""
 
 
-def transcribe_audio(audio_url, cancel_check=None, model="gemini"):
-    """model: 'gemini' (default — Gemini 2.5 Flash, falls back to Whisper
-    on failure) or 'whisper' (skip Gemini, go straight to Whisper via
-    Hack Club AI's Replicate proxy)."""
-    audio_bytes = _audio_bytes(audio_url)
-    if model != "whisper":
-        try:
-            text = _gemini_transcribe(audio_bytes, cancel_check=cancel_check)
-            if text:
-                return text
-        except Exception:
-            pass
-
+def _whisper_transcribe(audio_url, audio_bytes, cancel_check=None):
     data_uri = audio_url
     if not (isinstance(audio_url, str) and audio_url.startswith("data:")):
         data_uri = "data:audio/wav;base64,%s" % base64.b64encode(audio_bytes).decode("ascii")
@@ -293,10 +281,34 @@ def transcribe_audio(audio_url, cancel_check=None, model="gemini"):
         {"audio": data_uri, "task": "transcribe", "batch_size": 8},
         cancel_check=cancel_check,
     )
-    text = _as_transcript(output)
-    if not text:
-        raise VoiceError("Didn't catch that — no speech was detected in the recording.")
-    return text
+    return _as_transcript(output)
+
+
+def transcribe_audio(audio_url, cancel_check=None, engine=None):
+    audio_bytes = _audio_bytes(audio_url)
+    if engine is None:
+        try:
+            from core.thinking import listening_model
+            engine = listening_model()
+        except Exception:
+            engine = "gemini"
+
+    errors = []
+    order = ("whisper", "gemini") if engine == "whisper" else ("gemini", "whisper")
+    for name in order:
+        try:
+            if name == "gemini":
+                text = _gemini_transcribe(audio_bytes, cancel_check=cancel_check)
+            else:
+                text = _whisper_transcribe(audio_url, audio_bytes, cancel_check=cancel_check)
+            if text:
+                return text
+        except Exception as exc:
+            errors.append("%s: %s" % (name, exc))
+
+    if errors:
+        raise VoiceError("Didn't catch that — %s" % errors[-1])
+    raise VoiceError("Didn't catch that — no speech was detected in the recording.")
 
 
 def synthesize_speech(text, voice=DEFAULT_TTS_VOICE, cancel_check=None):
@@ -316,31 +328,6 @@ def synthesize_speech(text, voice=DEFAULT_TTS_VOICE, cancel_check=None):
     if not url:
         raise VoiceError("The voice model responded but didn't return any audio.")
     return url
-
-
-def speak(text, model="system", voice=DEFAULT_TTS_VOICE, cancel_check=None):
-    """Resolves a reply into something the caller can actually play.
-
-    model: 'system' (default, free — the OS speech engine) or 'inworld'
-    (paid Replicate TTS). Returns a ('command', argv) tuple for system
-    voices, or ('audio_url', url) for Inworld. Falls back to the system
-    voice if Inworld fails, so voice mode never just goes silent.
-    Returns (None, None) if there's nothing to say or no voice is
-    available at all."""
-    spoken = (text or "").strip()
-    if not spoken:
-        return None, None
-    if model == "inworld":
-        try:
-            url = synthesize_speech(spoken, voice=voice, cancel_check=cancel_check)
-            if url:
-                return "audio_url", url
-        except VoiceError:
-            pass  # fall through to the free system voice
-    command = system_say_command(spoken)
-    if command:
-        return "command", command
-    return None, None
 
 
 def mac_premium_voice():

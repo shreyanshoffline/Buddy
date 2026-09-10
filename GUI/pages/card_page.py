@@ -1,5 +1,8 @@
 """Base scrollable card layout shared by Settings and Library pages."""
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QPushButton, QHBoxLayout, QFrame
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QScrollArea, QPushButton, QHBoxLayout,
+    QFrame, QSizePolicy,
+)
 from PySide6.QtCore import Qt
 
 from ..theme import (
@@ -40,12 +43,17 @@ class CardPage(QWidget):
         # 3. Create the Scroll Area
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
         # 4. Create the inner container that holds your actual widgets
         self.scroll_content = QWidget()
         self.scroll_content.setObjectName("ScrollContent")
+        # Let the page shrink to the viewport instead of using a child
+        # widget's natural width as a horizontal minimum.
+        self.scroll_content.setMinimumWidth(0)
+        self.scroll_content.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         
         # 5. Bind your existing self.main_layout to the inner scroll_content
         self.main_layout = QVBoxLayout(self.scroll_content)

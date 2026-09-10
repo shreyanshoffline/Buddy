@@ -244,6 +244,103 @@ def activate_app(app: str) -> str:
 # WEB / BROWSER TOOLS
 # =============================================================================
 
+_WEATHER_CODES = {
+    0: "clear sky",
+    1: "mainly clear",
+    2: "partly cloudy",
+    3: "overcast",
+    45: "foggy",
+    48: "rime fog",
+    51: "light drizzle",
+    53: "drizzle",
+    55: "heavy drizzle",
+    56: "light freezing drizzle",
+    57: "freezing drizzle",
+    61: "light rain",
+    63: "rain",
+    65: "heavy rain",
+    66: "light freezing rain",
+    67: "freezing rain",
+    71: "light snow",
+    73: "snow",
+    75: "heavy snow",
+    77: "snow grains",
+    80: "light rain showers",
+    81: "rain showers",
+    82: "heavy rain showers",
+    85: "light snow showers",
+    86: "heavy snow showers",
+    95: "thunderstorms",
+    96: "thunderstorms with light hail",
+    99: "thunderstorms with hail",
+}
+
+
+def get_weather(location: str, units: str = "fahrenheit") -> str:
+    """Fetch current conditions and today's high/low for a named location.
+
+    Open-Meteo provides the geocoding and forecast endpoints without requiring
+    a user API key, so a weather request does not depend on the optional web
+    search credential being configured.
+    """
+    if not HAS_REQUESTS:
+        return "Error: the requests package is missing, so live weather cannot run."
+    place = (location or "").strip()
+    if not place:
+        return "Error: provide a city, state, or region for the weather lookup."
+    unit = "celsius" if str(units).lower() in {"celsius", "c"} else "fahrenheit"
+    try:
+        geo = _requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": place, "count": 1, "language": "en", "format": "json"},
+            timeout=15,
+        )
+        geo.raise_for_status()
+        results = (geo.json() or {}).get("results") or []
+        if not results:
+            return f"I couldn't find a location named {place!r}."
+        match = results[0]
+        forecast = _requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": match["latitude"],
+                "longitude": match["longitude"],
+                "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m",
+                "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+                "temperature_unit": unit,
+                "wind_speed_unit": "mph" if unit == "fahrenheit" else "kmh",
+                "timezone": "auto",
+                "forecast_days": 1,
+            },
+            timeout=15,
+        )
+        forecast.raise_for_status()
+        data = forecast.json()
+        current = data.get("current") or {}
+        daily = data.get("daily") or {}
+        temp_unit = "°F" if unit == "fahrenheit" else "°C"
+        wind_unit = "mph" if unit == "fahrenheit" else "km/h"
+        name = match.get("name") or place
+        region = match.get("admin1") or match.get("country") or ""
+        label = f"{name}, {region}" if region else name
+        condition = _WEATHER_CODES.get(current.get("weather_code"), "current conditions")
+        high = (daily.get("temperature_2m_max") or [None])[0]
+        low = (daily.get("temperature_2m_min") or [None])[0]
+        rain_chance = (daily.get("precipitation_probability_max") or [None])[0]
+        summary = (
+            f"Current weather for {label}: {current.get('temperature_2m')} {temp_unit}, "
+            f"feels like {current.get('apparent_temperature')} {temp_unit}, {condition}. "
+            f"Humidity is {current.get('relative_humidity_2m')}% and wind is "
+            f"{current.get('wind_speed_10m')} {wind_unit}."
+        )
+        if high is not None and low is not None:
+            summary += f" Today's high/low is {high}/{low} {temp_unit}."
+        if rain_chance is not None:
+            summary += f" Chance of precipitation: {rain_chance}%."
+        return summary + " Source: Open-Meteo."
+    except Exception as error:
+        return f"Live weather lookup failed for {place}: {error}"
+
 def _hackclub_search_key() -> str:
     """Key for search.hackclub.com. Separate from the Hack Club AI chat key
     when the user has one; otherwise reuse API_KEY / the Settings BYO key."""
@@ -977,6 +1074,27 @@ def music_control(action: str) -> str:
 # =============================================================================
 # GMAIL (requires credentials in ~/Buddy/)
 # =============================================================================
+
+def gmail_connection_status():
+    """Cheap, local — just checks whether we're already holding a token.
+    Doesn't hit the network."""
+    return {"connected": os.path.exists(TOKEN_PATH)}
+
+
+def gmail_connect():
+    """Runs the real OAuth flow (opens the browser, spins up a local
+    server for the redirect) and returns the connected email address.
+    Blocking — call this from a background thread, not the UI thread."""
+    service = _get_gmail_service()
+    profile = service.users().getProfile(userId="me").execute()
+    return profile.get("emailAddress") or "connected"
+
+
+def gmail_disconnect():
+    if os.path.exists(TOKEN_PATH):
+        os.remove(TOKEN_PATH)
+    return True
+
 
 def _get_gmail_service():
     if not HAS_GMAIL:

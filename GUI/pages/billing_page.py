@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QThread, Signal, QUrl, QUrlQuery, QTimer
 from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QBoxLayout
 
 import core
 import billing_client
@@ -46,16 +47,23 @@ class _HackClubPollWorker(QThread):
 
 
 class BillingPage(CardPage):
+    WIDE_LAYOUT_MIN_WIDTH = 720
+
     def __init__(self, parent=None, close_callback=None):
         super().__init__("Pricing", "Choose the Buddy plan that matches your workflow.", parent, close_callback)
         self.buddy_user_id = core.get_or_create_buddy_user_id()
         self._worker = None
         self._auth_timer = None
+        self._plan_columns = None
         self.selected_plan = (core.get_profile().get("subscription_tier") or "free").lower()
 
         self.stack = QStackedWidget()
+        self.stack.setMinimumWidth(0)
+        self.stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.main_layout.addWidget(self.stack)
         self.overview_page = QWidget()
+        self.overview_page.setMinimumWidth(0)
+        self.overview_page.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.overview_layout = QVBoxLayout(self.overview_page)
         self.overview_layout.setContentsMargins(0, 0, 0, 0)
         self.overview_layout.setSpacing(12)
@@ -143,8 +151,9 @@ class BillingPage(CardPage):
         card.setStyleSheet(f"""
             QFrame {{ background: {SECTION_CARD_BG}; border: 1px solid {BORDER_COLOR}; border-radius: 12px; }}
         """)
-        layout = QHBoxLayout(card)
+        layout = QBoxLayout(QBoxLayout.LeftToRight, card)
         layout.setContentsMargins(14, 12, 14, 12)
+        self.status_layout = layout
 
         text_col = QVBoxLayout()
         title = QLabel("Current plan")
@@ -224,6 +233,8 @@ class BillingPage(CardPage):
         ]
 
         self.plan_grid_container = QWidget()
+        self.plan_grid_container.setMinimumWidth(0)
+        self.plan_grid_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.plan_grid_layout = QVBoxLayout(self.plan_grid_container)
         self.plan_grid_layout.setContentsMargins(0, 0, 0, 0)
         self.plan_grid_layout.setSpacing(12)
@@ -239,12 +250,14 @@ class BillingPage(CardPage):
             if item.widget():
                 item.widget().deleteLater()
 
+        columns = self._current_plan_columns()
+        self._plan_columns = columns
         row = QHBoxLayout()
         row.setSpacing(12)
         for index, plan in enumerate(self._plans):
             card = self._build_plan_card(plan)
             row.addWidget(card)
-            if index % 2 == 1:
+            if index % columns == columns - 1:
                 self._flush_row(row)
                 row = QHBoxLayout()
                 row.setSpacing(12)
@@ -253,15 +266,38 @@ class BillingPage(CardPage):
 
     def _flush_row(self, row):
         container = QFrame()
+        container.setMinimumWidth(0)
+        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         container.setStyleSheet("background: transparent; border: none;")
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.addLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
+        for index in range(row.count()):
+            row.setStretch(index, 1)
         self.plan_grid_layout.addWidget(container)
+
+    def _current_plan_columns(self):
+        return 2 if self.width() >= self.WIDE_LAYOUT_MIN_WIDTH else 1
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        columns = self._current_plan_columns()
+        if columns != self._plan_columns and hasattr(self, "plan_grid_layout"):
+            self._plan_columns = columns
+            self._rebuild_plan_grid()
+        if hasattr(self, "status_layout"):
+            direction = (
+                QBoxLayout.LeftToRight
+                if columns == 2 else QBoxLayout.TopToBottom
+            )
+            self.status_layout.setDirection(direction)
 
     def _build_plan_card(self, plan):
         frame = QFrame()
         frame.setFixedHeight(240)
+        frame.setMinimumWidth(0)
+        frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         frame.setStyleSheet(self._plan_frame_style(plan["highlight"]))
 
         layout = QVBoxLayout(frame)
@@ -354,6 +390,8 @@ class BillingPage(CardPage):
 
     def _create_plan_detail_page(self, key, meta):
         page = QWidget()
+        page.setMinimumWidth(0)
+        page.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         page_layout = QVBoxLayout(page)
         page_layout.setContentsMargins(18, 18, 18, 18)
         page_layout.setSpacing(12)
@@ -582,6 +620,8 @@ class BillingPage(CardPage):
         table.setSelectionMode(QTableWidget.NoSelection)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
         table.setWordWrap(True)
+        table.setMinimumWidth(0)
+        table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -604,7 +644,6 @@ class BillingPage(CardPage):
             table.setItem(row_idx, 0, QTableWidgetItem(label))
             table.setItem(row_idx, 1, QTableWidgetItem(pro_val))
             table.setItem(row_idx, 2, QTableWidgetItem(max_val))
-        table.resizeColumnsToContents()
         layout.addWidget(table)
 
         button_box = QFrame()
@@ -618,16 +657,21 @@ class BillingPage(CardPage):
             ("max", "Buddy MAX", "max_monthly", "max_yearly", "Save 18% / best value"),
         ]:
             group = QFrame()
+            group.setMinimumWidth(0)
+            group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             group.setStyleSheet(f"QFrame {{ background: transparent; border: 1px solid {BORDER_COLOR}; border-radius: 10px; }}")
-            group_layout = QHBoxLayout(group)
+            group_layout = QVBoxLayout(group)
             group_layout.setContentsMargins(10, 10, 10, 10)
+            group_layout.setSpacing(8)
 
             title_label = QLabel(plan_title)
+            title_label.setWordWrap(True)
+            title_label.setMinimumWidth(0)
             title_label.setStyleSheet(f"color: {CARD_TEXT_COLOR}; font-size: 13px; font-weight: 700; background: transparent; border: none;")
             group_layout.addWidget(title_label)
-            group_layout.addStretch()
 
             monthly_btn = QPushButton("Subscribe Monthly")
+            monthly_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             monthly_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             monthly_btn.setStyleSheet(f"""
                 QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none; border-radius: 8px;
@@ -638,6 +682,7 @@ class BillingPage(CardPage):
             group_layout.addWidget(monthly_btn)
 
             annual_btn = QPushButton("Subscribe Annually")
+            annual_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             annual_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             annual_btn.setStyleSheet(f"""
                 QPushButton {{ background: {ACTIVE_BG_COLOR}; color: {PRIMARY_COLOR}; border: 1px solid {PRIMARY_COLOR};
