@@ -352,12 +352,22 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
                     result["images"] = generated_images
                 return result
  
+            if cancel_check and cancel_check():
+                return {"status": "cancelled", "message": "Stopped before %s." % tool_name, "step_count": step_count, **stats}
+
             if on_event:
                 on_event({"type": "tool_call", "name": tool_name, "args": tool_args})
- 
+
             tool_start = time.time()
             result = execute_tool(tool_name, tool_args)
             tool_duration = time.time() - tool_start
+            if on_event:
+                on_event({
+                    "type": "tool_done",
+                    "name": tool_name,
+                    "duration": tool_duration,
+                    "ok": not str(result).lower().startswith("error"),
+                })
 
             result_str = str(result)
             stats["tool_log"].append({

@@ -16,7 +16,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
+    QInputDialog,
+    QMessageBox, QInputDialog, QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -166,7 +167,7 @@ class PluginsPage(CardPage):
         card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         card.setStyleSheet(
             f"QFrame {{ background: {SECTION_CARD_BG}; border: 1px solid {BORDER_COLOR}; "
-            "border-radius: 14px; }}"
+            "border-radius: 14px; }"
         )
         layout = QVBoxLayout(card)
         layout.setContentsMargins(14, 12, 14, 14)
@@ -204,7 +205,7 @@ class PluginsPage(CardPage):
         combo.setStyleSheet(
             f"QComboBox {{ background: {INPUT_BG}; color: {TEXT_COLOR_DARK}; "
             f"border: 1px solid {BORDER_COLOR}; border-radius: 8px; "
-            "padding: 6px 10px; font-size: 11px; }}"
+            "padding: 6px 10px; font-size: 11px; }"
             f"QComboBox:hover {{ border: 1px solid {PRIMARY_COLOR}; }}"
             f"QComboBox QAbstractItemView {{ background: {INPUT_BG}; color: {TEXT_COLOR_DARK}; "
             f"selection-background-color: {ACTIVE_BG_COLOR}; }}"
@@ -216,7 +217,7 @@ class PluginsPage(CardPage):
         button.setCursor(Qt.PointingHandCursor)
         button.setStyleSheet(
             f"QPushButton {{ background: transparent; color: {PRIMARY_COLOR}; border: 1px solid {BORDER_COLOR}; "
-            "border-radius: 7px; padding: 4px 10px; font-size: 11px; font-weight: 600; }}"
+            "border-radius: 7px; padding: 4px 10px; font-size: 11px; font-weight: 600; }"
             f"QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}"
         )
         return button
@@ -458,7 +459,7 @@ class PluginsPage(CardPage):
         self._section("PLUGINS", "Connections")
         layout = self._make_card(
             "Outside accounts",
-            "Connect only works after the provider confirms an account. Slack is not wired yet.",
+            "Connect only works after the provider confirms an account. Slack uses a verified token stored in Keychain.",
         )
         row = QHBoxLayout()
         text_col = QVBoxLayout()
@@ -479,13 +480,27 @@ class PluginsPage(CardPage):
         self.github_button.clicked.connect(self._on_github_button)
         row.addWidget(self.github_button)
         layout.addLayout(row)
-        slack = QLabel("Slack — Unavailable. No official connection flow is wired yet.")
-        slack.setWordWrap(True)
-        slack.setStyleSheet(
+        slack_row = QHBoxLayout()
+        slack_col = QVBoxLayout()
+        slack_col.setSpacing(2)
+        slack_title = QLabel("Slack")
+        slack_title.setStyleSheet(
+            f"color: {TEXT_COLOR_DARK}; font-size: 12px; font-weight: 600; background: transparent; border: none;"
+        )
+        slack_col.addWidget(slack_title)
+        self.slack_status = QLabel("Not connected")
+        self.slack_status.setWordWrap(True)
+        self.slack_status.setStyleSheet(
             f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; background: transparent; border: none;"
         )
-        layout.addWidget(slack)
+        slack_col.addWidget(self.slack_status)
+        slack_row.addLayout(slack_col, 1)
+        self.slack_button = self._small_button("Connect")
+        self.slack_button.clicked.connect(self._on_slack_button)
+        slack_row.addWidget(self.slack_button)
+        layout.addLayout(slack_row)
         self._refresh_github_status()
+        self._refresh_slack_status()
 
     def _refresh_github_status(self):
         try:
@@ -540,6 +555,49 @@ class PluginsPage(CardPage):
         self.github_button.setText("Connect")
         self.github_status.setText("Couldn't connect: %s" % message)
 
+    def _refresh_slack_status(self):
+        try:
+            import core
+            connection = core.get_plugin_connection("slack")
+        except Exception:
+            connection = None
+        if connection:
+            self.slack_status.setText(
+                "Connected as %s." % (connection.get("account_label") or "Slack account")
+            )
+            self.slack_button.setText("Disconnect")
+            self.slack_button.setEnabled(True)
+        else:
+            self.slack_status.setText("Not connected. Add a Slack token to verify this workspace.")
+            self.slack_button.setText("Connect")
+            self.slack_button.setEnabled(True)
+
+    def _on_slack_button(self):
+        import core
+        if core.get_plugin_connection("slack"):
+            core.remove_plugin_connection("slack")
+            self._refresh_slack_status()
+            return
+
+        token, ok = QInputDialog.getText(
+            self,
+            "Connect Slack",
+            "Paste a Slack bot token. Buddy will verify it without sending a message:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok or not token.strip():
+            return
+        self.slack_button.setEnabled(False)
+        self.slack_status.setText("Verifying Slack token...")
+        try:
+            from tools.integrations import slack_verify_token
+            account_label = slack_verify_token(token.strip())
+            core.set_plugin_connection("slack", token.strip(), account_label)
+            self._refresh_slack_status()
+        except Exception as exc:
+            self.slack_button.setEnabled(True)
+            self.slack_status.setText("Couldn't connect: %s" % exc)
+
     def _set_universal(self, key, on):
         self.plugins["universal"][key] = bool(on)
         save_plugins(self.plugins)
@@ -592,7 +650,7 @@ class PluginsPage(CardPage):
         self.website_input.setPlaceholderText("example.com")
         self.website_input.setStyleSheet(
             f"QLineEdit {{ background: {INPUT_BG}; color: {TEXT_COLOR_DARK}; border: 1px solid {BORDER_COLOR}; "
-            "border-radius: 8px; padding: 7px 9px; font-size: 11px; }}"
+            "border-radius: 8px; padding: 7px 9px; font-size: 11px; }"
             f"QLineEdit:focus {{ border: 1px solid {PRIMARY_COLOR}; }}"
         )
         self.website_input.returnPressed.connect(self._add_website)
@@ -602,7 +660,7 @@ class PluginsPage(CardPage):
         add_button.clicked.connect(self._add_website)
         add_button.setStyleSheet(
             f"QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none; "
-            "border-radius: 8px; padding: 7px 13px; font-size: 11px; font-weight: 700; }}"
+            "border-radius: 8px; padding: 7px 13px; font-size: 11px; font-weight: 700; }"
             f"QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}"
         )
         add_row.addWidget(add_button)

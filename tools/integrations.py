@@ -140,7 +140,38 @@ def linear_verify_token(token):
     return data.get("name") or data.get("email") or "connected"
 
 
+def slack_verify_token(token):
+    """auth.test is read-only and returns workspace + user identity."""
+    _require_requests()
+    resp = requests.post(
+        "https://slack.com/api/auth.test",
+        headers={"Authorization": "Bearer %s" % token},
+        timeout=15,
+    )
+    data = resp.json() if resp.content else {}
+    if not data.get("ok"):
+        raise IntegrationError(data.get("error") or "Slack rejected that token.")
+    team = data.get("team") or "workspace"
+    user = data.get("user") or data.get("user_id") or "connected"
+    return "%s @ %s" % (user, team)
+
+
+def slack_post_message(token, channel, text):
+    _require_requests()
+    resp = requests.post(
+        "https://slack.com/api/chat.postMessage",
+        headers={"Authorization": "Bearer %s" % token, "Content-Type": "application/json"},
+        json={"channel": channel, "text": text},
+        timeout=15,
+    )
+    data = resp.json() if resp.content else {}
+    if not data.get("ok"):
+        raise IntegrationError(data.get("error") or "Slack could not send that message.")
+    return data.get("ts") or "sent"
+
+
 CONNECTION_VERIFIERS = {
     "notion": notion_verify_token,
     "linear": linear_verify_token,
+    "slack": slack_verify_token,
 }

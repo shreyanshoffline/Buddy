@@ -24,6 +24,7 @@ from PySide6.QtSvg import QSvgRenderer
 import core
 
 from .widgets import ChatBubble, ChatInput, FeedbackDialog, AttachmentTray
+from .widgets.window_chrome import EdgeResizeController
 from .icons import create_buddy_icon, get_svg_icon, ICONS
 from .theme import (
     WINDOW_DEFAULT_HEIGHT, WINDOW_DEFAULT_WIDTH, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
@@ -121,7 +122,9 @@ class BuddyWindow(QWidget):
         self.resize(WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         self._drag_pos = QPoint()
- 
+        self._moving_window = False
+        self._resize_controller = None
+
         self.app_icon = create_buddy_icon("GUI/assets/Buddy_menubar.png")
         self.setWindowIcon(self.app_icon)
         self.current_conversation_id = None
@@ -209,18 +212,67 @@ class BuddyWindow(QWidget):
         # narrow window the model selector elides instead of turning the
         # composer into a tall stack.
  
+    def _header_rect_in_window(self):
+        if not hasattr(self, "header_bar"):
+            return None
+        top_left = self.header_bar.mapTo(self, QPoint(0, 0))
+        return self.header_bar.rect().translated(top_left)
+
+    def _is_header_drag_target(self, pos):
+        header = self._header_rect_in_window()
+        if header is None or not header.contains(pos):
+            return False
+        child = self.childAt(pos)
+        return child not in (
+            getattr(self, "close_btn", None),
+            getattr(self, "home_btn", None),
+            getattr(self, "privacy_btn", None),
+            getattr(self, "incognito_btn", None),
+            getattr(self, "thinking_combo", None),
+        )
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            event.accept()
- 
+            pos = event.position().toPoint()
+            if self._resize_controller and self._resize_controller._edge_at(pos):
+                return
+            if self._is_header_drag_target(pos):
+                self._moving_window = True
+                self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
     def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.LeftButton and not self._drag_pos.isNull():
+        if self._moving_window and event.buttons() == Qt.LeftButton and not self._drag_pos.isNull():
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
- 
+            return
+        super().mouseMoveEvent(event)
+
     def mouseReleaseEvent(self, event):
+        if self._moving_window and self.mouseGrabber() is self:
+            self.releaseMouse()
+        self._moving_window = False
         self._drag_pos = QPoint()
+        super().mouseReleaseEvent(event)
+
+    def eventFilter(self, obj, event):
+        if obj in (getattr(self, "header_bar", None), getattr(self, "title_label", None)):
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                pos = self.mapFromGlobal(event.globalPosition().toPoint())
+                if self._resize_controller and self._resize_controller._edge_at(pos):
+                    return False
+                self._moving_window = True
+                self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                self.grabMouse()
+                return True
+        return super().eventFilter(obj, event)
+
+    def reset_window_size(self):
+        self.resize(WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
+        if self._resize_controller:
+            self._resize_controller.relayout()
  
     def _setup_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self.app_icon, self)
@@ -295,7 +347,7 @@ class BuddyWindow(QWidget):
  
     def _build_ui(self):
         window_layout = QVBoxLayout(self)
-        window_layout.setContentsMargins(10, 10, 10, 10)
+        window_layout.setContentsMargins(18, 18, 18, 18)
  
         self.container = QFrame()
         self.container.setObjectName("MainContainer")
@@ -306,7 +358,7 @@ class BuddyWindow(QWidget):
                     stop:0.0 {WINDOW_BG_TOP}, stop:0.6 {WINDOW_BG_MID}, stop:1.0 {WINDOW_BG_BOTTOM}
                 );
                 border-radius: {UI_CORNER_RADIUS}px;
-                border: 1px solid rgba(255, 255, 255, 0.7);
+                border: 1px solid rgba(255, 255, 255, 179);
             }}
         """)
  
@@ -385,6 +437,27 @@ class BuddyWindow(QWidget):
         """)
         self.close_btn.clicked.connect(self.hide)
 
+        self.home_btn = QPushButton("▢")
+        self.home_btn.setFixedSize(WINDOW_CLOSE_BUTTON_SIZE, WINDOW_CLOSE_BUTTON_SIZE)
+        self.home_btn.setCursor(Qt.PointingHandCursor)
+        self.home_btn.setAccessibleName("Reset window size")
+        self.home_btn.setToolTip("Reset window to the default size")
+        self.home_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {WINDOW_CLOSE_BUTTON_COLOR};
+                border: none;
+                font-size: {WINDOW_CLOSE_BUTTON_FONT_SIZE}px;
+                font-weight: bold;
+                border-radius: 8px;
+            }}
+            QPushButton:hover {{
+                background: {WINDOW_CLOSE_BUTTON_HOVER_BG};
+                color: {WINDOW_CLOSE_BUTTON_HOVER_COLOR};
+            }}
+        """)
+        self.home_btn.clicked.connect(self.reset_window_size)
+
         self.privacy_btn = QPushButton("🔓")
         self.privacy_btn.setFlat(True)
         self.privacy_btn.setCursor(Qt.PointingHandCursor)
@@ -448,6 +521,7 @@ class BuddyWindow(QWidget):
         self.thinking_combo.addItem("Configure models…", "__configure_models__")
         self.header_layout.addWidget(self.incognito_btn)
         self.header_layout.addWidget(self.privacy_btn)
+        self.header_layout.addWidget(self.home_btn)
         self.header_layout.addWidget(self.close_btn)
  
         self.content_area_layout.addWidget(self.header_bar)
@@ -495,12 +569,12 @@ class BuddyWindow(QWidget):
                 margin: 0;
             }
             QScrollBar::handle:vertical {
-                background: rgba(95, 107, 122, 0.52);
+                background: rgba(95, 107, 122, 133);
                 border-radius: 4px;
                 min-height: 48px;
             }
             QScrollBar::handle:vertical:hover {
-                background: rgba(70, 90, 108, 0.75);
+                background: rgba(70, 90, 108, 191);
             }
             QScrollBar::add-line:vertical,
             QScrollBar::sub-line:vertical,
@@ -656,7 +730,7 @@ class BuddyWindow(QWidget):
         self.preview_overlay.setVisible(False)
         self.preview_overlay.setStyleSheet("""
             QFrame#PreviewOverlay {
-                background: rgba(18, 24, 38, 0.44);
+                background: rgba(18, 24, 38, 112);
                 border: none;
             }
         """)
@@ -742,16 +816,7 @@ class BuddyWindow(QWidget):
         composer_layout.addWidget(self.input_container)
         self.main_layout.addWidget(self.composer)
  
-        footer_layout = QHBoxLayout()
-        footer_layout.setContentsMargins(0, 0, 5, 2)
-        footer_layout.addStretch()
-        size_grip = QSizeGrip(self.container)
-        size_grip.setFixedSize(SIZE_GRIP_SIZE, SIZE_GRIP_SIZE)
-        size_grip.setCursor(Qt.SizeFDiagCursor)
-        size_grip.setStyleSheet("QSizeGrip { background: transparent; }")
-        footer_layout.addWidget(size_grip, alignment=Qt.AlignBottom | Qt.AlignRight)
- 
-        self.main_layout.addLayout(footer_layout)
+        # EdgeResizeController owns window edges so the handle sits on the card, not the shadow.
  
         self.settings_page = SettingsPage(close_callback=self.hide, on_theme_changed=self.restart_app)
         self.library_page = LibraryPage(close_callback=self.hide, on_chat_selected=self._request_open_chat, on_delete_chat=self._delete_chat_from_library)
@@ -786,6 +851,18 @@ class BuddyWindow(QWidget):
         if not core.get_profile().get("onboarding_complete"):
             self.show_onboarding_view()
         window_layout.addWidget(self.container)
+        self._resize_controller = EdgeResizeController(
+            self,
+            self.container,
+            margin=18,
+            band=14,
+            min_size=self.minimumSize(),
+            accent=PRIMARY_COLOR,
+        )
+        self.header_bar.setCursor(Qt.OpenHandCursor)
+        self.header_bar.setToolTip("Drag to move Buddy")
+        self.header_bar.installEventFilter(self)
+        self.title_label.installEventFilter(self)
  
     def _update_attachment_controls(self):
         files = getattr(self.input_box, "attached_files", [])
@@ -1284,6 +1361,13 @@ class BuddyWindow(QWidget):
             label = "Refining the plan…"
         elif etype == "malformed_retry":
             label = "Retrying…"
+        elif etype == "tool_done":
+            name = event.get("name", "tool")
+            secs = event.get("duration")
+            ok = event.get("ok", True)
+            label = "%s %s" % (name, "done" if ok else "failed")
+            if isinstance(secs, (int, float)):
+                label = "%s · %.1fs" % (label, secs)
         if label:
             self._thinking_bubble.add_progress_step(label)
 
@@ -1389,9 +1473,9 @@ class BuddyWindow(QWidget):
         detail_label.setStyleSheet(f"color: {DANGER_COLOR}; font-size: 12px; background: transparent; border: none;")
         card_layout.addWidget(detail_label)
 
-        retry_btn = QPushButton("Retry")
+        retry_btn = QPushButton("Try again")
         retry_btn.setCursor(Qt.PointingHandCursor)
-        retry_btn.setToolTip("Send that message again")
+        retry_btn.setToolTip("Retry only the failed send")
         retry_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {DANGER_COLOR}; color: white; border: none;

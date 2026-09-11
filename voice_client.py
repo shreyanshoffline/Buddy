@@ -97,7 +97,7 @@ def _prediction_id(prediction):
     return None
 
 
-def _wait_for_output(prediction, cancel_check=None):
+def _wait_for_output(prediction, cancel_check=None, on_partial=None):
     if not isinstance(prediction, dict):
         return prediction
 
@@ -135,6 +135,19 @@ def _wait_for_output(prediction, cancel_check=None):
 
         result = poll_resp.json()
         status = result.get("status")
+        if on_partial:
+            logs = result.get("logs") or ""
+            partial = result.get("output")
+            snippet = ""
+            if isinstance(partial, str) and partial.strip():
+                snippet = partial.strip()
+            elif logs:
+                snippet = str(logs).strip().splitlines()[-1][:180]
+            if snippet:
+                try:
+                    on_partial(snippet)
+                except Exception:
+                    pass
         if status == "succeeded":
             return result.get("output")
         if status == "failed":
@@ -148,7 +161,7 @@ def _wait_for_output(prediction, cancel_check=None):
     raise VoiceError("Voice service is taking too long to respond. Try again in a moment.")
 
 
-def _create_prediction(path, input_payload, cancel_check=None):
+def _create_prediction(path, input_payload, cancel_check=None, on_partial=None):
     """POST a prediction. Body is only {"input": ...} — never model or version."""
     try:
         resp = requests.post(
@@ -165,7 +178,7 @@ def _create_prediction(path, input_payload, cancel_check=None):
             "Voice service rejected the request (%s): %s"
             % (resp.status_code, resp.text[:200])
         )
-    return _wait_for_output(resp.json(), cancel_check=cancel_check)
+    return _wait_for_output(resp.json(), cancel_check=cancel_check, on_partial=on_partial)
 
 
 def _as_transcript(output):
@@ -284,7 +297,7 @@ def _whisper_transcribe(audio_url, audio_bytes, cancel_check=None):
     return _as_transcript(output)
 
 
-def transcribe_audio(audio_url, cancel_check=None, engine=None):
+def transcribe_audio(audio_url, cancel_check=None, engine=None, on_partial=None):
     audio_bytes = _audio_bytes(audio_url)
     if engine is None:
         try:
@@ -297,11 +310,21 @@ def transcribe_audio(audio_url, cancel_check=None, engine=None):
     order = ("whisper", "gemini") if engine == "whisper" else ("gemini", "whisper")
     for name in order:
         try:
+            if on_partial:
+                try:
+                    on_partial("Listening with %s…" % name)
+                except Exception:
+                    pass
             if name == "gemini":
                 text = _gemini_transcribe(audio_bytes, cancel_check=cancel_check)
             else:
                 text = _whisper_transcribe(audio_url, audio_bytes, cancel_check=cancel_check)
             if text:
+                if on_partial:
+                    try:
+                        on_partial(text)
+                    except Exception:
+                        pass
                 return text
         except Exception as exc:
             errors.append("%s: %s" % (name, exc))
@@ -311,7 +334,7 @@ def transcribe_audio(audio_url, cancel_check=None, engine=None):
     raise VoiceError("Didn't catch that — no speech was detected in the recording.")
 
 
-def synthesize_speech(text, voice=DEFAULT_TTS_VOICE, cancel_check=None):
+def synthesize_speech(text, voice=DEFAULT_TTS_VOICE, cancel_check=None, on_partial=None):
     """Paid Replicate TTS. Talk page no longer uses this — system voices are free."""
     if not text or not text.strip():
         raise VoiceError("Nothing to say — the reply was empty.")
@@ -323,6 +346,7 @@ def synthesize_speech(text, voice=DEFAULT_TTS_VOICE, cancel_check=None):
             "audio_format": "mp3",
         },
         cancel_check=cancel_check,
+        on_partial=on_partial,
     )
     url = _as_audio_url(output)
     if not url:

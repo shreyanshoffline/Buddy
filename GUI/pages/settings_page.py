@@ -331,7 +331,7 @@ class SettingsPage(CardPage):
             btn.setCursor(Qt.PointingHandCursor)
             btn.setToolTip(label)
             is_selected = (key == CURRENT_ACCENT)
-            border = f"2.5px solid {CARD_TEXT_COLOR}" if is_selected else "2px solid rgba(0,0,0,0.1)"
+            border = f"2.5px solid {CARD_TEXT_COLOR}" if is_selected else "2px solid rgba(0,0,0,26)"
             btn.setStyleSheet(f"""
                 QPushButton {{ background: {hexval}; border-radius: 11px; border: {border}; }}
                 QPushButton:hover {{ border: 2.5px solid {CARD_TEXT_COLOR}; }}
@@ -373,7 +373,7 @@ class SettingsPage(CardPage):
         core.update_profile(theme_color=key)
         for k, btn in self.swatch_buttons.items():
             selected = (k == key)
-            border = f"3px solid {CARD_TEXT_COLOR}" if selected else "2px solid rgba(0,0,0,0.1)"
+            border = f"3px solid {CARD_TEXT_COLOR}" if selected else "2px solid rgba(0,0,0,26)"
             hexval = dict((opt[0], opt[2]) for opt in THEME_OPTIONS)[k]
             btn.setStyleSheet(f"""
                 QPushButton {{ background: {hexval}; border-radius: 14px; border: {border}; }}

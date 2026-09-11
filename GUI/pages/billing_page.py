@@ -369,7 +369,7 @@ class BillingPage(CardPage):
 
     def _plan_frame_style(self, highlighted):
         border = f"2px solid {PRIMARY_COLOR}" if highlighted else f"1px solid {BORDER_COLOR}"
-        bg = ACTIVE_BG_COLOR if highlighted else "rgba(255,255,255,0.04)"
+        bg = ACTIVE_BG_COLOR if highlighted else "rgba(255,255,255,10)"
         return f"QFrame {{ background: {bg}; border: {border}; border-radius: 12px; }}"
 
     def _build_plan_detail_pages(self):
@@ -433,7 +433,7 @@ class BillingPage(CardPage):
         page_layout.addWidget(desc)
 
         features_box = QFrame()
-        features_box.setStyleSheet(f"QFrame {{ background: rgba(255,255,255,0.04); border: 1px solid {BORDER_COLOR}; border-radius: 12px; }}")
+        features_box.setStyleSheet(f"QFrame {{ background: rgba(255,255,255,10); border: 1px solid {BORDER_COLOR}; border-radius: 12px; }}")
         features_layout = QVBoxLayout(features_box)
         features_layout.setContentsMargins(12, 12, 12, 12)
         features_layout.setSpacing(8)
@@ -449,7 +449,7 @@ class BillingPage(CardPage):
 
         if key == "hacky":
             link_box = QFrame()
-            link_box.setStyleSheet(f"QFrame {{ background: rgba(255,255,255,0.04); border: 1px solid {BORDER_COLOR}; border-radius: 12px; }}")
+            link_box.setStyleSheet(f"QFrame {{ background: rgba(255,255,255,10); border: 1px solid {BORDER_COLOR}; border-radius: 12px; }}")
             link_layout = QVBoxLayout(link_box)
             link_layout.setContentsMargins(12, 12, 12, 12)
             link_layout.setSpacing(8)
@@ -628,8 +628,8 @@ class BillingPage(CardPage):
         table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         table.horizontalHeader().setStretchLastSection(True)
         table.setStyleSheet(f"""
-            QTableWidget {{ background: rgba(255,255,255,0.04); border: 1px solid {BORDER_COLOR}; border-radius: 8px; color: {CARD_TEXT_COLOR}; }}
-            QHeaderView::section {{ background: rgba(255,255,255,0.05); color: {CARD_TEXT_COLOR}; padding: 8px; border: 1px solid {BORDER_COLOR}; }}
+            QTableWidget {{ background: rgba(255,255,255,10); border: 1px solid {BORDER_COLOR}; border-radius: 8px; color: {CARD_TEXT_COLOR}; }}
+            QHeaderView::section {{ background: rgba(255,255,255,13); color: {CARD_TEXT_COLOR}; padding: 8px; border: 1px solid {BORDER_COLOR}; }}
         """)
         rows = [
             ("Usage", "Higher usage", "Maximum usage"),
@@ -647,7 +647,7 @@ class BillingPage(CardPage):
         layout.addWidget(table)
 
         button_box = QFrame()
-        button_box.setStyleSheet(f"QFrame {{ background: rgba(255,255,255,0.04); border: 1px solid {BORDER_COLOR}; border-radius: 12px; }}")
+        button_box.setStyleSheet(f"QFrame {{ background: rgba(255,255,255,10); border: 1px solid {BORDER_COLOR}; border-radius: 12px; }}")
         button_layout = QVBoxLayout(button_box)
         button_layout.setContentsMargins(12, 12, 12, 12)
         button_layout.setSpacing(10)

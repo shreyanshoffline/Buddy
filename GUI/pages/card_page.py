@@ -79,7 +79,7 @@ class CardPage(QWidget):
         self.main_layout.addWidget(title_label)
 
         self.account_chip = QFrame()
-        self.account_chip.setStyleSheet("QFrame { background: rgba(51, 142, 218, 0.10); border: 1px solid rgba(51, 142, 218, 0.24); border-radius: 10px; }")
+        self.account_chip.setStyleSheet("QFrame { background: rgba(51, 142, 218, 26); border: 1px solid rgba(51, 142, 218, 61); border-radius: 10px; }")
         account_layout = QVBoxLayout(self.account_chip)
         account_layout.setContentsMargins(10, 7, 10, 7)
         account_layout.setSpacing(1)

@@ -43,14 +43,72 @@ def is_packaged():
     return bool(getattr(sys, "frozen", False))
 
 
+BUNDLE_ID = "com.hackclub.buddy"
+
+
+def _app_bundle():
+    if not is_packaged():
+        return None
+    exe = Path(sys.executable).resolve()
+    for parent in exe.parents:
+        if parent.suffix == ".app":
+            return parent
+    return None
+
+
+def bundle_id():
+    app = _app_bundle()
+    if app is None:
+        return BUNDLE_ID
+    info = app / "Contents" / "Info.plist"
+    if info.exists():
+        try:
+            raw = info.read_text(errors="ignore")
+            marker = "<key>CFBundleIdentifier</key>"
+            if marker in raw:
+                after = raw.split(marker, 1)[1]
+                start = after.find("<string>")
+                end = after.find("</string>")
+                if start != -1 and end != -1:
+                    return after[start + 8:end].strip() or BUNDLE_ID
+        except Exception:
+            pass
+    return BUNDLE_ID
+
+
+def codesign_info():
+    """Signed Buddy.app identity. Empty when running from source."""
+    app = _app_bundle()
+    if app is None:
+        return {"signed": False, "authority": "", "identifier": bundle_id()}
+    import subprocess
+    result = subprocess.run(
+        ["codesign", "-dv", "--verbose=2", str(app)],
+        capture_output=True, text=True, check=False,
+    )
+    text = (result.stdout or "") + "\n" + (result.stderr or "")
+    authority = ""
+    for line in text.splitlines():
+        if line.startswith("Authority=") and "Developer ID" in line:
+            authority = line.split("=", 1)[1].strip()
+            break
+        if line.startswith("Authority=") and not authority:
+            authority = line.split("=", 1)[1].strip()
+    return {
+        "signed": "Signature=" in text or "Authority=" in text,
+        "authority": authority,
+        "identifier": bundle_id(),
+        "path": str(app),
+    }
+
+
 def process_identity():
     """What macOS is likely to show in Privacy & Security for this process."""
+    app = _app_bundle()
+    if app is not None:
+        return app.stem
     if is_packaged():
-        exe = Path(sys.executable).resolve()
-        for parent in exe.parents:
-            if parent.suffix == ".app":
-                return parent.stem
-        return exe.stem or "Buddy"
+        return Path(sys.executable).resolve().stem or "Buddy"
     name = Path(sys.executable).name
     if name.lower().startswith("python"):
         return "Python (source run — not Buddy.app)"

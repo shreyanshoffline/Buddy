@@ -134,9 +134,9 @@ class DevChamber(QWidget):
         self.content_frame.setVisible(False)
         self.content_frame.setStyleSheet("""
             QFrame {
-                background-color: rgba(0, 0, 0, 0.04);
+                background-color: rgba(0, 0, 0, 10);
                 border-radius: 8px;
-                border: 1px solid rgba(0, 0, 0, 0.06);
+                border: 1px solid rgba(0, 0, 0, 15);
                 margin-top: 4px;
             }
         """)

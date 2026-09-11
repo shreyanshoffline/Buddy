@@ -1,0 +1,5 @@
+Buddy complete tree
+Base: GitHub shreyanshoffline/Buddy ed39cd7
+Plus: card-edge resize, home size reset, Slack+Keychain, DB recovery,
+action receipts, isolated tests, signed-app TCC helpers, release doctor.
+Replace your local Buddy folder with this folder.

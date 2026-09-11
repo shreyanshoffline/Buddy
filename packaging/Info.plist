@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Buddy</string>
+    <key>CFBundleDisplayName</key>
+    <string>Buddy</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.hackclub.buddy</string>
+    <key>CFBundleVersion</key>
+    <string>1.0.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Buddy uses the microphone so you can talk to it. Buddy does not record when Talk is idle.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Buddy uses the camera only when you turn Camera on in Plugins.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Buddy controls other Mac apps only when you enable that app in Plugins.</string>
+</dict>
+</plist>

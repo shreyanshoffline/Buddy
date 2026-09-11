@@ -301,6 +301,15 @@ def init_db(conn=None):
                 enabled INTEGER NOT NULL DEFAULT 0
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('schema_version', '2')"
+        )
         if owns_connection:
             conn.commit()
     except Exception:
@@ -310,6 +319,64 @@ def init_db(conn=None):
     finally:
         if owns_connection:
             conn.close()
+
+
+REQUIRED_TABLES = (
+    "conversations", "messages", "user_profile", "plugin_connections",
+    "plugin_toggles", "schema_meta",
+)
+
+
+def check_schema():
+    """Return a report. Never raises — callers can show it to the user."""
+    report = {"ok": False, "missing": [], "integrity": "unknown", "path": get_db_path()}
+    try:
+        with _connect() as conn:
+            names = {
+                row[0]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+            report["missing"] = [name for name in REQUIRED_TABLES if name not in names]
+            try:
+                report["integrity"] = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            except Exception as exc:
+                report["integrity"] = str(exc)
+            report["ok"] = not report["missing"] and report["integrity"] == "ok"
+    except Exception as exc:
+        report["integrity"] = str(exc)
+        report["ok"] = False
+    return report
+
+
+def recover_database():
+    """If buddy.db is damaged, quarantine it and create a fresh file.
+
+    Chats in the broken file stay in the .corrupt backup so they are not deleted.
+    """
+    import shutil
+    import time as _time
+
+    path = Path(get_db_path())
+    backup = None
+    if path.exists():
+        backup = path.with_name("%s.corrupt-%s" % (path.name, int(_time.time())))
+        try:
+            shutil.copy2(path, backup)
+        except Exception:
+            backup = None
+        try:
+            path.unlink()
+        except Exception:
+            pass
+    global _DB_PATH
+    _DB_PATH = None
+    init_db()
+    return {
+        "recovered": True,
+        "backup": str(backup) if backup else None,
+        "path": get_db_path(),
+        "schema": check_schema(),
+    }
 
 
 # --- Conversations ---
@@ -1009,27 +1076,41 @@ def find_recent_chat_snippets(query_text, limit=3, exclude_conversation_id=None)
 
 def set_plugin_connection(service, access_token, account_label=None):
     import time
+    from tools import keychain
+    stored_how = keychain.set_secret("plugin.%s" % service, access_token)
+    marker = "keychain" if stored_how == "keychain" else "sidecar"
     with _connect() as conn:
         conn.execute(
             "INSERT INTO plugin_connections (service, access_token, account_label, connected_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(service) DO UPDATE SET access_token = excluded.access_token, "
             "account_label = excluded.account_label, connected_at = excluded.connected_at",
-            (service, access_token, account_label, time.time()),
+            (service, marker, account_label, time.time()),
         )
 
 
 def remove_plugin_connection(service):
+    from tools import keychain
+    keychain.delete_secret("plugin.%s" % service)
     with _connect() as conn:
         conn.execute("DELETE FROM plugin_connections WHERE service = ?", (service,))
 
 
 def get_plugin_connection(service):
+    from tools import keychain
     with _connect() as conn:
         row = conn.execute(
             "SELECT service, access_token, account_label, connected_at FROM plugin_connections WHERE service = ?",
             (service,),
         ).fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    data = dict(row)
+    secret = keychain.get_secret("plugin.%s" % service)
+    if secret:
+        data["access_token"] = secret
+    elif data.get("access_token") in ("keychain", "sidecar", "", None):
+        data["access_token"] = None
+    return data
 
 
 def list_plugin_connections():
