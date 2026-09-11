@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QSystemTrayIcon, QMenu, QGraphicsDropShadowEffect, QSizeGrip,
     QDialog, QRadioButton, QButtonGroup, QSizePolicy, QGraphicsOpacityEffect,
-    QStackedWidget, QLineEdit, QInputDialog, QMessageBox, QComboBox
+    QStackedWidget, QLineEdit, QInputDialog, QMessageBox, QComboBox, QBoxLayout
 )
 from PySide6.QtCore import (
     Qt, QEvent, QPoint, QVariantAnimation, QEasingCurve,
@@ -46,7 +46,10 @@ from .theme import (
     PREVIEW_PANEL_WIDTH_RATIO, PREVIEW_PANEL_HEIGHT_RATIO
 )
 from .sidebar import Sidebar
-from .pages import SettingsPage, LibraryPage, BillingPage, ArtifactsPage, OnboardingPage, TalkToBuddyPage, PluginsPage
+from .pages import (
+    SettingsPage, LibraryPage, BillingPage, ArtifactsPage, OnboardingPage,
+    TalkToBuddyPage, PluginsPage, ModelConfigurationPage,
+)
 
 class SendWorker(QThread):
     """Runs send_and_save_message off the main thread so the UI stays responsive."""
@@ -202,6 +205,9 @@ class BuddyWindow(QWidget):
         self.main_layout.setAlignment(self.greeting, Qt.AlignCenter)
  
         self._position_preview_overlay()
+        # The composer controls intentionally stay in one compact row.  On a
+        # narrow window the model selector elides instead of turning the
+        # composer into a tall stack.
  
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -433,11 +439,13 @@ class BuddyWindow(QWidget):
             for key in LEVELS:
                 self.thinking_combo.addItem(LEVEL_LABELS[key], key)
             self.thinking_combo.setCurrentText(LEVEL_LABELS[stored_thinking_level()])
+            self._last_effort_key = stored_thinking_level()
             self.thinking_combo.currentIndexChanged.connect(self._on_thinking_changed)
         except Exception:
             self.thinking_combo.addItems(["Low", "Medium", "High", "Extra", "MAX"])
             self.thinking_combo.setCurrentText("Medium")
-        self.header_layout.addWidget(self.thinking_combo)
+            self._last_effort_key = "medium"
+        self.thinking_combo.addItem("Configure models…", "__configure_models__")
         self.header_layout.addWidget(self.incognito_btn)
         self.header_layout.addWidget(self.privacy_btn)
         self.header_layout.addWidget(self.close_btn)
@@ -525,7 +533,7 @@ class BuddyWindow(QWidget):
             }}
         """)
         input_outer = QVBoxLayout(self.input_container)
-        input_outer.setContentsMargins(0, 6, 0, 6)
+        input_outer.setContentsMargins(0, 5, 0, 6)
         input_outer.setSpacing(0)
 
         # Tray lives inside the frame, shown only when files attached
@@ -533,9 +541,10 @@ class BuddyWindow(QWidget):
         self.attachment_tray.setContentsMargins(10, 4, 10, 0)
         input_outer.addWidget(self.attachment_tray)
 
-        # Row: attach btn | text field | send btn
+        # Keep the writing area roomy, with every action in one familiar
+        # document-style control strip underneath it.
         input_row = QHBoxLayout()
-        input_row.setContentsMargins(8, 0, 8, 0)
+        input_row.setContentsMargins(10, 0, 10, 0)
         input_row.setSpacing(4)
 
         self.attach_button = QPushButton()
@@ -573,10 +582,70 @@ class BuddyWindow(QWidget):
         """)
         self.send_button.clicked.connect(self.handle_send)
 
-        input_row.addWidget(self.attach_button, 0, Qt.AlignBottom)
         input_row.addWidget(self.input_box, 1)
-        input_row.addWidget(self.send_button, 0, Qt.AlignBottom)
         input_outer.addLayout(input_row)
+
+        controls = QBoxLayout(QBoxLayout.LeftToRight)
+        controls.setContentsMargins(10, 2, 10, 0)
+        controls.setSpacing(5)
+        self.composer_controls_layout = controls
+
+        controls.addWidget(self.attach_button, 0, Qt.AlignVCenter)
+
+        self.chat_model_combo = QComboBox()
+        self.chat_model_combo.setEditable(False)
+        self.chat_model_combo.setMinimumWidth(0)
+        self.chat_model_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.chat_model_combo.setCursor(Qt.PointingHandCursor)
+        self.chat_model_combo.setToolTip("Choose the model used for regular chat")
+        self.chat_model_combo.setStyleSheet(f"""
+            QComboBox {{
+                background: {INPUT_BG}; color: {TEXT_COLOR_DARK};
+                border: 1px solid {BORDER_COLOR}; border-radius: 8px;
+                padding: 4px 7px; font-size: 10px;
+            }}
+            QComboBox:hover {{ border: 1px solid {PRIMARY_COLOR}; }}
+            QComboBox QAbstractItemView {{
+                background: {INPUT_BG}; color: {TEXT_COLOR_DARK};
+                selection-background-color: {ACTIVE_BG_COLOR};
+            }}
+        """)
+        try:
+            from core.model_config import MODEL_OPTIONS, display_model_name, load_model_config
+            saved_models = load_model_config()
+            options = list(dict.fromkeys(list(MODEL_OPTIONS) + [saved_models["chat"]]))
+            for model_id in options:
+                self.chat_model_combo.addItem(display_model_name(model_id), model_id)
+            self.chat_model_combo.setCurrentIndex(
+                self.chat_model_combo.findData(saved_models["chat"])
+            )
+        except Exception:
+            self.chat_model_combo.addItem("google/gemini-2.5-flash-lite")
+        self.chat_model_combo.currentIndexChanged.connect(self._on_chat_model_changed)
+        controls.addWidget(self.chat_model_combo, 1)
+
+        self.thinking_combo.setFixedWidth(86)
+        self.thinking_combo.setToolTip(
+            "Choose how much work Buddy uses. Configure models is in this menu."
+        )
+        controls.addWidget(self.thinking_combo)
+
+        self.voice_button = QPushButton()
+        self.voice_button.setFixedSize(ATTACH_BUTTON_SIZE, ATTACH_BUTTON_SIZE)
+        self.voice_button.setCursor(Qt.PointingHandCursor)
+        self.voice_button.setToolTip("Start a voice conversation")
+        self.voice_button.setAccessibleName("Start voice conversation")
+        self.voice_button.setIcon(get_svg_icon(ICONS["mic"], TEXT_COLOR_SUBTITLE, ATTACH_ICON_SIZE))
+        self.voice_button.setIconSize(QSize(ATTACH_ICON_SIZE, ATTACH_ICON_SIZE))
+        self.voice_button.setStyleSheet(f"""
+            QPushButton {{ background: transparent; border: none; border-radius: 14px; }}
+            QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+            QPushButton:pressed {{ background: {PRESSED_BG_COLOR}; }}
+        """)
+        self.voice_button.clicked.connect(self.show_talk_view)
+        controls.addWidget(self.voice_button, 0, Qt.AlignVCenter)
+        controls.addWidget(self.send_button, 0, Qt.AlignVCenter)
+        input_outer.addLayout(controls)
 
         self.attachment_tray.file_removed.connect(self.input_box.remove_attachment)
         self.attachment_tray.preview_requested.connect(self._show_attachment_preview)
@@ -690,6 +759,10 @@ class BuddyWindow(QWidget):
         self.artifacts_page = ArtifactsPage(close_callback=self.hide)
         self.talk_page = TalkToBuddyPage(close_callback=self.hide)
         self.plugins_page = PluginsPage(close_callback=self.hide)
+        self.model_configuration_page = ModelConfigurationPage(
+            close_callback=self.show_chat_view,
+            on_saved=self._refresh_model_controls,
+        )
         self.onboarding_page = OnboardingPage(close_callback=self.hide, on_complete=self.show_chat_view)
         self.content_stack.addWidget(self.settings_page)
         self.content_stack.addWidget(self.library_page)
@@ -697,11 +770,13 @@ class BuddyWindow(QWidget):
         self.content_stack.addWidget(self.artifacts_page)
         self.content_stack.addWidget(self.talk_page)
         self.content_stack.addWidget(self.plugins_page)
+        self.content_stack.addWidget(self.model_configuration_page)
         self.content_stack.addWidget(self.onboarding_page)
  
         self.sidebar.btn_new.clicked.connect(self.show_chat_view)
         self.sidebar.btn_lib.clicked.connect(self.show_library_view)
         self.sidebar.btn_artifacts.clicked.connect(self.show_artifacts_view)
+        self.sidebar.btn_models.clicked.connect(self.show_model_configuration_view)
         self.sidebar.btn_talk.clicked.connect(self.show_talk_view)
         self.sidebar.btn_plugins.clicked.connect(self.show_plugins_view)
         self.sidebar.btn_billing.clicked.connect(self.show_billing_view)
@@ -878,12 +953,54 @@ class BuddyWindow(QWidget):
         self.content_stack.setCurrentWidget(self.talk_page)
         self._set_active_nav(self.sidebar.btn_talk)
 
-    def _on_thinking_changed(self):
+    def _on_thinking_changed(self, _index=None):
         try:
+            if self.thinking_combo.currentData() == "__configure_models__":
+                self._restore_effort_combo()
+                self.show_model_configuration_view()
+                return
             from core.thinking import set_thinking_level
             set_thinking_level(self.thinking_combo.currentData(), manual=True)
+            self._last_effort_key = self.thinking_combo.currentData()
         except Exception:
             pass
+
+    def _restore_effort_combo(self):
+        key = getattr(self, "_last_effort_key", "medium")
+        for index in range(self.thinking_combo.count()):
+            if self.thinking_combo.itemData(index) == key:
+                self.thinking_combo.blockSignals(True)
+                self.thinking_combo.setCurrentIndex(index)
+                self.thinking_combo.blockSignals(False)
+                return
+
+    def _on_chat_model_changed(self, index):
+        model_id = (self.chat_model_combo.itemData(index) or "").strip()
+        if not model_id:
+            return
+        try:
+            from core.model_config import set_model
+            set_model("chat", model_id)
+        except Exception:
+            pass
+
+    def _refresh_model_controls(self):
+        try:
+            from core.model_config import display_model_name, load_model_config
+            model_id = load_model_config()["chat"]
+            self.chat_model_combo.blockSignals(True)
+            if self.chat_model_combo.findText(model_id) < 0:
+                self.chat_model_combo.addItem(display_model_name(model_id), model_id)
+            self.chat_model_combo.setCurrentIndex(self.chat_model_combo.findData(model_id))
+            self.chat_model_combo.blockSignals(False)
+        except Exception:
+            pass
+
+    def show_model_configuration_view(self):
+        if hasattr(self.model_configuration_page, "reload_from_db"):
+            self.model_configuration_page.reload_from_db()
+        self.content_stack.setCurrentWidget(self.model_configuration_page)
+        self._set_active_nav(self.sidebar.btn_models)
 
     def show_plugins_view(self):
         if hasattr(self.plugins_page, "reload_from_db"):
@@ -894,6 +1011,7 @@ class BuddyWindow(QWidget):
     def _set_active_nav(self, active_btn):
         for btn in (
             self.sidebar.btn_new, self.sidebar.btn_lib, self.sidebar.btn_artifacts,
+            self.sidebar.btn_models,
             self.sidebar.btn_talk, self.sidebar.btn_plugins,
             self.sidebar.btn_billing, self.sidebar.btn_settings,
         ):
@@ -1051,6 +1169,8 @@ class BuddyWindow(QWidget):
         self.input_box.setReadOnly(not enabled)
         self.send_button.setEnabled(enabled)
         self.attach_button.setEnabled(enabled)
+        if hasattr(self, "voice_button"):
+            self.voice_button.setEnabled(enabled)
 
     def handle_send(self, forced_text=None):
         if self._is_sending:

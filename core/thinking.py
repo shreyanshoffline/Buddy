@@ -7,6 +7,7 @@ how hard a turn works (model, tokens, worker steps, timeout). Image
 generation still uses the image model.
 """
 from storage import db
+from core.model_config import load_model_config, worker_model_for_effort
 
 LEVELS = ("low", "medium", "high", "extra", "max")
 LEVEL_LABELS = {
@@ -118,7 +119,13 @@ def set_thinking_level(level, manual=True):
 
 
 def thinking_config():
-    return dict(CONFIG[effective_thinking_level()])
+    level = effective_thinking_level()
+    config = dict(CONFIG[level])
+    model_config = load_model_config()
+    config["manager"] = model_config["manager"]
+    config["worker"] = worker_model_for_effort(level)
+    config["deep"] = model_config["chat"]
+    return config
 
 
 def listening_model():

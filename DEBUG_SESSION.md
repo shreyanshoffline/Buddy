@@ -3,6 +3,8 @@
 Date: 2026-09-09  
 Scope: current Buddy desktop build, with emphasis on truthfulness, voice, permissions, responsive layout, and release readiness.
 
+Follow-up: the `macos_release_pack` was merged on 2026-09-10. The results below include the post-merge validation.
+
 ## What was checked
 
 - Parsed all 43 Python files successfully.
@@ -29,29 +31,28 @@ Billing and Plugins also stayed within their viewport with no horizontal scrollb
 
 ## Release blockers
 
-### P0 — Voice is not yet a real conversation
+### P0 — Voice still needs signed-app testing
 
-The page calls itself a live voice conversation, but the implementation is push-to-talk turns:
+The release pack now adds the intended live-conversation state machine and controls:
 
-- record one complete clip;
-- upload and transcribe it;
-- wait for the model;
-- speak the complete reply;
-- return to idle.
+- Idle, Listening, Thinking, Speaking, Paused, Interrupted, and Error states;
+- Pause/Resume, Stop speaking, End chat, and Delete chat actions;
+- microphone monitoring while Buddy speaks, including interruption detection;
+- end-of-utterance timing and level-reactive waveform animation.
 
-The mic is disabled while Buddy thinks or speaks. There is no pause button, stop-speaking button, voice activity detection, partial transcript, streaming response, or barge-in. A user cannot naturally interrupt Buddy.
+The controls now behave correctly in offscreen tests, but actual microphone permission, speech recognition, TTS cancellation, and interruption latency still need testing on a signed Buddy.app.
 
 Acceptance test: while Buddy is speaking, the user says “stop.” Speech must stop promptly, the state must become Listening, and the next user utterance must be accepted without restarting the page.
 
-### P0 — Permission toggles are not proof of permission
+### P0 — Permission probes still need signed-app testing
 
-The macOS rows open the correct-looking System Settings panel, but the switch is saved as on before macOS confirms that the Buddy process received access. A permission granted to Terminal, Python, VS Code, or another build must not count as permission for the packaged Buddy app.
+The release pack adds process-aware permission probes and keeps system switches off until the probe succeeds. A permission granted to Terminal, Python, VS Code, or another build must not count as permission for the packaged Buddy app.
 
 Acceptance test: click a permission switch, refuse access in macOS, return to Buddy, and confirm the Buddy switch remains off and the protected action remains blocked.
 
-### P0 — Integration controls are ahead of their real wiring
+### P1 — Integration controls need provider testing
 
-Gmail is presented as an enabled universal plugin but the Plugins page does not start or confirm Gmail OAuth. GitHub integration code exists, but there is no user-facing connection flow. The conversation layer calls plugin-connection database methods that are not currently implemented in `storage/db.py`.
+The release pack adds real Gmail connection states, GitHub Device Flow wiring, and the missing plugin-connection tables. Provider authorization still needs an online test with real credentials before release.
 
 Acceptance test: every integration row must say Connect, Connected, or Not connected based on a real credential check. Clicking Connect must open the provider’s official authorization flow and return a verified account identity.
 
@@ -61,14 +62,9 @@ Acceptance test: every integration row must say Connect, Connected, or Not conne
 
 The offscreen run repeatedly reports “Could not parse stylesheet” for QFrame, QComboBox, QLineEdit, and QPushButton objects. The most likely contributors are unsupported CSS copied from the web, including `line-height`; this needs to be isolated and removed or replaced with Qt-supported styling. Release builds should start without these warnings.
 
-### P1 — Voice persistence copy disagrees with behavior
+### Resolved — Voice persistence copy
 
-The Talk to Buddy module describes voice as not saved by default, but it creates a “Voice chat” conversation and persists user and assistant turns. The visible hint says a voice chat can be saved to Library, which is ambiguous because it is already being saved.
-
-Choose one truthful behavior before release:
-
-- private by default, with an explicit Save button; or
-- saved automatically, with copy that says so and a visible Delete conversation action.
+Voice copy now says the session is saved in Library, and the page includes an explicit Delete chat action.
 
 ### P1 — Native release identity is not verified
 
@@ -84,6 +80,16 @@ The narrow Billing and Plugins screens are usable and do not horizontally overfl
 
 The blue waveform animates continuously, including when idle. It is visually pleasant but does not yet represent microphone input or speaking amplitude. It should become quieter at idle, react to input while listening, and react to actual playback while speaking.
 
+## Post-merge validation
+
+- 181 project Python files parsed successfully.
+- The existing end-to-end suite passed all six checks after the merge.
+- Plugin connection storage initializes and returns an empty connection list on a fresh database.
+- File tools remain blocked by default.
+- Narrow Talk to Buddy actions now stack at 360 px; wide actions remain side by side.
+- Billing, Plugins, and Talk to Buddy content fit their 360 px viewport with horizontal scrolling disabled.
+- Qt stylesheet parser warnings still appear and remain a follow-up item.
+
 ## Debugging conclusion
 
-The foundation is healthy enough to continue: parsing, construction, the existing data-flow tests, and the recent no-horizontal-scroll work pass. The first macOS release should not be declared ready until the three P0 items—real interruptible voice, verified macOS permissions, and honest integration connection states—are implemented and tested on a signed app build.
+The release pack closes the main code-level gaps identified in this session. The first macOS release should still wait for signed-app permission testing, real provider authorization tests, audio interruption testing, and cleanup of the remaining Qt stylesheet warnings.

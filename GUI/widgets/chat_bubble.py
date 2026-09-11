@@ -269,7 +269,6 @@ class ChatBubble(QWidget):
                 QLabel {{
                     color: {CHAT_BUBBLE_USER_TEXT};
                     font-size: {UI_CHAT_FONT_SIZE}px;
-                    line-height: {UI_CHAT_LINE_HEIGHT};
                 }}
                 QLabel a {{ color: {CHAT_BUBBLE_USER_TEXT}; text-decoration: underline; }}
             """)
@@ -289,7 +288,6 @@ class ChatBubble(QWidget):
                 QLabel {{
                     color: {CHAT_BUBBLE_AGENT_TEXT};
                     font-size: {UI_CHAT_FONT_SIZE}px;
-                    line-height: {UI_CHAT_LINE_HEIGHT};
                 }}
                 QLabel a {{ color: {PRIMARY_COLOR}; text-decoration: none; font-weight: 600; }}
                 QLabel pre {{

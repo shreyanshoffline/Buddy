@@ -225,14 +225,16 @@ class ChatInput(QTextEdit):
                 color: #333;
             }
         """)
-        self.setFixedHeight(36)
+        # A comfortable writing field, while the controls stay in one compact
+        # strip below it.
+        self.setFixedHeight(58)
         self.textChanged.connect(self.adjust_height)
 
     def adjust_height(self):
         doc_height = self.document().size().height()
         if doc_height <= 0 or doc_height > 500:
             return
-        self.setFixedHeight(max(36, min(int(doc_height) + 12, 120)))
+        self.setFixedHeight(max(58, min(int(doc_height) + 26, 140)))
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):

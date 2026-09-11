@@ -1076,9 +1076,26 @@ def music_control(action: str) -> str:
 # =============================================================================
 
 def gmail_connection_status():
-    """Cheap, local — just checks whether we're already holding a token.
-    Doesn't hit the network."""
-    return {"connected": os.path.exists(TOKEN_PATH)}
+    """Cheap, local status for the Plugins Connect row. Does not hit the network."""
+    token_ok = os.path.exists(TOKEN_PATH)
+    creds_ok = os.path.exists(CREDS_PATH)
+    email = ""
+    if token_ok:
+        try:
+            import json
+            with open(TOKEN_PATH, "r") as handle:
+                payload = json.load(handle)
+            email = payload.get("email") or payload.get("account") or ""
+        except Exception:
+            email = ""
+    return {
+        "connected": token_ok,
+        "available": bool(HAS_GMAIL and (token_ok or creds_ok)),
+        "has_libraries": bool(HAS_GMAIL),
+        "has_credentials": creds_ok,
+        "credentials_path": CREDS_PATH,
+        "email": email,
+    }
 
 
 def gmail_connect():

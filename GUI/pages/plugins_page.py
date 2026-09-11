@@ -1,14 +1,14 @@
 """Plugins — what Buddy can use on this Mac.
 
 Toggles persist in the profile. Mac app rows check whether the .app exists.
-Permission rows open the matching macOS Privacy & Security panel. macOS still
-requires the user to approve Buddy there; a permission granted to Terminal or
-VS Code is not automatically a permission granted to Buddy.
+Permission switches stay off until a probe of *this* process succeeds.
+Gmail and GitHub show Connect / Connected / Not connected / Unavailable
+from a real credential check.
 """
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QThread, Signal as QtSignal, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
@@ -52,6 +52,7 @@ from ..theme import (
     TEXT_COLOR_MUTED,
 )
 from ..widgets import ToggleSwitch
+from tools import macos_permissions
 
 MAC_APPS = [
     ("messages", "Messages", [
@@ -73,29 +74,6 @@ MAC_APPS = [
     ]),
 ]
 
-MACOS_PRIVACY_PANELS = {
-    "full_disk_access": (
-        "Full Disk Access",
-        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles",
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
-    ),
-    "folder_access": (
-        "Files & Folders",
-        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_FilesAndFolders",
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders",
-    ),
-    "microphone": (
-        "Microphone",
-        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone",
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
-    ),
-    "camera": (
-        "Camera",
-        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Camera",
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera",
-    ),
-}
-
 
 def _app_installed(paths):
     if sys.platform != "darwin":
@@ -103,11 +81,48 @@ def _app_installed(paths):
     return any(Path(p).exists() for p in paths)
 
 
+class _GmailConnectWorker(QThread):
+    connected = QtSignal(str)
+    failed = QtSignal(str)
+
+    def run(self):
+        try:
+            from tools import tools as tools_mod
+            email = tools_mod.gmail_connect()
+            self.connected.emit(email or "connected")
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class _GitHubDeviceWorker(QThread):
+    connected = QtSignal(str)
+    failed = QtSignal(str)
+
+    def __init__(self, device_code, interval):
+        super().__init__()
+        self.device_code = device_code
+        self.interval = interval
+        self._cancelled = False
+
+    def run(self):
+        try:
+            from tools import integrations
+            import core
+            token = integrations.github_poll_for_token(
+                self.device_code, interval=self.interval, cancel_check=lambda: self._cancelled
+            )
+            username = integrations.github_whoami(token)
+            core.set_plugin_connection("github", token, username)
+            self.connected.emit(username)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class PluginsPage(CardPage):
     def __init__(self, parent=None, close_callback=None):
         super().__init__(
             "Plugins",
-            "Choose what Buddy can use. Changes save immediately and apply to the next chat turn.",
+            "Choose what Buddy can use. A switch turns on only after this Buddy process is allowed.",
             parent,
             close_callback,
         )
@@ -115,13 +130,16 @@ class PluginsPage(CardPage):
         self._website_rows = []
         self._system_switches = {}
         self._system_status_labels = {}
+        self._workers = []
         self._build_thinking()
         self._build_voice()
         self._build_universal()
+        self._build_connections()
         self._build_apps()
         self._build_websites()
         self._build_system()
         self.main_layout.addStretch()
+        QTimer.singleShot(200, self._refresh_system_probes)
 
     def reload_from_db(self):
         self.plugins = load_plugins()
@@ -138,8 +156,9 @@ class PluginsPage(CardPage):
             self.speak_combo.blockSignals(True)
             self.speak_combo.setCurrentIndex(0 if speaking_model() == "system" else 1)
             self.speak_combo.blockSignals(False)
-        for key, switch in self._system_switches.items():
-            switch.setChecked(bool(self.plugins["system"].get(key, False)))
+        self._refresh_gmail_status()
+        self._refresh_github_status()
+        self._refresh_system_probes()
 
     def _make_card(self, title, subtitle=None):
         card = QFrame()
@@ -192,10 +211,17 @@ class PluginsPage(CardPage):
         )
         return combo
 
-    def _toggle_row(
-        self, title, description, checked=False, enabled=True,
-        status=None, status_key=None,
-    ):
+    def _small_button(self, text):
+        button = QPushButton(text)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {PRIMARY_COLOR}; border: 1px solid {BORDER_COLOR}; "
+            "border-radius: 7px; padding: 4px 10px; font-size: 11px; font-weight: 600; }}"
+            f"QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}"
+        )
+        return button
+
+    def _toggle_row(self, title, description, checked=False, enabled=True, status=None, status_key=None):
         row = QWidget()
         row.setMinimumWidth(0)
         row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -220,6 +246,7 @@ class PluginsPage(CardPage):
         copy.addWidget(detail)
         if status:
             status_label = QLabel(status)
+            status_label.setWordWrap(True)
             status_label.setStyleSheet(
                 f"color: {PRIMARY_COLOR}; font-size: 9px; font-weight: 600; "
                 "background: transparent; border: none;"
@@ -230,7 +257,8 @@ class PluginsPage(CardPage):
         row_layout.addLayout(copy, 1)
         switch = ToggleSwitch(checked=checked and enabled, accent=PRIMARY_COLOR)
         switch.setEnabled(enabled)
-        switch.setToolTip(f"Toggle {title}")
+        switch.setToolTip("Toggle %s" % title)
+        switch.setAccessibleName(title)
         row_layout.addWidget(switch, 0, Qt.AlignVCenter)
         return row, switch
 
@@ -321,15 +349,27 @@ class PluginsPage(CardPage):
     def _build_universal(self):
         self._section("PLUGINS", "Universal")
         layout = self._make_card("Always available", "Tools that are not tied to one Mac app.")
-        gmail_on = bool(self.plugins["universal"].get("gmail", True))
-        gmail_row, gmail = self._toggle_row(
-            "Gmail",
-            "Read recent mail and write drafts with the connected Google account.",
-            checked=gmail_on,
-            status="Uses existing Gmail tools",
+
+        gmail_row = QHBoxLayout()
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        title = QLabel("Gmail")
+        title.setStyleSheet(
+            f"color: {TEXT_COLOR_DARK}; font-size: 12px; font-weight: 600; background: transparent; border: none;"
         )
-        gmail.toggled.connect(lambda on: self._set_universal("gmail", on))
-        layout.addWidget(gmail_row)
+        text_col.addWidget(title)
+        self.gmail_status = QLabel("Not connected")
+        self.gmail_status.setWordWrap(True)
+        self.gmail_status.setStyleSheet(
+            f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; background: transparent; border: none;"
+        )
+        text_col.addWidget(self.gmail_status)
+        gmail_row.addLayout(text_col, 1)
+        self.gmail_button = self._small_button("Connect")
+        self.gmail_button.clicked.connect(self._on_gmail_button)
+        gmail_row.addWidget(self.gmail_button)
+        layout.addLayout(gmail_row)
+        self._refresh_gmail_status()
 
         search_on = bool(self.plugins["universal"].get("web_search", True))
         search_row, search = self._toggle_row(
@@ -351,6 +391,155 @@ class PluginsPage(CardPage):
         weather.toggled.connect(lambda on: self._set_universal("weather", on))
         layout.addWidget(weather_row)
 
+    def _gmail_snapshot(self):
+        try:
+            from tools import tools as tools_mod
+            return tools_mod.gmail_connection_status()
+        except Exception:
+            return {"connected": False, "available": False}
+
+    def _refresh_gmail_status(self):
+        info = self._gmail_snapshot()
+        connected = bool(info.get("connected"))
+        available = info.get("available", True)
+        if connected:
+            self.plugins["universal"]["gmail"] = True
+            save_plugins(self.plugins)
+            email = info.get("email") or "connected account"
+            self.gmail_status.setText("Connected as %s." % email)
+            self.gmail_button.setText("Disconnect")
+            self.gmail_button.setEnabled(True)
+            return
+        self.plugins["universal"]["gmail"] = False
+        save_plugins(self.plugins)
+        if not available:
+            reason = "Unavailable"
+            if not info.get("has_libraries", True):
+                reason = "Unavailable — install google-api-python-client to enable Gmail."
+            elif not info.get("has_credentials", True):
+                reason = "Unavailable — add credentials.json next to Buddy's tools folder."
+            self.gmail_status.setText(reason)
+            self.gmail_button.setText("Unavailable")
+            self.gmail_button.setEnabled(False)
+            return
+        self.gmail_status.setText("Not connected. Connect opens Google's official sign-in.")
+        self.gmail_button.setText("Connect")
+        self.gmail_button.setEnabled(True)
+
+    def _on_gmail_button(self):
+        info = self._gmail_snapshot()
+        if info.get("connected"):
+            try:
+                from tools import tools as tools_mod
+                tools_mod.gmail_disconnect()
+            except Exception:
+                pass
+            self._refresh_gmail_status()
+            return
+        self.gmail_button.setEnabled(False)
+        self.gmail_button.setText("Connecting…")
+        worker = _GmailConnectWorker()
+        worker.connected.connect(self._on_gmail_connected)
+        worker.failed.connect(self._on_gmail_failed)
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_gmail_connected(self, email):
+        self.gmail_button.setEnabled(True)
+        self._refresh_gmail_status()
+        self.gmail_status.setText("Connected as %s." % email)
+
+    def _on_gmail_failed(self, message):
+        self.gmail_button.setEnabled(True)
+        self.gmail_button.setText("Connect")
+        self.gmail_status.setText("Couldn't connect: %s" % message)
+
+    def _build_connections(self):
+        self._section("PLUGINS", "Connections")
+        layout = self._make_card(
+            "Outside accounts",
+            "Connect only works after the provider confirms an account. Slack is not wired yet.",
+        )
+        row = QHBoxLayout()
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        title = QLabel("GitHub")
+        title.setStyleSheet(
+            f"color: {TEXT_COLOR_DARK}; font-size: 12px; font-weight: 600; background: transparent; border: none;"
+        )
+        text_col.addWidget(title)
+        self.github_status = QLabel("Not connected")
+        self.github_status.setWordWrap(True)
+        self.github_status.setStyleSheet(
+            f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; background: transparent; border: none;"
+        )
+        text_col.addWidget(self.github_status)
+        row.addLayout(text_col, 1)
+        self.github_button = self._small_button("Connect")
+        self.github_button.clicked.connect(self._on_github_button)
+        row.addWidget(self.github_button)
+        layout.addLayout(row)
+        slack = QLabel("Slack — Unavailable. No official connection flow is wired yet.")
+        slack.setWordWrap(True)
+        slack.setStyleSheet(
+            f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; background: transparent; border: none;"
+        )
+        layout.addWidget(slack)
+        self._refresh_github_status()
+
+    def _refresh_github_status(self):
+        try:
+            import core
+            conn = core.get_plugin_connection("github")
+        except Exception:
+            conn = None
+        if conn:
+            self.github_status.setText("Connected as %s." % (conn.get("account_label") or "GitHub user"))
+            self.github_button.setText("Disconnect")
+            self.github_button.setEnabled(True)
+            return
+        from tools import integrations
+        if not integrations.GITHUB_CLIENT_ID:
+            self.github_status.setText(
+                "Unavailable — set BUDDY_GITHUB_CLIENT_ID for GitHub Device Flow."
+            )
+            self.github_button.setText("Unavailable")
+            self.github_button.setEnabled(False)
+            return
+        self.github_status.setText("Not connected. Connect shows a GitHub device code.")
+        self.github_button.setText("Connect")
+        self.github_button.setEnabled(True)
+
+    def _on_github_button(self):
+        import core
+        from tools import integrations
+        if core.get_plugin_connection("github"):
+            core.remove_plugin_connection("github")
+            self._refresh_github_status()
+            return
+        self.github_button.setEnabled(False)
+        try:
+            data = integrations.github_start_device_flow()
+        except Exception as exc:
+            self.github_status.setText(str(exc))
+            self.github_button.setEnabled(True)
+            return
+        user_code = data.get("user_code", "")
+        verification_uri = data.get("verification_uri", "https://github.com/login/device")
+        self.github_status.setText("Enter code %s at %s. Waiting for approval…" % (user_code, verification_uri))
+        self.github_button.setText("Waiting…")
+        QDesktopServices.openUrl(QUrl(verification_uri))
+        worker = _GitHubDeviceWorker(data.get("device_code"), data.get("interval", 5))
+        worker.connected.connect(lambda _name: self._refresh_github_status() or self.github_button.setEnabled(True))
+        worker.failed.connect(self._on_github_failed)
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_github_failed(self, message):
+        self.github_button.setEnabled(True)
+        self.github_button.setText("Connect")
+        self.github_status.setText("Couldn't connect: %s" % message)
+
     def _set_universal(self, key, on):
         self.plugins["universal"][key] = bool(on)
         save_plugins(self.plugins)
@@ -359,7 +548,7 @@ class PluginsPage(CardPage):
         self._section("PLUGINS", "Apps on this Mac")
         layout = self._make_card(
             "Mac apps",
-            "Only installed apps can be turned on. Off means Buddy will not call that app's tools.",
+            "Found means the app is on this Mac. Off means Buddy will not call that app's tools.",
         )
         shown = 0
         for key, label, paths in MAC_APPS:
@@ -373,7 +562,7 @@ class PluginsPage(CardPage):
                 "Installed — Buddy can use the matching tools." if installed else "Not found on this Mac.",
                 checked=checked,
                 enabled=installed,
-                status="Ready" if installed else "Missing",
+                status="Found" if installed else "Not found",
             )
             switch.toggled.connect(lambda on, k=key: self._set_app(k, on))
             layout.addWidget(row)
@@ -473,61 +662,102 @@ class PluginsPage(CardPage):
 
     def _build_system(self):
         self._section("PERMISSIONS", "System")
-        layout = self._make_card(
-            "Mac preferences",
-            "Buddy's switch controls whether Buddy may use the feature. Permission rows open the exact macOS panel; turn Buddy on there too. Granting Terminal or VS Code access does not grant Buddy access.",
-        )
+        identity = macos_permissions.process_identity()
+        warning = macos_permissions.identity_warning()
+        subtitle = (
+            "This process appears as %s. A switch cannot turn on until macOS grants that process access. "
+            "Granting Terminal or VS Code does not grant Buddy."
+        ) % identity
+        if warning:
+            subtitle = warning
+        layout = self._make_card("Mac permissions", subtitle)
         specs = (
-            ("full_disk_access", "Full Disk Access", "Open macOS Full Disk Access and add the Buddy process that is actually running. If you run the source from Terminal, macOS may list Python or Terminal instead of a packaged Buddy app.", False),
-            ("folder_access", "Files & Folders", "Open macOS Files & Folders so you can choose which protected locations Buddy may use.", False),
-            ("microphone", "Microphone", "Open macOS Microphone permissions. Talk to Buddy stays blocked until macOS approves the running Buddy process.", True),
-            ("camera", "Camera", "Open macOS Camera permissions for the running Buddy process.", False),
-            ("power_controls", "Power controls", "Buddy-only safety gate for lock, sleep, and screensaver tools. macOS may still ask for authentication per action.", False),
+            ("full_disk_access", "Full Disk Access", "Lets Buddy search more of your disk after macOS grants this process."),
+            ("folder_access", "Files & Folders", "Lets Buddy use folders you approve after macOS grants this process."),
+            ("microphone", "Microphone", "Needed for Talk to Buddy. Buddy can hear you only after this process is approved."),
+            ("camera", "Camera", "Not used by any Buddy feature yet. Leave this off."),
+            ("power_controls", "Power controls", "Buddy-only safety gate for lock, sleep, and screensaver. No extra macOS pane."),
         )
-        for key, title, description, default in specs:
-            checked = bool(self.plugins["system"].get(key, default))
-            if key in MACOS_PRIVACY_PANELS:
-                status = "Buddy gate · opens macOS settings"
-            else:
-                status = "Buddy gate"
+        for key, title, description in specs:
             row, switch = self._toggle_row(
                 title,
                 description,
-                checked=checked,
-                status=status,
+                checked=False,
+                status="Off",
                 status_key=key,
             )
             self._system_switches[key] = switch
-            switch.toggled.connect(lambda on, k=key: self._set_system(k, on))
+            switch.toggled.connect(lambda on, k=key, s=switch: self._on_system_toggled(k, on, s))
             layout.addWidget(row)
+        self.permission_help = QLabel(
+            "Turn a permission off here to stop Buddy using it. To revoke the macOS grant, use System Settings > Privacy & Security."
+        )
+        self.permission_help.setWordWrap(True)
+        self.permission_help.setStyleSheet(
+            f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; background: transparent; border: none;"
+        )
+        layout.addWidget(self.permission_help)
 
-    def _set_system(self, key, on):
-        self.plugins["system"][key] = bool(on)
+    def _on_system_toggled(self, key, on, switch):
+        if not on:
+            self.plugins["system"][key] = False
+            save_plugins(self.plugins)
+            self._set_system_status(key, "Off")
+            return
+        if key == "camera":
+            switch.setChecked(False)
+            self.plugins["system"][key] = False
+            save_plugins(self.plugins)
+            self._set_system_status(key, "Unavailable — not used by any feature")
+            return
+        if key == "power_controls":
+            self.plugins["system"][key] = True
+            save_plugins(self.plugins)
+            self._set_system_status(key, "Granted")
+            return
+        switch.setChecked(False)
+        self._set_system_status(key, "Waiting for macOS approval")
+        macos_permissions.open_privacy_panel(key)
+        QTimer.singleShot(1200, lambda k=key, s=switch: self._finish_permission_request(k, s))
+
+    def _finish_permission_request(self, key, switch):
+        granted = macos_permissions.probe(key)
+        if granted:
+            switch.setChecked(True)
+            self.plugins["system"][key] = True
+            save_plugins(self.plugins)
+            self._set_system_status(key, "Granted for %s" % macos_permissions.process_identity())
+            return
+        switch.setChecked(False)
+        self.plugins["system"][key] = False
         save_plugins(self.plugins)
-        if on and key in MACOS_PRIVACY_PANELS:
-            self._open_privacy_panel(key)
-        status_label = self._system_status_labels.get(key)
-        if status_label:
-            if not on:
-                status_label.setText("Buddy gate off")
-            elif key in MACOS_PRIVACY_PANELS:
-                status_label.setText("Buddy gate on · confirm access in macOS settings")
-            else:
-                status_label.setText("Buddy gate on")
+        self._set_system_status(key, "Off — macOS did not grant this process")
 
-    def _open_privacy_panel(self, key):
-        if sys.platform != "darwin":
-            return
-        panel = MACOS_PRIVACY_PANELS.get(key)
-        if not panel:
-            return
-        title, modern_url, legacy_url = panel
-        opened = QDesktopServices.openUrl(QUrl(modern_url))
-        if not opened:
-            opened = QDesktopServices.openUrl(QUrl(legacy_url))
-        if not opened:
-            QMessageBox.warning(
-                self,
-                "Could not open macOS settings",
-                f"Open System Settings > Privacy & Security > {title} manually, then enable Buddy.",
-            )
+    def _refresh_system_probes(self):
+        for key, switch in self._system_switches.items():
+            wanted = bool(self.plugins["system"].get(key, False))
+            if key == "camera":
+                switch.setChecked(False)
+                self._set_system_status(key, "Unavailable — not used by any feature")
+                continue
+            if key == "power_controls":
+                switch.setChecked(wanted)
+                self._set_system_status(key, "Granted" if wanted else "Off")
+                continue
+            granted = macos_permissions.probe(key)
+            on = bool(wanted and granted)
+            if wanted and not granted:
+                self.plugins["system"][key] = False
+                save_plugins(self.plugins)
+            switch.setChecked(on)
+            if on:
+                self._set_system_status(key, "Granted for %s" % macos_permissions.process_identity())
+            elif wanted:
+                self._set_system_status(key, "Off — macOS grant missing")
+            else:
+                self._set_system_status(key, "Off")
+
+    def _set_system_status(self, key, text):
+        label = self._system_status_labels.get(key)
+        if label:
+            label.setText(text)

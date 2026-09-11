@@ -14,6 +14,7 @@ from core.instruction import build_action_instruction
 from models import run_manager_step, run_action_step, BuddyCancelled, extract_image_urls, message_text
 from storage import db
 from core.thinking import thinking_config
+from core.model_config import image_model, load_model_config
 from core.plugins import active_tools_schema, blocked_reason
 
 GREETER_MODEL = "google/gemini-2.5-flash-lite"
@@ -70,7 +71,7 @@ def generate_conversation_title(user_input: str) -> str:
         {"role": "user", "content": user_input}
     ]
     try:
-        response = run_manager_step(TITLE_MODEL, title_prompt, 20)
+        response = run_manager_step(load_model_config()["chat"], title_prompt, 20)
         title = (response.choices[0].message.content or "").strip().strip('"').strip("'")
         if not title or len(title) > 60:
             raise ValueError("bad title")
@@ -113,7 +114,7 @@ def looks_like_task(user_input):
     return any(hint in text for hint in _TASK_HINTS)
 
 
-def route_first_pass(user_input, cancel_check=None):
+def route_first_pass(user_input, cancel_check=None, model=None):
     """Cheap model decides: answer now, deeper chat, or action pipeline."""
     if looks_like_task(user_input):
         return "action", "On it.", None
@@ -121,7 +122,12 @@ def route_first_pass(user_input, cancel_check=None):
         {"role": "system", "content": GREETER_INSTRUCTION},
         {"role": "user", "content": user_input},
     ]
-    response = run_manager_step(GREETER_MODEL, history, 350, cancel_check=cancel_check)
+    response = run_manager_step(
+        model or load_model_config()["chat"],
+        history,
+        350,
+        cancel_check=cancel_check,
+    )
     raw = message_text(response.choices[0].message).strip()
     usage = getattr(response, "usage", None)
     upper = raw
@@ -136,7 +142,8 @@ def route_first_pass(user_input, cancel_check=None):
     return "say", raw, usage
 
 
-def get_manager_output(message_history, cancel_check=None, model=MANAGER_MODEL):
+def get_manager_output(message_history, cancel_check=None, model=None):
+    model = model or load_model_config()["manager"]
     plan_response = run_manager_step(model, message_history, MANAGER_MAX_TOKENS, cancel_check=cancel_check)
     manager_message = plan_response.choices[0].message
  
@@ -225,7 +232,12 @@ def run_image_creation_task(plan_text, source_images=None, cancel_check=None):
         if cancel_check and cancel_check():
             return {"status": "cancelled", "message": "Cancelled by user.", "step_count": attempt, "tools": [], "tool_log": [], "tokens_in": 0, "tokens_out": 0, "requests": attempt}
         try:
-            images = run_image_generation(IMAGE_GEN_MODEL, prompt, source_images=source_images, cancel_check=cancel_check)
+            images = run_image_generation(
+                image_model(bool(source_images)),
+                prompt,
+                source_images=source_images,
+                cancel_check=cancel_check,
+            )
         except BuddyCancelled:
             return {"status": "cancelled", "message": "Cancelled by user.", "step_count": attempt, "tools": [], "tool_log": [], "tokens_in": 0, "tokens_out": 0, "requests": attempt}
         except Exception as e:
@@ -443,7 +455,11 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
                 deep_history = list(message_history) + [
                     {"role": "system", "content": "Give a complete, careful reply. No tools. No PLAN tags."}
                 ]
-                deep_out, deep_usage = get_manager_output(deep_history, cancel_check=cancel_check, model=DEEP_CHAT_MODEL)
+                deep_out, deep_usage = get_manager_output(
+                    deep_history,
+                    cancel_check=cancel_check,
+                    model=cfg["deep"],
+                )
                 metrics["requests"] += 1
                 if deep_usage:
                     metrics["tokens_in"] += getattr(deep_usage, "prompt_tokens", 0)

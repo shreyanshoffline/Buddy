@@ -13,8 +13,11 @@ class ToggleSwitch(QWidget):
         self._checked = checked
         self._accent = accent
         self._track_off = track_off
+        self._enabled = True
         self.setFixedSize(40, 22)
         self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.TabFocus)
+        self.setAccessibleName("Switch")
 
     def isChecked(self):
         return self._checked
@@ -24,11 +27,31 @@ class ToggleSwitch(QWidget):
             self._checked = bool(value)
             self.update()
 
+    def isEnabled(self):
+        return self._enabled
+
+    def setEnabled(self, value):
+        self._enabled = bool(value)
+        self.setCursor(Qt.PointingHandCursor if self._enabled else Qt.ForbiddenCursor)
+        self.update()
+
     def mousePressEvent(self, event):
+        if not self._enabled:
+            return
         if event.button() == Qt.LeftButton:
             self._checked = not self._checked
             self.toggled.emit(self._checked)
             self.update()
+
+    def keyPressEvent(self, event):
+        if not self._enabled:
+            return
+        if event.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
+            self._checked = not self._checked
+            self.toggled.emit(self._checked)
+            self.update()
+            return
+        super().keyPressEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -36,6 +59,8 @@ class ToggleSwitch(QWidget):
         painter.setPen(Qt.NoPen)
 
         track_color = QColor(self._accent) if self._checked else QColor(self._track_off)
+        if not self._enabled:
+            track_color.setAlpha(110)
         painter.setBrush(track_color)
         h = self.height()
         painter.drawRoundedRect(QRectF(0, 0, self.width(), h), h / 2, h / 2)

@@ -198,6 +198,8 @@ def init_db(conn=None):
             "listening_model": "TEXT DEFAULT 'gemini'",
             "speaking_model": "TEXT DEFAULT 'system'",
             "plugins_json": "TEXT",
+            "model_config_json": "TEXT",
+            "workflow_layout_json": "TEXT",
         }
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(user_profile)")]
         for name, spec in extra_profile.items():
@@ -270,6 +272,35 @@ def init_db(conn=None):
         chunk_cols = [r["name"] for r in conn.execute("PRAGMA table_info(attachment_chunks)")]
         if "embedding" not in chunk_cols:
             conn.execute("ALTER TABLE attachment_chunks ADD COLUMN embedding TEXT")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS plugin_connections (
+                service TEXT PRIMARY KEY,
+                access_token TEXT,
+                account_label TEXT,
+                connected_at REAL NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS plugin_folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL UNIQUE,
+                created_at REAL NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS plugin_websites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL UNIQUE,
+                access TEXT NOT NULL DEFAULT 'read',
+                created_at REAL NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS plugin_toggles (
+                key TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0
+            )
+        """)
         if owns_connection:
             conn.commit()
     except Exception:
@@ -557,6 +588,8 @@ def update_profile(**fields):
         "onboarding_complete",
         "thinking_level", "thinking_level_manual", "credits_low", "credits_remaining",
         "listening_model", "speaking_model", "plugins_json",
+        "model_config_json",
+        "workflow_layout_json",
     }
     fields = {k: v for k, v in fields.items() if k in allowed}
     if "dark_mode" in fields:
@@ -972,3 +1005,97 @@ def find_recent_chat_snippets(query_text, limit=3, exclude_conversation_id=None)
             scored.append((overlap, {"role": r["role"], "content": snippet}))
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return [item for _, item in scored[:limit]]
+
+
+def set_plugin_connection(service, access_token, account_label=None):
+    import time
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO plugin_connections (service, access_token, account_label, connected_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(service) DO UPDATE SET access_token = excluded.access_token, "
+            "account_label = excluded.account_label, connected_at = excluded.connected_at",
+            (service, access_token, account_label, time.time()),
+        )
+
+
+def remove_plugin_connection(service):
+    with _connect() as conn:
+        conn.execute("DELETE FROM plugin_connections WHERE service = ?", (service,))
+
+
+def get_plugin_connection(service):
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT service, access_token, account_label, connected_at FROM plugin_connections WHERE service = ?",
+            (service,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_plugin_connections():
+    with _connect() as conn:
+        rows = conn.execute("SELECT service, account_label, connected_at FROM plugin_connections").fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_plugin_toggle(key, default=False):
+    with _connect() as conn:
+        row = conn.execute("SELECT enabled FROM plugin_toggles WHERE key = ?", (key,)).fetchone()
+    if row is None:
+        return bool(default)
+    return bool(row["enabled"])
+
+
+def set_plugin_toggle(key, enabled):
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO plugin_toggles (key, enabled) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET enabled = excluded.enabled",
+            (key, 1 if enabled else 0),
+        )
+
+
+def list_plugin_toggles():
+    with _connect() as conn:
+        rows = conn.execute("SELECT key, enabled FROM plugin_toggles").fetchall()
+    return {row["key"]: bool(row["enabled"]) for row in rows}
+
+
+def add_plugin_folder(path):
+    import time
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO plugin_folders (path, created_at) VALUES (?, ?)",
+            (path, time.time()),
+        )
+
+
+def remove_plugin_folder(folder_id):
+    with _connect() as conn:
+        conn.execute("DELETE FROM plugin_folders WHERE id = ?", (folder_id,))
+
+
+def list_plugin_folders():
+    with _connect() as conn:
+        rows = conn.execute("SELECT id, path, created_at FROM plugin_folders ORDER BY id").fetchall()
+    return [dict(row) for row in rows]
+
+
+def add_plugin_website(domain, access="read"):
+    import time
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO plugin_websites (domain, access, created_at) VALUES (?, ?, ?)",
+            (domain, access, time.time()),
+        )
+
+
+def remove_plugin_website(website_id):
+    with _connect() as conn:
+        conn.execute("DELETE FROM plugin_websites WHERE id = ?", (website_id,))
+
+
+def list_plugin_websites():
+    with _connect() as conn:
+        rows = conn.execute("SELECT id, domain, access, created_at FROM plugin_websites ORDER BY id").fetchall()
+    return [dict(row) for row in rows]

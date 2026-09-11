@@ -69,7 +69,7 @@ APP_ALIASES = {
 
 def default_plugins():
     return {
-        "universal": {"gmail": True, "web_search": True, "weather": True},
+        "universal": {"gmail": False, "web_search": True, "weather": True},
         "apps": {},
         "websites": [],
         "system": {
@@ -113,8 +113,15 @@ def tool_allowed(tool_name, plugins=None):
     plugins = plugins or load_plugins()
     name = (tool_name or "").split(".")[-1]
 
-    if name in GMAIL_TOOLS and not plugins["universal"].get("gmail", True):
-        return False
+    if name in GMAIL_TOOLS:
+        if not plugins["universal"].get("gmail", False):
+            return False
+        try:
+            from tools.tools import gmail_connection_status
+            if not gmail_connection_status().get("connected"):
+                return False
+        except Exception:
+            return False
     if name in SEARCH_TOOLS and not plugins["universal"].get("web_search", True):
         return False
     if name in WEATHER_TOOLS and not plugins["universal"].get("weather", True):
