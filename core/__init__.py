@@ -48,7 +48,7 @@ from core.conversations import (
     get_plugin_connection,
     list_plugin_connections,
 )
-
+from tools.tools import list_apps as list_installed_apps
 try:
     from core.conversations import refresh_history_profile
 except Exception:

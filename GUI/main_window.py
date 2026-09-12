@@ -172,14 +172,21 @@ class BuddyWindow(QWidget):
         self.update()
 
     def _shutdown_workers(self):
-        """Called on app quit — signals any in-flight send/redo to stop and
-        gives it a moment to unwind cleanly instead of letting Qt destroy a
-        still-running QThread (which crashes)."""
-        for worker in (self._send_worker, self._redo_worker):
+        candidates = [
+            self._send_worker, self._redo_worker,
+            getattr(self.billing_page, "_worker", None),
+            getattr(self.billing_page, "_hackclub_poll_worker", None),
+            getattr(self.settings_page, "_validation_worker", None),
+            getattr(self.talk_page, "_turn_worker", None),
+            getattr(self.input_box, "_pending_worker", None),
+        ]
+        for worker in candidates:
             if worker is not None and worker.isRunning():
-                worker.cancel_event.set()
-                worker.wait(3000)  # give it up to 3s to notice and exit cleanly
-
+                if hasattr(worker, "cancel_event"):
+                    worker.cancel_event.set()
+                worker.requestInterruption()
+                worker.quit()
+                worker.wait(3000)
     def resizeEvent(self, event):
         super().resizeEvent(event)
  
