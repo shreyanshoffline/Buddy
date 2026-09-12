@@ -25,7 +25,13 @@ import core
 
 from .widgets import ChatBubble, ChatInput, FeedbackDialog, AttachmentTray
 from .widgets.window_chrome import EdgeResizeController
-from .icons import create_buddy_icon, get_svg_icon, ICONS
+from .icons import (
+    BUDDY_LOGO_PATH,
+    MENUBAR_ICON_PATH,
+    create_buddy_icon,
+    get_svg_icon,
+    ICONS,
+)
 from .theme import (
     WINDOW_DEFAULT_HEIGHT, WINDOW_DEFAULT_WIDTH, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
     WINDOW_TITLE_TEXT, WINDOW_TITLE_COLOR, WINDOW_TITLE_SIZE, WINDOW_TITLE_WEIGHT,
@@ -125,7 +131,9 @@ class BuddyWindow(QWidget):
         self._moving_window = False
         self._resize_controller = None
 
-        self.app_icon = create_buddy_icon("GUI/assets/Buddy_menubar.png")
+        self.app_icon = create_buddy_icon(str(BUDDY_LOGO_PATH))
+        if QApplication.instance() is not None:
+            QApplication.instance().setWindowIcon(self.app_icon)
         self.setWindowIcon(self.app_icon)
         self.current_conversation_id = None
         self.current_chat_title = None
@@ -172,12 +180,15 @@ class BuddyWindow(QWidget):
         self.update()
 
     def _shutdown_workers(self):
+        talk_page = getattr(self, "talk_page", None)
+        if talk_page is not None and hasattr(talk_page, "shutdown"):
+            talk_page.shutdown()
         candidates = [
             self._send_worker, self._redo_worker,
             getattr(self.billing_page, "_worker", None),
             getattr(self.billing_page, "_hackclub_poll_worker", None),
             getattr(self.settings_page, "_validation_worker", None),
-            getattr(self.talk_page, "_turn_worker", None),
+            getattr(talk_page, "_turn_worker", None),
             getattr(self.input_box, "_pending_worker", None),
         ]
         for worker in candidates:
@@ -282,7 +293,8 @@ class BuddyWindow(QWidget):
             self._resize_controller.relayout()
  
     def _setup_tray_icon(self):
-        self.tray_icon = QSystemTrayIcon(self.app_icon, self)
+        self.menubar_icon = create_buddy_icon(str(MENUBAR_ICON_PATH))
+        self.tray_icon = QSystemTrayIcon(self.menubar_icon, self)
         self.tray_menu = QMenu()
         show_action = QAction("Initiate Buddy", self)
         show_action.triggered.connect(self.toggle_window)

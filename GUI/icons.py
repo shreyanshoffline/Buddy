@@ -1,6 +1,12 @@
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtGui import QPixmap, QPainter, QIcon, QPainterPath
+
+
+BUDDY_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "Buddy_Logo_Beta.png"
+MENUBAR_ICON_PATH = Path(__file__).resolve().parent / "assets" / "Buddy_menubar.png"
 
 def create_buddy_icon(image_path=None):
     if image_path:
@@ -29,27 +35,37 @@ def create_buddy_icon(image_path=None):
     painter.end()
     return QIcon(pixmap)
 
-
 def create_image_icon(image_path):
     original_pixmap = QPixmap(image_path)
+    if original_pixmap.isNull():
+        return create_buddy_icon()
     size = 64
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
+
     painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-    path = QPainterPath()
-    path.addRoundedRect(0, 0, size, size, 22, 22)
-    painter.setClipPath(path)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+    # Switch to KeepAspectRatio so the whole image (including ears) fits without cropping
     scaled_image = original_pixmap.scaled(
         size, size,
-        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.AspectRatioMode.KeepAspectRatio,
         Qt.TransformationMode.SmoothTransformation,
     )
+
+    # Center the image within the 64x64 canvas
     x = (size - scaled_image.width()) // 2
     y = (size - scaled_image.height()) // 2
+
+    # Apply a smooth rounded rectangle clip path for the menu bar icon shape
+    path = QPainterPath()
+    path.addRoundedRect(0, 0, size, size, 14, 14)
+    painter.setClipPath(path)
+
     painter.drawPixmap(x, y, scaled_image)
     painter.end()
+
     return QIcon(pixmap)
 
 

@@ -466,12 +466,14 @@ class TalkToBuddyPage(CardPage):
             return
         if self.state in (self.STATE_LISTENING, self.STATE_THINKING, self.STATE_SPEAKING):
             self._paused_from = self.state
-            if self.state == self.STATE_SPEAKING:
-                self._halt_playback()
-            if self.state == self.STATE_LISTENING:
-                self._vad_timer.stop()
-                self._record_timer.stop()
+            # Set the state before stopping playback so QProcess/QTextToSpeech
+            # callbacks cannot interpret the pause as natural speech completion.
+            was_speaking = self.state == self.STATE_SPEAKING
+            self._vad_timer.stop()
+            self._record_timer.stop()
             self._style_paused()
+            if was_speaking:
+                self._halt_playback()
 
     def _resume(self):
         target = self._paused_from or self.STATE_LISTENING
@@ -637,15 +639,37 @@ class TalkToBuddyPage(CardPage):
             except Exception:
                 self.conversation_id = None
         self._turn_worker = _VoiceTurnWorker(wav_path, self.message_history, self.conversation_id)
+        worker = self._turn_worker
         self._turn_worker.stage.connect(self._style_thinking)
         self._turn_worker.user_text_ready.connect(self._on_user_text)
         self._turn_worker.reply_ready.connect(self._on_reply_ready)
         self._turn_worker.failed.connect(self._on_turn_failed)
+        worker.finished.connect(lambda: self._on_turn_finished(worker))
         self._turn_worker.start()
+
+    def _on_turn_finished(self, worker):
+        if self._turn_worker is worker:
+            self._turn_worker = None
+        worker.deleteLater()
 
     def _cancel_turn(self):
         if self._turn_worker is not None and self._turn_worker.isRunning():
             self._turn_worker.cancel_event.set()
+
+    def shutdown(self, timeout_ms=3000):
+        """Stop voice resources before the page or QApplication is destroyed."""
+        self._record_timer.stop()
+        self._vad_timer.stop()
+        self._halt_playback()
+        self._stop_mic()
+        worker = self._turn_worker
+        if worker is not None and worker.isRunning():
+            worker.cancel_event.set()
+            worker.requestInterruption()
+            worker.wait(timeout_ms)
+        if worker is not None and not worker.isRunning():
+            self._turn_worker = None
+            worker.deleteLater()
 
     def _init_tts(self):
         try:
