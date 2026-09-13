@@ -120,6 +120,36 @@ class _GitHubDeviceWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class _GoogleConnectWorker(QThread):
+    connected = QtSignal(str)
+    failed = QtSignal(str)
+
+    def run(self):
+        try:
+            from tools import google_workspace_tools as gwt
+            import core
+            gwt._get_credentials()
+            core.set_plugin_connection("google", "connected", None)
+            self.connected.emit("connected")
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class _MicrosoftConnectWorker(QThread):
+    connected = QtSignal(str)
+    failed = QtSignal(str)
+
+    def run(self):
+        try:
+            from tools import msgraph_tools as mst
+            import core
+            mst._get_token()
+            core.set_plugin_connection("microsoft", "connected", None)
+            self.connected.emit("connected")
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class PluginsPage(CardPage):
     def __init__(self, parent=None, close_callback=None):
         super().__init__(
@@ -137,7 +167,8 @@ class PluginsPage(CardPage):
         self._build_voice()
         self._build_universal()
         self._build_connections()
-        self._build_apps()
+        if platform.system() == "Darwin":
+            self._build_apps()
         self._build_websites()
         self._build_system()
         self.main_layout.addStretch()
@@ -160,6 +191,8 @@ class PluginsPage(CardPage):
             self.speak_combo.blockSignals(False)
         self._refresh_gmail_status()
         self._refresh_github_status()
+        self._refresh_google_status()
+        self._refresh_microsoft_status()
         self._refresh_system_probes()
 
     def _make_card(self, title, subtitle=None):
@@ -500,8 +533,51 @@ class PluginsPage(CardPage):
         self.slack_button.clicked.connect(self._on_slack_button)
         slack_row.addWidget(self.slack_button)
         layout.addLayout(slack_row)
+
+        google_row = QHBoxLayout()
+        google_col = QVBoxLayout()
+        google_col.setSpacing(2)
+        google_title = QLabel("Google")
+        google_title.setStyleSheet(
+            f"color: {TEXT_COLOR_DARK}; font-size: 12px; font-weight: 600; background: transparent; border: none;"
+        )
+        google_col.addWidget(google_title)
+        self.google_status = QLabel("Not connected")
+        self.google_status.setWordWrap(True)
+        self.google_status.setStyleSheet(
+            f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; background: transparent; border: none;"
+        )
+        google_col.addWidget(self.google_status)
+        google_row.addLayout(google_col, 1)
+        self.google_button = self._small_button("Connect")
+        self.google_button.clicked.connect(self._on_google_button)
+        google_row.addWidget(self.google_button)
+        layout.addLayout(google_row)
+
+        ms_row = QHBoxLayout()
+        ms_col = QVBoxLayout()
+        ms_col.setSpacing(2)
+        ms_title = QLabel("Microsoft")
+        ms_title.setStyleSheet(
+            f"color: {TEXT_COLOR_DARK}; font-size: 12px; font-weight: 600; background: transparent; border: none;"
+        )
+        ms_col.addWidget(ms_title)
+        self.ms_status = QLabel("Not connected")
+        self.ms_status.setWordWrap(True)
+        self.ms_status.setStyleSheet(
+            f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; background: transparent; border: none;"
+        )
+        ms_col.addWidget(self.ms_status)
+        ms_row.addLayout(ms_col, 1)
+        self.ms_button = self._small_button("Connect")
+        self.ms_button.clicked.connect(self._on_microsoft_button)
+        ms_row.addWidget(self.ms_button)
+        layout.addLayout(ms_row)
+
         self._refresh_github_status()
         self._refresh_slack_status()
+        self._refresh_google_status()
+        self._refresh_microsoft_status()
 
     def _refresh_github_status(self):
         try:
@@ -598,6 +674,75 @@ class PluginsPage(CardPage):
         except Exception as exc:
             self.slack_button.setEnabled(True)
             self.slack_status.setText("Couldn't connect: %s" % exc)
+
+    def _refresh_google_status(self):
+        try:
+            import core
+            connection = core.get_plugin_connection("google")
+        except Exception:
+            connection = None
+        if connection:
+            self.google_status.setText("Connected — Gmail, Calendar, Drive, Docs, Sheets, Slides, Meet.")
+            self.google_button.setText("Disconnect")
+            self.google_button.setEnabled(True)
+        else:
+            self.google_status.setText("Not connected. Connect opens Google's official sign-in.")
+            self.google_button.setText("Connect")
+            self.google_button.setEnabled(True)
+
+    def _on_google_button(self):
+        import core
+        if core.get_plugin_connection("google"):
+            core.remove_plugin_connection("google")
+            self._refresh_google_status()
+            return
+        self.google_button.setEnabled(False)
+        self.google_button.setText("Connecting…")
+        worker = _GoogleConnectWorker()
+        worker.connected.connect(lambda _v: self._refresh_google_status())
+        worker.failed.connect(self._on_google_failed)
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_google_failed(self, message):
+        self.google_button.setEnabled(True)
+        self.google_button.setText("Connect")
+        self.google_status.setText("Couldn't connect: %s" % message)
+
+    def _refresh_microsoft_status(self):
+        try:
+            import core
+            connection = core.get_plugin_connection("microsoft")
+        except Exception:
+            connection = None
+        if connection:
+            self.ms_status.setText("Connected — Outlook, Calendar, OneDrive, OneNote, Teams drafts.")
+            self.ms_button.setText("Disconnect")
+            self.ms_button.setEnabled(True)
+        else:
+            self.ms_status.setText("Not connected. Connect shows a Microsoft device code.")
+            self.ms_button.setText("Connect")
+            self.ms_button.setEnabled(True)
+
+    def _on_microsoft_button(self):
+        import core
+        if core.get_plugin_connection("microsoft"):
+            core.remove_plugin_connection("microsoft")
+            self._refresh_microsoft_status()
+            return
+        self.ms_button.setEnabled(False)
+        self.ms_button.setText("Waiting…")
+        self.ms_status.setText("Check the terminal for a Microsoft device code and URL.")
+        worker = _MicrosoftConnectWorker()
+        worker.connected.connect(lambda _v: self._refresh_microsoft_status() or self.ms_button.setEnabled(True))
+        worker.failed.connect(self._on_microsoft_failed)
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_microsoft_failed(self, message):
+        self.ms_button.setEnabled(True)
+        self.ms_button.setText("Connect")
+        self.ms_status.setText("Couldn't connect: %s" % message)
 
     def _set_universal(self, key, on):
         self.plugins["universal"][key] = bool(on)

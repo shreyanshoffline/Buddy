@@ -76,4 +76,8 @@ __all__ = [
     "add_plugin_website", "remove_plugin_website", "list_plugin_websites",
     "set_plugin_connection", "remove_plugin_connection",
     "get_plugin_connection", "list_plugin_connections",
+    "check_google_connection", "connect_google", "disconnect_google",
+    "check_microsoft_connection", "connect_microsoft", "disconnect_microsoft",
 ]
+
+from core.ecosystems import *  # noqa: E402,F401,F403

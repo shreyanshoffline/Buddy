@@ -31,7 +31,7 @@ from ..theme import (
     DANGER_COLOR,
     UI_CHAT_FONT_SIZE,
 )
-from ..widgets.voice_animation import VoiceAnimation
+from ..widgets import VoiceAnimation
 
 SAMPLE_RATE = 16000
 MAX_RECORDING_SECONDS = 60
