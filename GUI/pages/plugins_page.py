@@ -7,7 +7,8 @@ from a real credential check.
 """
 import sys
 from pathlib import Path
-
+import platform
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtCore import Qt, QThread, Signal as QtSignal, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
