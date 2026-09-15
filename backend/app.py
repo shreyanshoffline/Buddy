@@ -64,6 +64,14 @@ def _resolve_db_path(configured_path):
 
 
 DB_PATH = _resolve_db_path(os.environ.get("BILLING_DB_PATH"))
+SLACK_CLIENT_ID = os.environ.get("SLACK_CLIENT_ID", "")
+SLACK_CLIENT_SECRET = os.environ.get("SLACK_CLIENT_SECRET", "")
+SLACK_REDIRECT_URI = (
+    os.environ.get("SLACK_REDIRECT_URI") or "https://api.buddy.dino.icu/slack/callback"
+).strip()
+SLACK_BOT_SCOPES = (
+    "chat:write,channels:read,channels:history,groups:read,groups:history,users:read"
+)
 HACKCLUB_CLIENT_ID = os.environ.get("HACKCLUB_CLIENT_ID", "")
 HACKCLUB_CLIENT_SECRET = os.environ.get("HACKCLUB_CLIENT_SECRET", "")
 DEFAULT_HACKCLUB_REDIRECT_URI = "http://127.0.0.1:5000/auth/hackclub/callback"
@@ -144,6 +152,17 @@ def init_db(conn=None):
             updated_at REAL
         )
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS slack_installs (
+            buddy_user_id TEXT NOT NULL,
+            team_id TEXT NOT NULL,
+            team_name TEXT,
+            bot_token TEXT NOT NULL,
+            bot_user_id TEXT,
+            installed_at REAL,
+            PRIMARY KEY (buddy_user_id, team_id)
+        )
+        """)
         if owns_connection:
             conn.commit()
     except Exception:
@@ -165,6 +184,9 @@ def health():
         "hackclub_client_id_set": bool(HACKCLUB_CLIENT_ID),
         "hackclub_secret_set": bool(HACKCLUB_CLIENT_SECRET),
         "redirect_uri": HACKCLUB_REDIRECT_URI,
+        "slack_client_id_set": bool(SLACK_CLIENT_ID),
+        "slack_secret_set": bool(SLACK_CLIENT_SECRET),
+        "slack_redirect_uri": SLACK_REDIRECT_URI,
     })
 
 
@@ -631,5 +653,242 @@ def _set_tier_by_customer(customer_id, tier):
     conn.close()
 
 
+def _slack_install_row(buddy_user_id):
+    conn = _connect()
+    row = conn.execute(
+        "SELECT team_id, team_name, bot_token, bot_user_id, installed_at "
+        "FROM slack_installs WHERE buddy_user_id = ? ORDER BY installed_at DESC",
+        (buddy_user_id,),
+    ).fetchone()
+    if not row and buddy_user_id != "latest":
+        row = conn.execute(
+            "SELECT team_id, team_name, bot_token, bot_user_id, installed_at "
+            "FROM slack_installs WHERE buddy_user_id = 'latest' ORDER BY installed_at DESC"
+        ).fetchone()
+    conn.close()
+    return row
+
+
+def _slack_api(token, method, payload=None, http="GET"):
+    url = "https://slack.com/api/" + method
+    headers = {"Authorization": "Bearer %s" % token}
+    if http == "POST":
+        headers["Content-Type"] = "application/json"
+        response = requests.post(url, headers=headers, json=payload or {}, timeout=15)
+    else:
+        response = requests.get(url, headers=headers, params=payload or {}, timeout=15)
+    data = response.json() if response.content else {}
+    if not data.get("ok"):
+        raise RuntimeError(data.get("error") or "Slack API error")
+    return data
+
+
+@app.route("/slack/install")
+def slack_install():
+    if not SLACK_CLIENT_ID or not SLACK_CLIENT_SECRET:
+        return _oauth_page(
+            "Slack is not configured",
+            "Set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET on the backend.",
+            ok=False,
+        ), 503
+    state = secrets.token_urlsafe(32)
+    buddy_user_id = request.args.get("buddy_user_id", "") or "latest"
+    _remember_oauth_state(state, buddy_user_id)
+    params = urlencode({
+        "client_id": SLACK_CLIENT_ID,
+        "scope": SLACK_BOT_SCOPES,
+        "redirect_uri": SLACK_REDIRECT_URI,
+        "state": state,
+    })
+    return redirect("https://slack.com/oauth/v2/authorize?" + params)
+
+
+@app.route("/slack/callback")
+def slack_callback():
+    error = request.args.get("error")
+    if error:
+        return _oauth_page("Slack install cancelled", error, ok=False), 400
+    state = request.args.get("state", "")
+    buddy_user_id = _pop_oauth_state(state) if state else "latest"
+    code = request.args.get("code")
+    if not code:
+        return _oauth_page("Missing code", "Slack did not send an authorization code.", ok=False), 400
+    try:
+        response = requests.post(
+            "https://slack.com/api/oauth.v2.access",
+            data={
+                "client_id": SLACK_CLIENT_ID,
+                "client_secret": SLACK_CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": SLACK_REDIRECT_URI,
+            },
+            timeout=15,
+        )
+        data = response.json() if response.content else {}
+    except requests.RequestException as exc:
+        return _oauth_page("Slack token exchange failed", str(exc), ok=False), 502
+    if not data.get("ok"):
+        return _oauth_page(
+            "Slack rejected the install",
+            data.get("error") or "oauth.v2.access failed",
+            ok=False,
+        ), 400
+    team = data.get("team") or {}
+    team_id = team.get("id") or "unknown"
+    team_name = team.get("name") or "Slack workspace"
+    bot_token = data.get("access_token") or ""
+    bot_user_id = data.get("bot_user_id") or ""
+    if not bot_token:
+        return _oauth_page("No bot token", "Slack did not return an access token.", ok=False), 400
+    conn = _connect()
+    conn.execute(
+        """
+        INSERT INTO slack_installs (
+            buddy_user_id, team_id, team_name, bot_token, bot_user_id, installed_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(buddy_user_id, team_id) DO UPDATE SET
+            team_name = excluded.team_name,
+            bot_token = excluded.bot_token,
+            bot_user_id = excluded.bot_user_id,
+            installed_at = excluded.installed_at
+        """,
+        (buddy_user_id or "latest", team_id, team_name, bot_token, bot_user_id, time.time()),
+    )
+    conn.commit()
+    conn.close()
+    return _oauth_page(
+        "Slack connected",
+        "Buddy is installed on %s. Close this tab and go back to Buddy. "
+        "Invite @Buddy to a channel with /invite @Buddy before asking it to read that channel."
+        % team_name,
+        ok=True,
+    ), 200
+
+
+@app.route("/slack/status/<buddy_user_id>")
+def slack_status(buddy_user_id):
+    row = _slack_install_row(buddy_user_id)
+    if not row:
+        return jsonify({"connected": False})
+    return jsonify({
+        "connected": True,
+        "team_id": row["team_id"],
+        "team_name": row["team_name"],
+        "bot_user_id": row["bot_user_id"],
+    })
+
+
+@app.route("/slack/disconnect", methods=["POST"])
+def slack_disconnect():
+    body = request.get_json(silent=True) or {}
+    buddy_user_id = (body.get("buddy_user_id") or request.args.get("buddy_user_id") or "").strip()
+    if not buddy_user_id:
+        return jsonify({"ok": False, "error": "missing buddy_user_id"}), 400
+    conn = _connect()
+    conn.execute("DELETE FROM slack_installs WHERE buddy_user_id = ?", (buddy_user_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/slack/channels")
+def slack_channels():
+    buddy_user_id = request.args.get("buddy_user_id") or "latest"
+    row = _slack_install_row(buddy_user_id)
+    if not row:
+        return jsonify({"ok": False, "error": "not_connected"}), 401
+    try:
+        data = _slack_api(
+            row["bot_token"],
+            "conversations.list",
+            {"types": "public_channel,private_channel", "limit": 200, "exclude_archived": True},
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    channels = [
+        {"id": ch.get("id"), "name": ch.get("name"), "is_private": bool(ch.get("is_private"))}
+        for ch in data.get("channels") or []
+    ]
+    return jsonify({"ok": True, "team_name": row["team_name"], "channels": channels})
+
+
+@app.route("/slack/history")
+def slack_history():
+    buddy_user_id = request.args.get("buddy_user_id") or "latest"
+    channel = (request.args.get("channel") or "").strip()
+    limit = min(int(request.args.get("limit") or 20), 50)
+    if not channel:
+        return jsonify({"ok": False, "error": "missing channel"}), 400
+    row = _slack_install_row(buddy_user_id)
+    if not row:
+        return jsonify({"ok": False, "error": "not_connected"}), 401
+    if channel.startswith("#") or not channel.startswith(("C", "G", "D")):
+        try:
+            listed = _slack_api(
+                row["bot_token"],
+                "conversations.list",
+                {"types": "public_channel,private_channel", "limit": 200, "exclude_archived": True},
+            )
+            want = channel.lstrip("#").lower()
+            match = next((ch for ch in listed.get("channels") or [] if (ch.get("name") or "").lower() == want), None)
+            if not match:
+                return jsonify({"ok": False, "error": "unknown_channel"}), 404
+            channel = match["id"]
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+    try:
+        data = _slack_api(
+            row["bot_token"],
+            "conversations.history",
+            {"channel": channel, "limit": limit},
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    messages = []
+    for msg in data.get("messages") or []:
+        text = (msg.get("text") or "").strip()
+        if text:
+            messages.append(text)
+    return jsonify({"ok": True, "messages": messages})
+
+
+@app.route("/slack/post", methods=["POST"])
+def slack_post():
+    body = request.get_json(silent=True) or {}
+    buddy_user_id = body.get("buddy_user_id") or "latest"
+    channel = (body.get("channel") or "").strip()
+    text = (body.get("text") or "").strip()
+    if not channel or not text:
+        return jsonify({"ok": False, "error": "missing channel or text"}), 400
+    row = _slack_install_row(buddy_user_id)
+    if not row:
+        return jsonify({"ok": False, "error": "not_connected"}), 401
+    if channel.startswith("#") or not channel.startswith(("C", "G", "D")):
+        try:
+            listed = _slack_api(
+                row["bot_token"],
+                "conversations.list",
+                {"types": "public_channel,private_channel", "limit": 200, "exclude_archived": True},
+            )
+            want = channel.lstrip("#").lower()
+            match = next((ch for ch in listed.get("channels") or [] if (ch.get("name") or "").lower() == want), None)
+            if not match:
+                return jsonify({"ok": False, "error": "unknown_channel"}), 404
+            channel = match["id"]
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+    try:
+        data = _slack_api(
+            row["bot_token"],
+            "chat.postMessage",
+            {"channel": channel, "text": text},
+            http="POST",
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "ts": data.get("ts")})
+
+
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", 5000)), debug=False)
+    host = "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1"
+    app.run(host=host, port=int(os.environ.get("PORT", 5000)), debug=False)

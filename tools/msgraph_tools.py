@@ -30,12 +30,45 @@ CLIENT_ID = os.environ.get("BUDDY_MS_CLIENT_ID", "")
 AUTHORITY = "https://login.microsoftonline.com/consumers"  # personal MS accounts
 SCOPES = ["Mail.Read", "Mail.Send", "Calendars.ReadWrite", "Files.ReadWrite", "Notes.ReadWrite", "Chat.ReadWrite"]
 TOKEN_CACHE_PATH = os.path.expanduser("~/Buddy/ms_token_cache.json")  # next to credentials.json/token.json
+CLIENT_ID_PATH = os.path.expanduser("~/Buddy/ms_client_id.txt")
+SETUP_HELP = (
+    "Microsoft is not configured. Set BUDDY_MS_CLIENT_ID or enter the Azure "
+    "Application (client) ID in Plugins > Microsoft."
+)
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 
+def has_client_id() -> bool:
+    return bool(_client_id())
+
+
+def _client_id() -> str:
+    if CLIENT_ID.strip():
+        return CLIENT_ID.strip()
+    try:
+        with open(CLIENT_ID_PATH, "r") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def save_client_id(client_id: str):
+    client_id = client_id.strip()
+    if not client_id:
+        raise ValueError("Microsoft client ID cannot be empty.")
+    os.makedirs(os.path.dirname(CLIENT_ID_PATH), exist_ok=True)
+    with open(CLIENT_ID_PATH, "w") as f:
+        f.write(client_id + "\n")
+    try:
+        os.chmod(CLIENT_ID_PATH, 0o600)
+    except OSError:
+        pass
+
+
 def _get_app():
-    if not CLIENT_ID:
+    client_id = _client_id()
+    if not client_id:
         raise RuntimeError(
             "BUDDY_MS_CLIENT_ID is not set. Set it to the Application (client) ID from your "
             "Azure app registration's Overview page before calling anything in this file — "
@@ -44,7 +77,7 @@ def _get_app():
     cache = SerializableTokenCache()
     if os.path.exists(TOKEN_CACHE_PATH):
         cache.deserialize(open(TOKEN_CACHE_PATH, "r").read())
-    app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY, token_cache=cache)
+    app = PublicClientApplication(client_id, authority=AUTHORITY, token_cache=cache)
     return app, cache
 
 

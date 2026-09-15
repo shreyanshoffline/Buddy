@@ -143,6 +143,8 @@ class _MicrosoftConnectWorker(QThread):
         try:
             from tools import msgraph_tools as mst
             import core
+            if not mst.has_client_id():
+                raise RuntimeError(mst.SETUP_HELP)
             mst._get_token()
             core.set_plugin_connection("microsoft", "connected", None)
             self.connected.emit("connected")
@@ -645,35 +647,59 @@ class PluginsPage(CardPage):
             self.slack_button.setText("Disconnect")
             self.slack_button.setEnabled(True)
         else:
-            self.slack_status.setText("Not connected. Add a Slack token to verify this workspace.")
+            self.slack_status.setText("Not connected. Connect adds the official Buddy bot to your workspace.")
             self.slack_button.setText("Connect")
             self.slack_button.setEnabled(True)
 
     def _on_slack_button(self):
         import core
+        import billing_client
+        uid = core.get_or_create_buddy_user_id()
         if core.get_plugin_connection("slack"):
+            try:
+                billing_client.slack_disconnect(uid)
+            except Exception:
+                pass
             core.remove_plugin_connection("slack")
             self._refresh_slack_status()
             return
-
-        token, ok = QInputDialog.getText(
-            self,
-            "Connect Slack",
-            "Paste a Slack bot token. Buddy will verify it without sending a message:",
-            QLineEdit.EchoMode.Password,
-        )
-        if not ok or not token.strip():
-            return
         self.slack_button.setEnabled(False)
-        self.slack_status.setText("Verifying Slack token...")
+        self.slack_button.setText("Waiting…")
+        self.slack_status.setText("A browser will open Slack. Click Allow, then come back here.")
         try:
-            from tools.integrations import slack_verify_token
-            account_label = slack_verify_token(token.strip())
-            core.set_plugin_connection("slack", token.strip(), account_label)
-            self._refresh_slack_status()
+            billing_client.open_slack_install(uid)
         except Exception as exc:
             self.slack_button.setEnabled(True)
-            self.slack_status.setText("Couldn't connect: %s" % exc)
+            self.slack_button.setText("Connect")
+            self.slack_status.setText("Couldn't start Slack install: %s" % exc)
+            return
+        self._slack_polls = 0
+        self._slack_timer = QTimer(self)
+        self._slack_timer.setInterval(2000)
+        self._slack_timer.timeout.connect(self._poll_slack_install)
+        self._slack_timer.start()
+
+    def _poll_slack_install(self):
+        import core
+        import billing_client
+        self._slack_polls = getattr(self, "_slack_polls", 0) + 1
+        uid = core.get_or_create_buddy_user_id()
+        try:
+            info = billing_client.poll_slack_status(uid)
+        except Exception:
+            info = {"connected": False}
+        if info.get("connected"):
+            if getattr(self, "_slack_timer", None):
+                self._slack_timer.stop()
+            core.set_plugin_connection("slack", "connected", info.get("team_name") or "Slack")
+            self._refresh_slack_status()
+            return
+        if self._slack_polls >= 90:
+            if getattr(self, "_slack_timer", None):
+                self._slack_timer.stop()
+            self.slack_button.setEnabled(True)
+            self.slack_button.setText("Connect")
+            self.slack_status.setText("Still waiting. Finish Allow in the browser, then click Connect again.")
 
     def _refresh_google_status(self):
         try:
@@ -720,19 +746,47 @@ class PluginsPage(CardPage):
             self.ms_button.setText("Disconnect")
             self.ms_button.setEnabled(True)
         else:
-            self.ms_status.setText("Not connected. Connect shows a Microsoft device code.")
+            from tools import msgraph_tools as mst
+            if not mst.has_client_id():
+                self.ms_status.setText(
+                    "Not connected. Add http://localhost on the Azure app, then paste the client ID."
+                )
+            else:
+                self.ms_status.setText("Not connected. Connect opens Microsoft sign-in in your browser.")
             self.ms_button.setText("Connect")
             self.ms_button.setEnabled(True)
 
     def _on_microsoft_button(self):
         import core
+        from tools import msgraph_tools as mst
         if core.get_plugin_connection("microsoft"):
-            core.remove_plugin_connection("microsoft")
+            try:
+                core.disconnect_microsoft()
+            except Exception:
+                core.remove_plugin_connection("microsoft")
             self._refresh_microsoft_status()
             return
+        if not mst.has_client_id():
+            client_id, ok = QInputDialog.getText(
+                self,
+                "Microsoft app ID",
+                "Paste the Application (client) ID from Azure.\n"
+                "The app must already have redirect URI http://localhost "
+                "(Mobile and desktop applications).",
+                QLineEdit.Normal,
+                "",
+            )
+            if not ok or not client_id.strip():
+                self.ms_status.setText("Connect cancelled — still need the Azure client ID.")
+                return
+            try:
+                mst.save_client_id(client_id.strip())
+            except Exception as exc:
+                self.ms_status.setText("Couldn't save client ID: %s" % exc)
+                return
         self.ms_button.setEnabled(False)
         self.ms_button.setText("Waiting…")
-        self.ms_status.setText("Check the terminal for a Microsoft device code and URL.")
+        self.ms_status.setText("A browser window should open. Sign in there — Buddy catches the return automatically.")
         worker = _MicrosoftConnectWorker()
         worker.connected.connect(lambda _v: self._refresh_microsoft_status() or self.ms_button.setEnabled(True))
         worker.failed.connect(self._on_microsoft_failed)

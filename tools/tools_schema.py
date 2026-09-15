@@ -1218,5 +1218,43 @@ tools_schema = [
     {"type": "function", "function": {"name": "github_list_open_prs", "description": "Lists open pull requests for a repo.", "parameters": {"type": "object", "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["owner", "repo"]}}},
     {"type": "function", "function": {"name": "github_add_pr_comment", "description": "Adds a general comment on a pull request's conversation tab.", "parameters": {"type": "object", "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}, "pr_number": {"type": "integer"}, "body": {"type": "string"}}, "required": ["owner", "repo", "pr_number", "body"]}}},
     {"type": "function", "function": {"name": "github_add_review_comment", "description": "Adds a code review comment anchored to a specific file and line in a pull request.", "parameters": {"type": "object", "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}, "pr_number": {"type": "integer"}, "commit_id": {"type": "string"}, "path": {"type": "string"}, "line": {"type": "integer"}, "body": {"type": "string"}}, "required": ["owner", "repo", "pr_number", "commit_id", "path", "line", "body"]}}},
-    {"type": "function", "function": {"name": "add_code_comment", "description": "Inserts a comment directly into a local source file above a given line — for a plain code review pass with no PR involved.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "line_number": {"type": "integer"}, "comment_text": {"type": "string"}}, "required": ["file_path", "line_number", "comment_text"]}}}
+    {"type": "function", "function": {"name": "add_code_comment", "description": "Inserts a comment directly into a local source file above a given line — for a plain code review pass with no PR involved.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "line_number": {"type": "integer"}, "comment_text": {"type": "string"}}, "required": ["file_path", "line_number", "comment_text"]}}},
+    {
+        "type": "function",
+        "function": {
+            "name": "slack_list_channels",
+            "description": "Lists Slack channels the official Buddy bot can see. Use this from the Buddy desktop chat.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "slack_recent_messages",
+            "description": "Reads recent messages from a Slack channel the Buddy bot has been invited to.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string", "description": "Channel id or #name."},
+                    "limit": {"type": "integer", "description": "How many recent messages to return."}
+                },
+                "required": ["channel"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "slack_send_message",
+            "description": "Sends a message to a Slack channel as the Buddy bot after the user confirmed the exact text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string", "description": "Channel id or #name."},
+                    "text": {"type": "string", "description": "Exact message to send."}
+                },
+                "required": ["channel", "text"]
+            }
+        }
+    }
 ]

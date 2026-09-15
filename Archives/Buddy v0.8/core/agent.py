@@ -9,10 +9,27 @@ import time
 
 import tools.tools as tools
 import tools.gmail_tools as gmail_tools
+import tools.apple_tools as apple_tools
+import tools.github_ops as github_ops
+try:
+    import tools.google_workspace_tools as google_workspace_tools
+except ImportError:
+    google_workspace_tools = None  # google-api-python-client/google-auth-oauthlib not installed yet
+try:
+    import tools.msgraph_tools as msgraph_tools
+except ImportError:
+    msgraph_tools = None  # msal not installed yet
+try:
+    import tools.slack_tools as slack_tools
+except ImportError:
+    slack_tools = None
 from tools.tools_schema import tools_schema
 from core.instruction import build_action_instruction
 from models import run_manager_step, run_action_step, BuddyCancelled, extract_image_urls, message_text
 from storage import db
+from core.thinking import thinking_config
+from core.model_config import image_model, load_model_config
+from core.plugins import active_tools_schema, blocked_reason
 
 GREETER_MODEL = "google/gemini-2.5-flash-lite"
 MANAGER_MODEL = "google/gemini-3.5-flash-lite"
@@ -68,7 +85,7 @@ def generate_conversation_title(user_input: str) -> str:
         {"role": "user", "content": user_input}
     ]
     try:
-        response = run_manager_step(TITLE_MODEL, title_prompt, 20)
+        response = run_manager_step(load_model_config()["chat"], title_prompt, 20)
         title = (response.choices[0].message.content or "").strip().strip('"').strip("'")
         if not title or len(title) > 60:
             raise ValueError("bad title")
@@ -102,7 +119,7 @@ _TASK_HINTS = (
     "delete ", "move ", "copy ", "play ", "pause ", "volume", "click ",
     "type ", "search ", "find ", "download ", "install ", "run ", "kill ",
     "lock ", "sleep ", "note ", "draft ", "folder", "file ", "chrome",
-    "safari", "spotify", "workspace",
+    "safari", "spotify", "workspace", "slack",
 )
 
 
@@ -111,7 +128,7 @@ def looks_like_task(user_input):
     return any(hint in text for hint in _TASK_HINTS)
 
 
-def route_first_pass(user_input, cancel_check=None):
+def route_first_pass(user_input, cancel_check=None, model=None):
     """Cheap model decides: answer now, deeper chat, or action pipeline."""
     if looks_like_task(user_input):
         return "action", "On it.", None
@@ -119,7 +136,12 @@ def route_first_pass(user_input, cancel_check=None):
         {"role": "system", "content": GREETER_INSTRUCTION},
         {"role": "user", "content": user_input},
     ]
-    response = run_manager_step(GREETER_MODEL, history, 350, cancel_check=cancel_check)
+    response = run_manager_step(
+        model or load_model_config()["chat"],
+        history,
+        350,
+        cancel_check=cancel_check,
+    )
     raw = message_text(response.choices[0].message).strip()
     usage = getattr(response, "usage", None)
     upper = raw
@@ -134,7 +156,8 @@ def route_first_pass(user_input, cancel_check=None):
     return "say", raw, usage
 
 
-def get_manager_output(message_history, cancel_check=None, model=MANAGER_MODEL):
+def get_manager_output(message_history, cancel_check=None, model=None):
+    model = model or load_model_config()["manager"]
     plan_response = run_manager_step(model, message_history, MANAGER_MAX_TOKENS, cancel_check=cancel_check)
     manager_message = plan_response.choices[0].message
  
@@ -223,7 +246,12 @@ def run_image_creation_task(plan_text, source_images=None, cancel_check=None):
         if cancel_check and cancel_check():
             return {"status": "cancelled", "message": "Cancelled by user.", "step_count": attempt, "tools": [], "tool_log": [], "tokens_in": 0, "tokens_out": 0, "requests": attempt}
         try:
-            images = run_image_generation(IMAGE_GEN_MODEL, prompt, source_images=source_images, cancel_check=cancel_check)
+            images = run_image_generation(
+                image_model(bool(source_images)),
+                prompt,
+                source_images=source_images,
+                cancel_check=cancel_check,
+            )
         except BuddyCancelled:
             return {"status": "cancelled", "message": "Cancelled by user.", "step_count": attempt, "tools": [], "tool_log": [], "tokens_in": 0, "tokens_out": 0, "requests": attempt}
         except Exception as e:
@@ -252,102 +280,61 @@ def run_image_creation_task(plan_text, source_images=None, cancel_check=None):
     }
 
 
-_GMAIL_PLUGIN_TOOLS = {
-    "check_gmail_connection", "get_recent_emails", "get_unread_emails",
-    "create_draft", "list_drafts", "modify_draft",
-}
-_BROWSER_PLUGIN_TOOLS = {
-    "open_url", "browser_action", "list_open_tabs", "close_tab",
-    "get_active_tab_info", "navigate_active_tab",
-}
-_APP_PLUGIN_TOOLS = {"open_app", "close_app", "force_close_app", "activate_app"}
-
-
-def _plugin_is_enabled(key, default=True):
-    try:
-        settings = db.get_plugin_settings() or {}
-        return bool(settings.get(key, default))
-    except Exception:
-        return default
-
-
-def _plugin_block_reason(tool_name, tool_args):
-    """Return a user-facing message when a disabled plugin would be used."""
-    if tool_name in _GMAIL_PLUGIN_TOOLS and not _plugin_is_enabled("gmail", True):
-        return "Gmail is turned off in Plugins. Turn it back on before Buddy uses Gmail."
-    if tool_name == "web_search" and not _plugin_is_enabled("web_search", True):
-        return "Web search is turned off in Plugins. Turn it back on before Buddy searches the web."
-    if tool_name == "run_terminal_command" and not _plugin_is_enabled("app_terminal", True):
-        return "Terminal access is turned off in Plugins. Turn it back on before Buddy runs commands."
-
-    if tool_name in _APP_PLUGIN_TOOLS:
-        app = str(tool_args.get("app", "")).lower()
-        app_keys = {
-            "slack": "app_slack",
-            "messages": "app_messages",
-            "imessage": "app_messages",
-            "visual studio code": "app_vscode",
-            "visual studio code - insiders": "app_vscode",
-            "code": "app_vscode",
-            "terminal": "app_terminal",
-            "google chrome": "app_chrome",
-            "chrome": "app_chrome",
-        }
-        for alias, key in app_keys.items():
-            if alias in app:
-                if not _plugin_is_enabled(key, True):
-                    return f"{tool_args.get('app', 'That app')} is turned off in Plugins. Turn it back on first."
-                break
-
-    if tool_name in _BROWSER_PLUGIN_TOOLS:
-        browser = str(tool_args.get("browser", "Google Chrome")).lower()
-        if "chrome" in browser and not _plugin_is_enabled("app_chrome", True):
-            return "Chrome access is turned off in Plugins. Turn it back on before Buddy controls Chrome."
-    return None
+TOOL_MODULES = tuple(m for m in (tools, gmail_tools, apple_tools, google_workspace_tools, msgraph_tools, github_ops, slack_tools) if m is not None)
 
 
 def execute_tool(tool_name, tool_args):
-    known_tools = [name for name in dir(tools) if not name.startswith("_")]
-    known_tools += [name for name in dir(gmail_tools) if not name.startswith("_")]
- 
+    known_tools = []
+    for module in TOOL_MODULES:
+        known_tools += [name for name in dir(module) if not name.startswith("_")]
+
     cleaned = tool_name
     if cleaned not in known_tools:
         for known in known_tools:
             if tool_name.endswith(known):
                 cleaned = known
                 break
- 
-    for module in (tools, gmail_tools):
+
+    for module in TOOL_MODULES:
         if hasattr(module, cleaned):
             try:
-                blocked = _plugin_block_reason(cleaned, tool_args)
+                blocked = blocked_reason(cleaned, tool_args)
                 if blocked:
                     return blocked
                 func = getattr(module, cleaned)
-                return func(**tool_args)
+                result = func(**tool_args)
+                try:
+                    from core import patterns
+                    patterns.log_action(cleaned)
+                except Exception:
+                    pass  # pattern logging is best-effort, never blocks a real tool result
+                return result
             except Exception as e:
                 return f"Error executing {cleaned}: {str(e)}"
     return f"Error: Tool '{tool_name}' not found."
  
  
-def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadline=None):
+def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadline=None, max_steps=None, max_tokens=None):
     action_history = [
         {"role": "system", "content": build_action_instruction(db.get_profile())},
         {"role": "user", "content": f"Execute this plan:\n{plan_text}"}
     ]
     step_count = 0
+    step_limit = max_steps or MAX_WORKER_STEPS
+    token_limit = max_tokens or WORKER_MAX_TOKENS
+    schema = active_tools_schema()
  
     # Track stats for the Dev Chamber
     stats = {"tools": [], "tool_log": [], "tokens_in": 0, "tokens_out": 0, "requests": 0}
  
-    while step_count < MAX_WORKER_STEPS:
+    while step_count < step_limit:
         if cancel_check and cancel_check():
             return {"status": "cancelled", "message": "Cancelled by user.", "step_count": step_count, **stats}
         if deadline and time.time() > deadline:
             return {"status": "timeout", "message": "This is taking longer than expected, so I stopped. Want me to try again?", "step_count": step_count, **stats}
         step_count += 1
         try:
-            action_response = run_action_step(worker_model, action_history, WORKER_MAX_TOKENS, tools_schema, cancel_check=cancel_check)
+            action_response = run_action_step(worker_model, action_history, token_limit, schema, cancel_check=cancel_check)
         except BuddyCancelled:
             return {"status": "cancelled", "message": "Cancelled by user.", "step_count": step_count, **stats}
         action_msg = action_response.choices[0].message
@@ -389,12 +376,22 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
                     result["images"] = generated_images
                 return result
  
+            if cancel_check and cancel_check():
+                return {"status": "cancelled", "message": "Stopped before %s." % tool_name, "step_count": step_count, **stats}
+
             if on_event:
                 on_event({"type": "tool_call", "name": tool_name, "args": tool_args})
- 
+
             tool_start = time.time()
             result = execute_tool(tool_name, tool_args)
             tool_duration = time.time() - tool_start
+            if on_event:
+                on_event({
+                    "type": "tool_done",
+                    "name": tool_name,
+                    "duration": tool_duration,
+                    "ok": not str(result).lower().startswith("error"),
+                })
 
             result_str = str(result)
             stats["tool_log"].append({
@@ -468,7 +465,8 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         if memory_note:
             message_history.append({"role": "system", "content": memory_note})
 
-    deadline = start_time + OVERALL_TIMEOUT_SECONDS
+    cfg = thinking_config()
+    deadline = start_time + cfg["timeout"]
 
     if not image_attachments:
         try:
@@ -491,7 +489,11 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
                 deep_history = list(message_history) + [
                     {"role": "system", "content": "Give a complete, careful reply. No tools. No PLAN tags."}
                 ]
-                deep_out, deep_usage = get_manager_output(deep_history, cancel_check=cancel_check, model=DEEP_CHAT_MODEL)
+                deep_out, deep_usage = get_manager_output(
+                    deep_history,
+                    cancel_check=cancel_check,
+                    model=cfg["deep"],
+                )
                 metrics["requests"] += 1
                 if deep_usage:
                     metrics["tokens_in"] += getattr(deep_usage, "prompt_tokens", 0)
@@ -528,7 +530,7 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
             on_event({"type": "thinking"})
  
         try:
-            manager_model = "google/gemini-3.8-flash" if image_attachments else MANAGER_MODEL
+            manager_model = "google/gemini-3.8-flash" if image_attachments else cfg["manager"]
             manager_output, usage = get_manager_output(message_history, cancel_check=cancel_check, model=manager_model)
         except BuddyCancelled:
             reply = "Cancelled."
@@ -541,6 +543,8 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
             metrics["tokens_out"] += getattr(usage, 'completion_tokens', 0)
  
         route, content, worker_model, response_title = parse_manager_output(manager_output)
+        if worker_model != IMAGE_GEN_MODEL:
+            worker_model = cfg["worker"]
  
         if route == "invalid":
             if on_event:
@@ -573,7 +577,15 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
                 cancel_check=cancel_check,
             )
             if worker_model == IMAGE_GEN_MODEL
-            else run_worker(plan_text, worker_model, on_event=on_event, cancel_check=cancel_check, deadline=deadline)
+            else run_worker(
+                plan_text,
+                worker_model,
+                on_event=on_event,
+                cancel_check=cancel_check,
+                deadline=deadline,
+                max_steps=cfg["max_steps"],
+                max_tokens=cfg["max_tokens"],
+            )
         )
  
         # Merge worker metrics

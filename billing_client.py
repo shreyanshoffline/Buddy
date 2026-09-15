@@ -15,6 +15,7 @@ load_dotenv()
 
 PREFERRED = "http://127.0.0.1:5000"
 BACKEND_URL = os.getenv("BUDDY_BILLING_URL", "").rstrip("/")
+SLACK_API_BASE = (os.getenv("SLACK_API_BASE") or "https://api.buddy.dino.icu").rstrip("/")
 _discovered = None
 _started = False
 
@@ -86,6 +87,12 @@ def backend_is_up():
     return discover_backend() is not None
 
 
+def slack_api_base():
+    if SLACK_API_BASE and _alive(SLACK_API_BASE):
+        return SLACK_API_BASE
+    return ensure_backend()
+
+
 def open_hackclub_signin(buddy_user_id=None):
     url = ensure_backend()
     uid = buddy_user_id or "latest"
@@ -107,6 +114,64 @@ def poll_hackclub_status(buddy_user_id):
     except Exception:
         pass
     return {"signed_in": False}
+
+
+def open_slack_install(buddy_user_id=None):
+    url = slack_api_base()
+    uid = buddy_user_id or "latest"
+    webbrowser.open(f"{url}/slack/install?buddy_user_id={uid}")
+    return url
+
+
+def poll_slack_status(buddy_user_id):
+    bases = []
+    for candidate in (SLACK_API_BASE, discover_backend(), PREFERRED):
+        if candidate and candidate not in bases:
+            bases.append(candidate)
+    for base in bases:
+        try:
+            resp = requests.get(f"{base}/slack/status/{buddy_user_id}", timeout=8)
+            if resp.ok:
+                data = resp.json()
+                if data.get("connected"):
+                    return data
+        except Exception:
+            continue
+    return {"connected": False}
+
+
+def slack_disconnect(buddy_user_id):
+    base = slack_api_base()
+    requests.post(f"{base}/slack/disconnect", json={"buddy_user_id": buddy_user_id}, timeout=8)
+
+
+def slack_list_channels(buddy_user_id):
+    base = slack_api_base()
+    resp = requests.get(f"{base}/slack/channels", params={"buddy_user_id": buddy_user_id}, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def slack_channel_history(buddy_user_id, channel, limit=20):
+    base = slack_api_base()
+    resp = requests.get(
+        f"{base}/slack/history",
+        params={"buddy_user_id": buddy_user_id, "channel": channel, "limit": limit},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def slack_post_message(buddy_user_id, channel, text):
+    base = slack_api_base()
+    resp = requests.post(
+        f"{base}/slack/post",
+        json={"buddy_user_id": buddy_user_id, "channel": channel, "text": text},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 
 def start_checkout(buddy_user_id, price_key):
