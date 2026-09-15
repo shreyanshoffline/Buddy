@@ -1,66 +1,64 @@
 """
-Google ecosystem backend for Buddy, beyond Gmail (which already exists in
-tools/tools.py). Drop this in as tools/google_workspace_tools.py.
+tools/google_workspace_tools.py
 
-Requires: google-api-python-client google-auth-httplib2 google-auth-oauthlib
-    pip install --break-system-packages google-api-python-client google-auth-httplib2 google-auth-oauthlib
+Uses the SAME credentials.json / token.json that tools.py's Gmail
+functions already use — same file, same folder (~/Buddy/), same
+Credentials format (JSON, not pickle). No second OAuth client needed.
 
-Reuses the SAME credentials.json OAuth client your Gmail setup already
-uses (one Google Cloud project, one consent screen) — but the scope list
-below is a UNION of Gmail's scopes plus these new ones. Because you're
-adding scopes, the existing token.json/pickle must be deleted once so the
-user re-consents with the full scope set. See the setup doc for exact
-steps to enable each API.
+IMPORTANT ONE-TIME STEP: tools.py's SCOPES list just grew (Calendar,
+Drive, Docs, Sheets, Slides, Photos added alongside Gmail's two).
+Your existing token.json was issued under the OLD, narrower scope
+list, so it won't actually be authorized for the new ones even though
+this code will happily load it. Delete token.json ONCE:
+
+    rm ~/Buddy/token.json   (or wherever tools.py actually found it —
+                              run tools.gmail_connection_status() to check)
+
+Then call anything in this file (or gmail_connect() again) and it will
+re-run the consent screen with the full scope list. After that, every
+function below shares that one token with Gmail.
 """
 
-import os
-import pickle
-import base64
-from datetime import datetime, timedelta
-
-from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
+from tools.tools import (
+    TOKEN_PATH, CREDS_PATH, SCOPES, HAS_GMAIL,
+    Credentials, InstalledAppFlow, Request,
+)
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
-CREDS_PATH = os.path.expanduser("~/.buddy/google_credentials.json")   # same file Gmail uses
-TOKEN_PATH = os.path.expanduser("~/.buddy/google_token.pickle")       # same file Gmail uses
-
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.compose",
-    "https://www.googleapis.com/auth/calendar.events",
-    "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/documents",
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/presentations",
-    "https://www.googleapis.com/auth/photoslibrary.readonly",
-]
+import os
+from datetime import datetime, timedelta
 
 
 def _get_credentials():
+    """Mirrors tools.py's _get_gmail_service() credential logic exactly,
+    but returns the raw creds object so any Google API can use it, not
+    just Gmail's build("gmail", ...)."""
+    if not HAS_GMAIL:
+        raise RuntimeError("Google libraries not installed. pip install --break-system-packages "
+                            "google-api-python-client google-auth-httplib2 google-auth-oauthlib")
     creds = None
     if os.path.exists(TOKEN_PATH):
-        with open(TOKEN_PATH, "rb") as f:
-            creds = pickle.load(f)
+        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            if not os.path.exists(CREDS_PATH):
+                raise FileNotFoundError(f"Missing {CREDS_PATH}. Place your OAuth credentials.json there.")
             flow = InstalledAppFlow.from_client_secrets_file(CREDS_PATH, SCOPES)
             creds = flow.run_local_server(port=0)
         os.makedirs(os.path.dirname(TOKEN_PATH), exist_ok=True)
-        with open(TOKEN_PATH, "wb") as f:
-            pickle.dump(creds, f)
+        with open(TOKEN_PATH, "w") as f:
+            f.write(creds.to_json())
     return creds
 
 
 def check_google_connection() -> str:
     try:
         _get_credentials()
-        return "OK: Google account connected."
-    except FileNotFoundError:
-        return f"NOT_CONNECTED: no credentials.json at {CREDS_PATH}. Run through Plugins > Google > Connect."
+        return "OK: connected"
+    except FileNotFoundError as e:
+        return f"NOT_CONNECTED: {e}"
     except Exception as e:
         return f"ERROR: {e}"
 
@@ -73,17 +71,16 @@ def calendar_today() -> str:
     service = build("calendar", "v3", credentials=_get_credentials())
     now = datetime.utcnow()
     start = now.replace(hour=0, minute=0, second=0).isoformat() + "Z"
-    end = (now.replace(hour=23, minute=59, second=59)).isoformat() + "Z"
+    end = now.replace(hour=23, minute=59, second=59).isoformat() + "Z"
     events = service.events().list(
         calendarId="primary", timeMin=start, timeMax=end, singleEvents=True, orderBy="startTime"
     ).execute().get("items", [])
     if not events:
         return "Nothing on Google Calendar today."
-    lines = []
-    for e in events:
-        start_time = e["start"].get("dateTime", e["start"].get("date"))
-        lines.append(f'{e.get("summary", "(no title)")} — {start_time}')
-    return "\n".join(lines)
+    return "\n".join(
+        f'{e.get("summary", "(no title)")} — {e["start"].get("dateTime", e["start"].get("date"))}'
+        for e in events
+    )
 
 
 def calendar_create_event(title: str, start_iso: str, end_iso: str, timezone: str = "UTC") -> str:
@@ -107,14 +104,12 @@ def calendar_move_event(event_query: str, hours_delta: float) -> str:
     for key in ("start", "end"):
         dt_str = e[key].get("dateTime")
         if dt_str:
-            dt = datetime.fromisoformat(dt_str)
-            e[key]["dateTime"] = (dt + delta).isoformat()
+            e[key]["dateTime"] = (datetime.fromisoformat(dt_str) + delta).isoformat()
     service.events().update(calendarId="primary", eventId=e["id"], body=e).execute()
     return f'Moved "{e.get("summary")}" by {hours_delta}h.'
 
 
 def meet_create_link(title: str, start_iso: str, end_iso: str, timezone: str = "UTC") -> str:
-    """Creates a Calendar event with a Google Meet link attached."""
     service = build("calendar", "v3", credentials=_get_credentials())
     event = {
         "summary": title,
@@ -122,24 +117,19 @@ def meet_create_link(title: str, start_iso: str, end_iso: str, timezone: str = "
         "end": {"dateTime": end_iso, "timeZone": timezone},
         "conferenceData": {"createRequest": {"requestId": f"buddy-{datetime.utcnow().timestamp()}"}},
     }
-    created = service.events().insert(
-        calendarId="primary", body=event, conferenceDataVersion=1
-    ).execute()
-    link = created.get("hangoutLink", "(link pending)")
-    return f'Created "{title}" with Meet link: {link}'
+    created = service.events().insert(calendarId="primary", body=event, conferenceDataVersion=1).execute()
+    return f'Created "{title}" with Meet link: {created.get("hangoutLink", "(link pending)")}'
 
 
 # ---------------------------------------------------------------------------
-# Drive (drive.file scope — Buddy only sees files it created or the user
-# explicitly picked, never the whole Drive)
+# Drive (drive.file — only files Buddy created or the user picked)
 # ---------------------------------------------------------------------------
 
 def drive_list_recent(limit: int = 10) -> str:
     service = build("drive", "v3", credentials=_get_credentials())
-    results = service.files().list(
+    files = service.files().list(
         pageSize=limit, orderBy="modifiedTime desc", fields="files(id, name, modifiedTime)"
-    ).execute()
-    files = results.get("files", [])
+    ).execute().get("files", [])
     if not files:
         return "No files visible yet (drive.file only shows files Buddy created or you picked)."
     return "\n".join(f'{f["name"]} — modified {f["modifiedTime"]} — id:{f["id"]}' for f in files)
@@ -152,8 +142,9 @@ def drive_upload_file(local_path: str, name: str = None) -> str:
     if not os.path.exists(local_path):
         return f"ERROR: {local_path} does not exist."
     media = MediaFileUpload(local_path, resumable=True)
-    metadata = {"name": name or os.path.basename(local_path)}
-    file = service.files().create(body=metadata, media_body=media, fields="id, webViewLink").execute()
+    file = service.files().create(
+        body={"name": name or os.path.basename(local_path)}, media_body=media, fields="id, webViewLink"
+    ).execute()
     return f'Uploaded {local_path} — {file.get("webViewLink")}'
 
 
@@ -205,16 +196,14 @@ def sheets_create(title: str) -> str:
 def sheets_write_range(spreadsheet_id: str, range_a1: str, rows: list) -> str:
     service = build("sheets", "v4", credentials=_get_credentials())
     service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id, range=range_a1,
-        valueInputOption="USER_ENTERED", body={"values": rows},
+        spreadsheetId=spreadsheet_id, range=range_a1, valueInputOption="USER_ENTERED", body={"values": rows}
     ).execute()
     return f"Wrote {len(rows)} rows to {range_a1}."
 
 
 def sheets_read_range(spreadsheet_id: str, range_a1: str) -> str:
     service = build("sheets", "v4", credentials=_get_credentials())
-    result = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=range_a1).execute()
-    values = result.get("values", [])
+    values = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=range_a1).execute().get("values", [])
     return "\n".join(" | ".join(row) for row in values) if values else "(empty range)"
 
 
@@ -223,30 +212,27 @@ def sheets_read_range(spreadsheet_id: str, range_a1: str) -> str:
 # ---------------------------------------------------------------------------
 
 def slides_create_from_bullets(title: str, slides: list) -> str:
-    """slides: list of {"heading": str, "bullets": [str, ...]}"""
     service = build("slides", "v1", credentials=_get_credentials())
     deck = service.presentations().create(body={"title": title}).execute()
     pid = deck.get("presentationId")
-    requests = []
-    for i, s in enumerate(slides):
-        slide_id = f"slide_{i}"
-        requests.append({"createSlide": {"objectId": slide_id, "slideLayoutReference": {"predefinedLayout": "TITLE_AND_BODY"}}})
+    requests = [
+        {"createSlide": {"objectId": f"slide_{i}", "slideLayoutReference": {"predefinedLayout": "TITLE_AND_BODY"}}}
+        for i in range(len(slides))
+    ]
     if requests:
         service.presentations().batchUpdate(presentationId=pid, body={"requests": requests}).execute()
     return f'Created deck "{title}" with {len(slides)} slides — https://docs.google.com/presentation/d/{pid}/edit'
 
 
 # ---------------------------------------------------------------------------
-# Translate (Cloud Translation API — separate API key, see setup doc)
+# Translate (separate API key, not OAuth)
 # ---------------------------------------------------------------------------
 
 def translate_text(text: str, target_lang: str, api_key: str) -> str:
     import requests
     resp = requests.post(
         "https://translation.googleapis.com/language/translate/v2",
-        params={"key": api_key},
-        json={"q": text, "target": target_lang, "format": "text"},
-        timeout=10,
+        params={"key": api_key}, json={"q": text, "target": target_lang, "format": "text"}, timeout=10,
     )
     if resp.status_code != 200:
         return f"ERROR: translation failed ({resp.status_code}): {resp.text[:200]}"
@@ -254,36 +240,29 @@ def translate_text(text: str, target_lang: str, api_key: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Maps — no API key needed for the common case: just open the right URL
+# Maps — no API/scope needed, just opens a URL
 # ---------------------------------------------------------------------------
 
 def maps_directions(origin: str, destination: str, mode: str = "driving") -> str:
     import urllib.parse
-    import subprocess as sp
+    import subprocess
     url = (
         "https://www.google.com/maps/dir/?api=1"
-        f"&origin={urllib.parse.quote(origin)}"
-        f"&destination={urllib.parse.quote(destination)}"
-        f"&travelmode={mode}"
+        f"&origin={urllib.parse.quote(origin)}&destination={urllib.parse.quote(destination)}&travelmode={mode}"
     )
-    sp.run(["open", url])
+    subprocess.run(["open", url])
     return f"Opened directions from {origin} to {destination} ({mode})."
 
 
 # ---------------------------------------------------------------------------
-# Google Photos
-# NOTE (honest limitation): Google restricted the Photos Library API in 2025.
-# Apps without special extended access can only see photos/albums the app
-# itself created, NOT the user's full library. Don't promise "search my whole
-# library" without applying for that access — it will silently return almost
-# nothing.
+# Google Photos — capped by Google's 2025 restriction: without extended
+# access, only sees photos/albums Buddy itself created.
 # ---------------------------------------------------------------------------
 
 def photos_list_recent(limit: int = 10) -> str:
     service = build("photoslibrary", "v1", credentials=_get_credentials(), static_discovery=False)
-    results = service.mediaItems().list(pageSize=limit).execute()
-    items = results.get("mediaItems", [])
+    items = service.mediaItems().list(pageSize=limit).execute().get("mediaItems", [])
     if not items:
-        return ("No items visible. Remember: without Google's extended Photos access, "
-                "Buddy can only see media it created itself, not your full library.")
+        return ("No items visible. Without Google's extended Photos access, Buddy can only "
+                "see media it created itself, not your full library.")
     return "\n".join(f'{i.get("filename")} — {i.get("productUrl")}' for i in items)

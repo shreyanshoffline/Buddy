@@ -81,3 +81,13 @@ __all__ = [
 ]
 
 from core.ecosystems import *  # noqa: E402,F401,F403
+from core.activity_watcher import (  # noqa: E402,F401
+    ActivityWatcher, is_enabled as activity_watch_enabled,
+    set_enabled as set_activity_watch_enabled,
+    forget_everything as forget_activity_data,
+    summarize_now as summarize_activity,
+    get_latest_summary as get_activity_summary,
+)
+from core.updater import (  # noqa: E402,F401
+    check_for_update, update_now, severity_message, CURRENT_VERSION,
+)

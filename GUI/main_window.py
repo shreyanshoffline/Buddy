@@ -838,6 +838,8 @@ class BuddyWindow(QWidget):
         # EdgeResizeController owns window edges so the handle sits on the card, not the shadow.
  
         self.settings_page = SettingsPage(close_callback=self.hide, on_theme_changed=self.restart_app)
+        self._activity_watcher = core.ActivityWatcher()
+        self._activity_watcher.start()
         self.library_page = LibraryPage(close_callback=self.hide, on_chat_selected=self._request_open_chat, on_delete_chat=self._delete_chat_from_library)
         self.billing_page = BillingPage(close_callback=self.hide)
         self.artifacts_page = ArtifactsPage(close_callback=self.hide)

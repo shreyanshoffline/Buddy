@@ -181,7 +181,7 @@ def notes_create(title: str, body: str = "", folder: str = None) -> str:
 # Calendar
 # ---------------------------------------------------------------------------
 
-def calendar_today(calendar_name: str = None) -> str:
+def apple_calendar_today(calendar_name: str = None) -> str:
     cal_clause = f'calendar "{_escape(calendar_name)}"' if calendar_name else "every calendar"
     script = f'''
     tell application "Calendar"
@@ -204,7 +204,7 @@ def calendar_today(calendar_name: str = None) -> str:
     return out if out else "Nothing on the calendar today."
 
 
-def calendar_create_event(title: str, start_iso: str, end_iso: str,
+def apple_calendar_create_event(title: str, start_iso: str, end_iso: str,
                            calendar_name: str = None, location: str = None) -> str:
     cal_clause = f'calendar "{_escape(calendar_name)}"' if calendar_name else "calendar 1"
     start_dt = datetime.fromisoformat(start_iso)
@@ -223,7 +223,7 @@ def calendar_create_event(title: str, start_iso: str, end_iso: str,
     return f'Created "{title}" from {start_dt.strftime("%-I:%M %p")} to {end_dt.strftime("%-I:%M %p")}.'
 
 
-def calendar_move_event(title: str, hours_delta: float, calendar_name: str = None) -> str:
+def apple_calendar_move_event(title: str, hours_delta: float, calendar_name: str = None) -> str:
     cal_clause = f'calendar "{_escape(calendar_name)}"' if calendar_name else "every calendar"
     seconds = int(hours_delta * 3600)
     script = f'''

@@ -58,6 +58,38 @@ FILE_TOOLS = {
 }
 URL_TOOLS = {"open_url", "navigate_active_tab", "download_file", "ping_host"}
 
+GOOGLE_WORKSPACE_TOOLS = {
+    "calendar_today", "calendar_create_event", "calendar_move_event", "meet_create_link",
+    "drive_list_recent", "drive_upload_file", "docs_create", "docs_append_heading",
+    "sheets_create", "sheets_write_range", "sheets_read_range",
+    "slides_create_from_bullets", "translate_text", "maps_directions", "photos_list_recent",
+}
+MICROSOFT_TOOLS = {
+    "outlook_unread", "outlook_create_draft", "outlook_today", "outlook_create_event",
+    "onedrive_recent", "onedrive_upload", "onenote_list_sections", "onenote_create_page",
+    "teams_list_chats", "teams_send_message",
+}
+GITHUB_OPS_TOOLS = {
+    "github_clone_repo", "github_status", "github_create_branch", "github_commit_all",
+    "github_push", "github_pull", "github_create_pull_request", "github_list_open_prs",
+    "github_add_pr_comment", "github_add_review_comment", "add_code_comment",
+}
+APPLE_TOOLS = {
+    "reminders_list", "reminders_add", "reminders_complete",
+    "notes_find", "notes_append", "notes_create",
+    "apple_calendar_today", "apple_calendar_create_event", "apple_calendar_move_event",
+    "messages_recent_threads", "messages_draft",
+    "mail_list_inbox", "mail_create_draft",
+    "music_play", "music_pause", "music_play_playlist", "music_now_playing",
+    "facetime_call", "clock_run_shortcut",
+    "finder_reveal", "finder_move", "finder_trash",
+    "safari_list_tabs", "safari_open_url", "safari_current_tab_title",
+    "photos_search", "photos_export_one",
+    "appstore_open_search", "appstore_open_product_id",
+    "open_system_settings_pane", "icloud_probe", "icloud_list",
+}
+
+
 APP_ALIASES = {
     "slack": ("slack",),
     "messages": ("messages", "imessage"),
@@ -141,6 +173,31 @@ def tool_allowed(tool_name, plugins=None):
         or plugins["system"].get("folder_access")
     ):
         return False
+    if name in GOOGLE_WORKSPACE_TOOLS:
+        try:
+            import core
+            if not core.get_plugin_connection("google"):
+                return False
+        except Exception:
+            return False
+    if name in MICROSOFT_TOOLS:
+        try:
+            import core
+            if not core.get_plugin_connection("microsoft"):
+                return False
+        except Exception:
+            return False
+    if name in GITHUB_OPS_TOOLS:
+        try:
+            import core
+            if not core.get_plugin_connection("github"):
+                return False
+        except Exception:
+            return False
+    if name in APPLE_TOOLS:
+        import platform
+        if platform.system() != "Darwin":
+            return False
     return True
 
 
@@ -178,6 +235,14 @@ def blocked_reason(tool_name, tool_args=None, plugins=None):
                 "Files & Folders in Plugins, then approve Buddy in macOS "
                 "Privacy & Security."
             )
+        if name in GOOGLE_WORKSPACE_TOOLS:
+            return "Google isn't connected. Plugins > Google > Connect."
+        if name in MICROSOFT_TOOLS:
+            return "Microsoft isn't connected. Plugins > Microsoft > Connect."
+        if name in GITHUB_OPS_TOOLS:
+            return "GitHub isn't connected. Plugins > GitHub > Connect."
+        if name in APPLE_TOOLS:
+            return "This is an Apple-only tool and isn't available on this OS."
         return "This plugin is turned off in Plugins."
     args = tool_args or {}
     if name == "open_app":

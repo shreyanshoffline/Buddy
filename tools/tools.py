@@ -64,6 +64,12 @@ except ImportError:
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/presentations",
+    "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
 ]
 def _gmail_file(name):
     """Find Gmail OAuth files wherever Buddy actually keeps them."""

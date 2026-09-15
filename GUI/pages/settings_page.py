@@ -109,6 +109,7 @@ class SettingsPage(CardPage):
         self._build_profile_card()
         self._build_appearance_card()
         self._build_privacy_card()
+        self._build_activity_and_updates_card()
         self._build_danger_card()
         self.main_layout.addStretch()
 
@@ -427,6 +428,92 @@ class SettingsPage(CardPage):
         else:
             self.pin_input.setPlaceholderText("No PIN set — private chats are just hidden, not locked")
             QMessageBox.information(self, "Privacy PIN", "Your Privacy PIN has been removed.")
+
+    # --- Danger Zone card --------------------------------------------------
+    def _build_activity_and_updates_card(self):
+        layout = self._make_card("Activity Tracking & Updates")
+
+        desc = self._field_label(
+            "Off by default. If on, Buddy notes which app is frontmost every "
+            "few minutes, purely on this machine, and after about a week can "
+            "summarize your habits. Nothing is ever uploaded."
+        )
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        activity_row = QHBoxLayout()
+        activity_label = QLabel("Learn my habits")
+        activity_label.setStyleSheet(f"color: {CARD_TEXT_COLOR}; font-size: 12px; background: transparent; border: none;")
+        activity_row.addWidget(activity_label)
+        activity_row.addStretch()
+        self.activity_toggle = ToggleSwitch(
+            checked=core.activity_watch_enabled(), accent=PRIMARY_COLOR, track_off=CARD_SUBTITLE_COLOR
+        )
+        self.activity_toggle.setToolTip("Track which apps you use, locally, to notice patterns over time")
+        self.activity_toggle.toggled.connect(self._on_activity_toggle)
+        activity_row.addWidget(self.activity_toggle)
+        layout.addLayout(activity_row)
+
+        summarize_btn = QPushButton("Summarize my habits now")
+        summarize_btn.setCursor(Qt.PointingHandCursor)
+        summarize_btn.setStyleSheet(f"""
+            QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border-radius: 8px; padding: 6px 14px; border: none; font-size: 12px; }}
+            QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
+            QPushButton:pressed {{ background: {PRIMARY_COLOR_PRESSED}; }}
+        """)
+        summarize_btn.clicked.connect(self._on_summarize_activity)
+        layout.addWidget(summarize_btn)
+
+        forget_btn = QPushButton("Forget my activity data")
+        forget_btn.setCursor(Qt.PointingHandCursor)
+        forget_btn.setStyleSheet("QPushButton { background: transparent; color: #b3261e; border: 1px solid #b3261e; border-radius: 8px; padding: 6px 14px; font-size: 12px; }")
+        forget_btn.clicked.connect(self._on_forget_activity)
+        layout.addWidget(forget_btn)
+
+        update_row = QHBoxLayout()
+        self.update_status_label = self._field_label(f"Buddy {core.CURRENT_VERSION}")
+        update_row.addWidget(self.update_status_label)
+        update_row.addStretch()
+        check_update_btn = QPushButton("Check for update")
+        check_update_btn.setCursor(Qt.PointingHandCursor)
+        check_update_btn.setStyleSheet(f"""
+            QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border-radius: 8px; padding: 6px 14px; border: none; font-size: 12px; }}
+            QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
+        """)
+        check_update_btn.clicked.connect(self._on_check_update)
+        update_row.addWidget(check_update_btn)
+        layout.addLayout(update_row)
+
+    def _on_activity_toggle(self, on):
+        message = core.set_activity_watch_enabled(on)
+        QMessageBox.information(self, "Activity Tracking", message)
+
+    def _on_summarize_activity(self):
+        summary = core.summarize_activity()
+        QMessageBox.information(self, "Your Habits", summary)
+
+    def _on_forget_activity(self):
+        result = core.forget_activity_data()
+        self.activity_toggle.setChecked(False)
+        QMessageBox.information(self, "Activity Tracking", result)
+
+    def _on_check_update(self):
+        info = core.check_for_update()
+        if not info["available"]:
+            self.update_status_label.setText(f"Buddy {core.CURRENT_VERSION} — up to date")
+            if info.get("notes"):
+                QMessageBox.information(self, "Updates", info["notes"])
+            return
+        severity_text = core.severity_message(info["severity"])
+        reply = QMessageBox.question(
+            self, f"Update available: {info['latest_version']}",
+            f"{severity_text}\n\nUpdate now?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            result = core.update_now()
+            self.update_status_label.setText(f"Buddy {core.CURRENT_VERSION}")
+            QMessageBox.information(self, "Update", result)
 
     # --- Danger Zone card --------------------------------------------------
     def _build_danger_card(self):

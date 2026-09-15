@@ -9,6 +9,16 @@ import time
 
 import tools.tools as tools
 import tools.gmail_tools as gmail_tools
+import tools.apple_tools as apple_tools
+import tools.github_ops as github_ops
+try:
+    import tools.google_workspace_tools as google_workspace_tools
+except ImportError:
+    google_workspace_tools = None  # google-api-python-client/google-auth-oauthlib not installed yet
+try:
+    import tools.msgraph_tools as msgraph_tools
+except ImportError:
+    msgraph_tools = None  # msal not installed yet
 from tools.tools_schema import tools_schema
 from core.instruction import build_action_instruction
 from models import run_manager_step, run_action_step, BuddyCancelled, extract_image_urls, message_text
@@ -266,25 +276,35 @@ def run_image_creation_task(plan_text, source_images=None, cancel_check=None):
     }
 
 
+TOOL_MODULES = tuple(m for m in (tools, gmail_tools, apple_tools, google_workspace_tools, msgraph_tools, github_ops) if m is not None)
+
+
 def execute_tool(tool_name, tool_args):
-    known_tools = [name for name in dir(tools) if not name.startswith("_")]
-    known_tools += [name for name in dir(gmail_tools) if not name.startswith("_")]
- 
+    known_tools = []
+    for module in TOOL_MODULES:
+        known_tools += [name for name in dir(module) if not name.startswith("_")]
+
     cleaned = tool_name
     if cleaned not in known_tools:
         for known in known_tools:
             if tool_name.endswith(known):
                 cleaned = known
                 break
- 
-    for module in (tools, gmail_tools):
+
+    for module in TOOL_MODULES:
         if hasattr(module, cleaned):
             try:
                 blocked = blocked_reason(cleaned, tool_args)
                 if blocked:
                     return blocked
                 func = getattr(module, cleaned)
-                return func(**tool_args)
+                result = func(**tool_args)
+                try:
+                    from core import patterns
+                    patterns.log_action(cleaned)
+                except Exception:
+                    pass  # pattern logging is best-effort, never blocks a real tool result
+                return result
             except Exception as e:
                 return f"Error executing {cleaned}: {str(e)}"
     return f"Error: Tool '{tool_name}' not found."
