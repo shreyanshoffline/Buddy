@@ -16,10 +16,12 @@ import re
 import subprocess
 import requests
 
+from tools.paths import app_root
+
 CURRENT_VERSION = "0.9.5"
 GITHUB_OWNER = "shreyanshoffline"
 GITHUB_REPO = "Buddy"
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = str(app_root())
 
 
 def _parse_version(v: str):

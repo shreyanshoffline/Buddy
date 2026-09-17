@@ -21,7 +21,9 @@ from collections import Counter
 from datetime import datetime
 from typing import Optional
 
-DB_PATH = os.path.expanduser("~/.buddy/patterns.db")
+from tools.paths import data_file
+
+DB_PATH = data_file("patterns.db")
 
 # Map raw logged action names to plain-English phrasing. Extend this as
 # you log more actions elsewhere in the codebase — anything missing

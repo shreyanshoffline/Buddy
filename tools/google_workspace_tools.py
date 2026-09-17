@@ -63,6 +63,21 @@ def check_google_connection() -> str:
         return f"ERROR: {e}"
 
 
+def get_userinfo() -> dict:
+    """Real profile info (email, name, picture) for the signed-in Google
+    account — used by onboarding's 'Sign in with Google' to know who
+    actually signed in, not just that a token exists."""
+    import requests
+    creds = _get_credentials()
+    resp = requests.get(
+        "https://www.googleapis.com/oauth2/v2/userinfo",
+        headers={"Authorization": f"Bearer {creds.token}"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()  # {"email": ..., "name": ..., "picture": ..., ...}
+
+
 # ---------------------------------------------------------------------------
 # Calendar
 # ---------------------------------------------------------------------------

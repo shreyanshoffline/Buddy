@@ -70,23 +70,20 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/presentations",
     "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
 ]
 def _gmail_file(name):
     """Find Gmail OAuth files wherever Buddy actually keeps them."""
+    from tools.paths import resolve_existing
     project_root = Path(__file__).resolve().parent.parent
     tools_dir = Path(__file__).resolve().parent
-    candidates = [
-        tools_dir / name,
-        project_root / name,
+    extra = [
         Path.home() / "Buddy" / "tools" / name,
         Path.home() / "Buddy" / name,
-        Path.cwd() / "tools" / name,
-        Path.cwd() / name,
     ]
-    for path in candidates:
-        if path.exists():
-            return str(path)
-    return str(tools_dir / name)
+    return resolve_existing(name, extra_candidates=extra)
 
 
 TOKEN_PATH = _gmail_file("token.json")

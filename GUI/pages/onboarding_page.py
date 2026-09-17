@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QLabel, QVBoxLayout, QHBoxLayout, QLineEdit, QTextEdit, QPushButton,
     QStackedWidget, QWidget, QComboBox, QMessageBox,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QThread, Signal as QtSignal
 
 import core
 import billing_client
@@ -15,9 +15,63 @@ from ..theme import (
 )
 
 
+class _GoogleSignInWorker(QThread):
+    done = QtSignal(dict)  # {"ok": bool, "email": str, "name": str, "error": str}
+
+    def run(self):
+        try:
+            from tools import google_workspace_tools as gwt
+            gwt._get_credentials()
+            info = gwt.get_userinfo()
+            core.set_plugin_connection("google", "connected", info.get("email"))
+            self.done.emit({"ok": True, "email": info.get("email", ""), "name": info.get("name", "")})
+        except Exception as e:
+            self.done.emit({"ok": False, "error": str(e)})
+
+
+class _MicrosoftSignInWorker(QThread):
+    done = QtSignal(dict)
+
+    def run(self):
+        try:
+            from tools import msgraph_tools as mst
+            mst._get_token()
+            info = mst.get_userinfo()
+            email = info.get("mail") or info.get("userPrincipalName", "")
+            core.set_plugin_connection("microsoft", "connected", email)
+            self.done.emit({"ok": True, "email": email, "name": info.get("displayName", "")})
+        except Exception as e:
+            self.done.emit({"ok": False, "error": str(e)})
+
+
+# Rounded, brand-tinted pill buttons instead of flat stock QPushButtons.
+# icon_glyph is a short text/emoji placeholder — swap in a real QIcon(path)
+# per provider once you drop official logo assets (from each brand's own
+# press kit — Google/Microsoft/Apple all publish one) into GUI/assets/.
+def _provider_button(text, icon_glyph, accent, text_color="#1a1a1a"):
+    btn = QPushButton(f"  {icon_glyph}   {text}")
+    btn.setCursor(Qt.PointingHandCursor)
+    btn.setMinimumHeight(46)
+    btn.setStyleSheet(f"""
+        QPushButton {{
+            background: #ffffff;
+            color: {text_color};
+            border: 2px solid {accent};
+            border-radius: 23px;
+            padding: 6px 18px;
+            font-size: 13px;
+            font-weight: 600;
+            text-align: left;
+        }}
+        QPushButton:hover {{ background: {accent}; color: #ffffff; }}
+        QPushButton:disabled {{ border-color: {BORDER_COLOR}; color: {CARD_SUBTITLE_COLOR}; background: {HOVER_BG_COLOR}; }}
+    """)
+    return btn
+
+
 class OnboardingPage(CardPage):
     def __init__(self, parent=None, close_callback=None, on_complete=None):
-        super().__init__("Welcome to Buddy", "Set up your account and preferences. Everything can be changed later in Settings.", parent, close_callback)
+        super().__init__("Hey! I'm Buddy 👋", "Let's get you set up — two minutes, tops. Everything here can change later in Settings.", parent, close_callback)
         self.on_complete = on_complete
         self.profile = core.get_profile()
         self.buddy_user_id = core.get_or_create_buddy_user_id()
@@ -46,33 +100,40 @@ class OnboardingPage(CardPage):
         layout = QVBoxLayout(page)
         layout.setSpacing(10)
         heading = QLabel(title)
-        heading.setStyleSheet(f"color: {CARD_TEXT_COLOR}; font-size: 16px; font-weight: 700; background: transparent; border: none;")
+        heading.setStyleSheet(f"color: {CARD_TEXT_COLOR}; font-size: 19px; font-weight: 800; background: transparent; border: none;")
         layout.addWidget(heading)
         layout.addWidget(self._label(note))
         return page, layout
 
     def _build_steps(self):
-        page, layout = self._step("Create your account", "Choose a sign-in method. You can continue as a local Buddy profile if you prefer.")
+        page, layout = self._step("✨ Create your account", "Pick a sign-in method, or just go local — no pressure.")
         providers = QVBoxLayout()
-        providers.setSpacing(8)
-        self.hackclub_button = QPushButton("Sign in with Hack Club")
-        self.hackclub_button.setCursor(Qt.PointingHandCursor)
-        self.hackclub_button.setMinimumHeight(34)
+        providers.setSpacing(10)
+
+        self.hackclub_button = _provider_button("Sign in with Hack Club", "🚩", "#EC3750")
         self.hackclub_button.clicked.connect(self._open_hackclub_signin)
         providers.addWidget(self.hackclub_button)
-        for label in ("Sign in with Google — coming later", "Sign in with GitHub — coming later"):
-            button = QPushButton(label)
-            button.setEnabled(False)
-            button.setMinimumHeight(34)
-            providers.addWidget(button)
+
+        self.google_button = _provider_button("Sign in with Google", "🇬", "#4285F4")
+        self.google_button.clicked.connect(self._on_google_button)
+        providers.addWidget(self.google_button)
+
+        self.microsoft_button = _provider_button("Sign in with Microsoft", "⊞", "#00A4EF")
+        self.microsoft_button.clicked.connect(self._on_microsoft_button)
+        providers.addWidget(self.microsoft_button)
+
+        self.apple_button = _provider_button("Sign in with Apple", "", "#000000")
+        self.apple_button.clicked.connect(self._on_apple_button)
+        providers.addWidget(self.apple_button)
+
         layout.addLayout(providers)
         self.email = self._field(self.profile.get("email"), "Email address")
         layout.addWidget(self.email)
-        self.account_note = self._label("Sign in with Hack Club, or just enter an email to keep a local profile. Google and GitHub will come after the first public release.")
+        self.account_note = self._label("Or just drop your email for a local profile — no account needed.")
         layout.addWidget(self.account_note)
         self.pages.addWidget(page)
 
-        page, layout = self._step("About you", "Optional. This helps Buddy tailor replies to you.")
+        page, layout = self._step("👋 About you", "Optional. This helps Buddy tailor replies to you.")
         self.name = self._field(self.profile.get("name"), "Your name")
         self.age = self._field(self.profile.get("age"), "Age")
         layout.addWidget(self._label("Name is what Buddy calls you. Age is optional."))
@@ -84,7 +145,7 @@ class OnboardingPage(CardPage):
         layout.addWidget(self._label("PIN is only if you want locked chats. Leave it blank if you are not sure."))
         self.pages.addWidget(page)
 
-        page, layout = self._step("Your interests", "Optional. Add a little context so Buddy can make better suggestions.")
+        page, layout = self._step("🎯 Your interests", "Optional. Add a little context so Buddy can make better suggestions.")
         self.bio = QTextEdit(self.profile.get("bio") or "")
         self.bio.setPlaceholderText("About you")
         self.favorite_apps = self._field(self.profile.get("favorite_apps"), "Favorite apps, separated by commas")
@@ -94,7 +155,7 @@ class OnboardingPage(CardPage):
             layout.addWidget(field)
         self.pages.addWidget(page)
 
-        page, layout = self._step("Appearance", "Optional. You can always change these choices later in Settings.")
+        page, layout = self._step("🎨 Make it yours", "Optional. You can always change these choices later in Settings.")
         self.color = QComboBox()
         self.color.addItems([label for _, label, _ in THEME_OPTIONS])
         current = self.profile.get("theme_color", "blue")
@@ -119,12 +180,14 @@ class OnboardingPage(CardPage):
         skip.clicked.connect(self._finish)
         nav.addWidget(skip)
         self.next = QPushButton("Save and continue")
-        self.next.setStyleSheet(f"QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 600; }} QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}")
+        self.next.setStyleSheet(f"QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none; border-radius: 20px; padding: 10px 20px; font-weight: 700; }} QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}")
         self.next.clicked.connect(self._next)
         nav.addWidget(self.next)
         self.main_layout.addLayout(nav)
         self.pages.currentChanged.connect(self._update_navigation)
         self._update_navigation(0)
+
+    # --- Hack Club (existing, unchanged) ------------------------------------
 
     def _open_hackclub_signin(self):
         try:
@@ -132,7 +195,7 @@ class OnboardingPage(CardPage):
         except billing_client.BillingNotConfigured as error:
             QMessageBox.warning(self, "Hack Club setup", str(error))
             return
-        self.hackclub_button.setText("Waiting for Hack Club…")
+        self.hackclub_button.setText("  🚩   Waiting for Hack Club…")
         self.hackclub_button.setEnabled(False)
         self.account_note.setText("Finish sign-in in the browser, then return here. Buddy will pick it up automatically.")
         self._hackclub_poll_elapsed_ms = 0
@@ -142,7 +205,7 @@ class OnboardingPage(CardPage):
         self._hackclub_poll_elapsed_ms += 2500
         if self._hackclub_poll_elapsed_ms >= 120_000:
             self._hackclub_poll_timer.stop()
-            self.hackclub_button.setText("Sign in with Hack Club")
+            self.hackclub_button.setText("  🚩   Sign in with Hack Club")
             self.hackclub_button.setEnabled(True)
             self.account_note.setText("Sign-in timed out. Start the backend and try again.")
             return
@@ -165,9 +228,65 @@ class OnboardingPage(CardPage):
             self.email.setText(result["email"])
         if hasattr(self, "name") and result.get("name"):
             self.name.setText(result["name"])
-        self.hackclub_button.setText("Signed in with Hack Club")
+        self.hackclub_button.setText("  🚩   Signed in with Hack Club")
         status = result.get("verification_status") or "signed in"
         self.account_note.setText(f"Hack Club connected ({status}). You can continue setup.")
+
+    # --- Google ---------------------------------------------------------
+
+    def _on_google_button(self):
+        self.google_button.setEnabled(False)
+        self.google_button.setText("  🇬   Connecting…")
+        self._google_worker = _GoogleSignInWorker()
+        self._google_worker.done.connect(self._on_google_done)
+        self._google_worker.start()
+
+    def _on_google_done(self, result):
+        self.google_button.setEnabled(True)
+        if not result.get("ok"):
+            self.google_button.setText("  🇬   Sign in with Google")
+            QMessageBox.warning(self, "Google sign-in", f"Couldn't sign in: {result.get('error')}")
+            return
+        self.google_button.setText(f"  🇬   Signed in as {result.get('email', 'Google')}")
+        self.email.setText(result.get("email", ""))
+        core.update_profile(email=result.get("email"), name=result.get("name") or None, auth_provider="google")
+        self.profile = core.get_profile()
+        self.account_note.setText("Google connected. You can continue setup.")
+
+    # --- Microsoft --------------------------------------------------------
+
+    def _on_microsoft_button(self):
+        self.microsoft_button.setEnabled(False)
+        self.microsoft_button.setText("  ⊞   Check the terminal for your code…")
+        self._ms_worker = _MicrosoftSignInWorker()
+        self._ms_worker.done.connect(self._on_microsoft_done)
+        self._ms_worker.start()
+
+    def _on_microsoft_done(self, result):
+        self.microsoft_button.setEnabled(True)
+        if not result.get("ok"):
+            self.microsoft_button.setText("  ⊞   Sign in with Microsoft")
+            QMessageBox.warning(self, "Microsoft sign-in", f"Couldn't sign in: {result.get('error')}")
+            return
+        self.microsoft_button.setText(f"  ⊞   Signed in as {result.get('email', 'Microsoft')}")
+        self.email.setText(result.get("email", ""))
+        core.update_profile(email=result.get("email"), name=result.get("name") or None, auth_provider="microsoft")
+        self.profile = core.get_profile()
+        self.account_note.setText("Microsoft connected. You can continue setup.")
+
+    # --- Apple ------------------------------------------------------------
+
+    def _on_apple_button(self):
+        QMessageBox.information(
+            self, "Sign in with Apple",
+            "Not wired up yet — and not because of effort, because of a real requirement: "
+            "Apple's sign-in flow refuses localhost or IP redirect URLs entirely. It needs a "
+            "real HTTPS domain Buddy's backend is deployed to, plus a paid Apple Developer "
+            "Program membership ($99/year — same fee whether or not you ever ship to the App "
+            "Store). Once Buddy has a real domain for the backend, this becomes buildable.",
+        )
+
+    # --- Save / navigation (unchanged) -------------------------------------
 
     def _save_current(self):
         index = self.pages.currentIndex()

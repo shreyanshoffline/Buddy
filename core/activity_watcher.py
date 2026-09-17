@@ -28,10 +28,11 @@ except ImportError:
 
 import core
 from core import patterns
+from tools.paths import data_file
 
-CONSENT_FLAG_PATH = os.path.expanduser("~/.buddy/activity_watch_enabled")
-SUMMARY_PATH = os.path.expanduser("~/.buddy/activity_summary.txt")
-LAST_SUMMARY_META_PATH = os.path.expanduser("~/.buddy/activity_summary_last_run")
+CONSENT_FLAG_PATH = data_file("activity_watch_enabled")
+SUMMARY_PATH = data_file("activity_summary.txt")
+LAST_SUMMARY_META_PATH = data_file("activity_summary_last_run")
 
 
 # ---------------------------------------------------------------------------

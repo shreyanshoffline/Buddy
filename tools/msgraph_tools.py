@@ -26,11 +26,13 @@ import time
 import requests
 from msal import PublicClientApplication, SerializableTokenCache
 
+from tools.paths import data_file, resolve_existing
+
 CLIENT_ID = os.environ.get("BUDDY_MS_CLIENT_ID", "")
 AUTHORITY = "https://login.microsoftonline.com/consumers"  # personal MS accounts
 SCOPES = ["Mail.Read", "Mail.Send", "Calendars.ReadWrite", "Files.ReadWrite", "Notes.ReadWrite", "Chat.ReadWrite"]
-TOKEN_CACHE_PATH = os.path.expanduser("~/Buddy/ms_token_cache.json")  # next to credentials.json/token.json
-CLIENT_ID_PATH = os.path.expanduser("~/Buddy/ms_client_id.txt")
+TOKEN_CACHE_PATH = data_file("ms_token_cache.json")  # lives inside Buddy's own folder, portable
+CLIENT_ID_PATH = resolve_existing("ms_client_id.txt")
 SETUP_HELP = (
     "Microsoft is not configured. Set BUDDY_MS_CLIENT_ID or enter the Azure "
     "Application (client) ID in Plugins > Microsoft."
@@ -144,6 +146,12 @@ def _post(path, body):
 # ---------------------------------------------------------------------------
 # Outlook Mail
 # ---------------------------------------------------------------------------
+
+def get_userinfo() -> dict:
+    """Real profile info for the signed-in Microsoft account — used by
+    onboarding's 'Sign in with Microsoft' to know who actually signed in."""
+    return _get("/me")
+
 
 def outlook_unread(limit: int = 10) -> str:
     data = _get("/me/mailFolders/inbox/messages",
