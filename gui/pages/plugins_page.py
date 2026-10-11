@@ -6,9 +6,10 @@ Gmail and GitHub show Connect / Connected / Not connected / Unavailable
 from a real credential check.
 """
 import sys
+import os
+import shutil
 from pathlib import Path
 import platform
-from PySide6.QtCore import QThread, Signal
 from PySide6.QtCore import Qt, QThread, Signal as QtSignal, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
@@ -18,7 +19,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QInputDialog,
-    QMessageBox, QInputDialog, QLineEdit,
+    QMessageBox,
+    QFileDialog,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -139,15 +141,29 @@ class _MicrosoftConnectWorker(QThread):
     connected = QtSignal(str)
     failed = QtSignal(str)
 
+    def __init__(self, flow):
+        super().__init__()
+        self.flow = flow
+
     def run(self):
         try:
             from tools import msgraph_tools as mst
             import core
-            if not mst.has_client_id():
-                raise RuntimeError(mst.SETUP_HELP)
-            mst._get_token()
+            mst.finish_device_flow(self.flow)
             core.set_plugin_connection("microsoft", "connected", None)
             self.connected.emit("connected")
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class _MicrosoftStartWorker(QThread):
+    started = QtSignal(object)
+    failed = QtSignal(str)
+
+    def run(self):
+        try:
+            from tools import msgraph_tools as mst
+            self.started.emit(mst.start_device_flow())
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -384,6 +400,8 @@ class PluginsPage(CardPage):
         return label
 
     def _build_universal(self):
+        import core
+
         self._section("PLUGINS", "Universal")
         layout = self._make_card("Always available", "Tools that are not tied to one Mac app.")
 
@@ -427,6 +445,37 @@ class PluginsPage(CardPage):
         )
         weather.toggled.connect(lambda on: self._set_universal("weather", on))
         layout.addWidget(weather_row)
+
+        location_on = bool(self.plugins["universal"].get("location", True))
+        location_row, location = self._toggle_row(
+            "Approximate location",
+            "Let Buddy find your city or region for nearby searches. This uses internet location, not GPS or a street address.",
+            checked=location_on,
+            status="Used for restaurants, cafes, stores, and events around you",
+        )
+        location.toggled.connect(lambda on: self._set_universal("location", on))
+        layout.addWidget(location_row)
+
+        saved_location = (core.get_profile() or {}).get("preferred_location") or ""
+        location_input_row = QHBoxLayout()
+        self.location_input = QLineEdit(saved_location)
+        self.location_input.setPlaceholderText("Your city or neighborhood")
+        self.location_input.setStyleSheet(
+            f"QLineEdit {{ background: {INPUT_BG}; color: {TEXT_COLOR_DARK}; border: 1px solid {BORDER_COLOR}; "
+            "border-radius: 8px; padding: 6px 9px; font-size: 11px; }"
+        )
+        self.location_input.returnPressed.connect(self._save_preferred_location)
+        location_input_row.addWidget(self.location_input, 1)
+        save_location_button = self._small_button("Save location")
+        save_location_button.clicked.connect(self._save_preferred_location)
+        location_input_row.addWidget(save_location_button)
+        layout.addLayout(location_input_row)
+
+    def _save_preferred_location(self):
+        import core
+        value = self.location_input.text().strip()
+        core.update_profile(preferred_location=value)
+        self.location_input.setText(value)
 
     def _gmail_snapshot(self):
         try:
@@ -663,6 +712,9 @@ class PluginsPage(CardPage):
             core.remove_plugin_connection("slack")
             self._refresh_slack_status()
             return
+        if not billing_client.backend_is_up():
+            self._connect_slack_token_locally()
+            return
         self.slack_button.setEnabled(False)
         self.slack_button.setText("Waiting…")
         self.slack_status.setText("A browser will open Slack. Click Allow, then come back here.")
@@ -678,6 +730,27 @@ class PluginsPage(CardPage):
         self._slack_timer.setInterval(2000)
         self._slack_timer.timeout.connect(self._poll_slack_install)
         self._slack_timer.start()
+
+    def _connect_slack_token_locally(self):
+        import core
+
+        token, ok = QInputDialog.getText(
+            self,
+            "Connect Slack directly",
+            "Paste a Slack token beginning with xoxb- or xoxp-.\n"
+            "Buddy verifies it and stores it only on this Mac:",
+            QLineEdit.Password,
+        )
+        if not ok or not token.strip():
+            self.slack_status.setText("Slack connection cancelled.")
+            return
+        try:
+            from tools import integrations
+            label = integrations.slack_verify_token(token.strip())
+            core.set_plugin_connection("slack", token.strip(), label)
+            self._refresh_slack_status()
+        except Exception as exc:
+            self.slack_status.setText("Slack token was not accepted: %s" % exc)
 
     def _poll_slack_install(self):
         import core
@@ -718,10 +791,27 @@ class PluginsPage(CardPage):
 
     def _on_google_button(self):
         import core
+        from tools import google_workspace_tools as gwt
         if core.get_plugin_connection("google"):
             core.remove_plugin_connection("google")
             self._refresh_google_status()
             return
+        if not os.path.exists(gwt.CREDS_PATH):
+            source, _ = QFileDialog.getOpenFileName(
+                self,
+                "Choose Google OAuth credentials",
+                str(Path.home()),
+                "JSON files (*.json);;All files (*)",
+            )
+            if not source:
+                self.google_status.setText("Google setup cancelled. Choose credentials.json to connect.")
+                return
+            try:
+                os.makedirs(os.path.dirname(gwt.CREDS_PATH), exist_ok=True)
+                shutil.copyfile(source, gwt.CREDS_PATH)
+            except OSError as exc:
+                self.google_status.setText("Couldn't save Google credentials: %s" % exc)
+                return
         self.google_button.setEnabled(False)
         self.google_button.setText("Connecting…")
         worker = _GoogleConnectWorker()
@@ -733,7 +823,9 @@ class PluginsPage(CardPage):
     def _on_google_failed(self, message):
         self.google_button.setEnabled(True)
         self.google_button.setText("Connect")
-        self.google_status.setText("Couldn't connect: %s" % message)
+        self.google_status.setText(
+            "Couldn't connect: %s. Check that credentials.json is an OAuth desktop-app file." % message
+        )
 
     def _refresh_microsoft_status(self):
         try:
@@ -785,9 +877,33 @@ class PluginsPage(CardPage):
                 self.ms_status.setText("Couldn't save client ID: %s" % exc)
                 return
         self.ms_button.setEnabled(False)
+        self.ms_button.setText("Preparing…")
+        self.ms_status.setText("Preparing a Microsoft sign-in code…")
+        worker = _MicrosoftStartWorker()
+        worker.started.connect(self._on_microsoft_flow_started)
+        worker.failed.connect(self._on_microsoft_failed)
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_microsoft_flow_started(self, flow):
+        from tools import msgraph_tools as mst
+        verification_uri = flow.get("verification_uri") or flow.get("verification_uri_complete")
+        code = flow.get("user_code", "")
+        expires = int(flow.get("expires_in", 900)) // 60
+        self.ms_status.setText(
+            "Code %s is ready. Approve it in the Microsoft sign-in window; this code expires in about %s minutes."
+            % (code, expires)
+        )
+        QDesktopServices.openUrl(QUrl(verification_uri))
+        QMessageBox.information(
+            self,
+            "Microsoft sign-in code",
+            "1. Opened Microsoft sign-in in your browser.\n\n"
+            "2. Enter this code:\n\n%s\n\n"
+            "Buddy will finish connecting automatically after approval." % code,
+        )
         self.ms_button.setText("Waiting…")
-        self.ms_status.setText("A browser window should open. Sign in there — Buddy catches the return automatically.")
-        worker = _MicrosoftConnectWorker()
+        worker = _MicrosoftConnectWorker(flow)
         worker.connected.connect(lambda _v: self._refresh_microsoft_status() or self.ms_button.setEnabled(True))
         worker.failed.connect(self._on_microsoft_failed)
         self._workers.append(worker)

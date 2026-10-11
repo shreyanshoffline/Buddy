@@ -88,6 +88,14 @@ tools_schema = [
     {
         "type": "function",
         "function": {
+            "name": "get_current_location",
+            "description": "Gets the user's approximate city and region from the internet for nearby searches. It does not return a street address or GPS coordinates.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_weather",
             "description": "Gets current weather and today's high/low for a named city, state, or region using a live weather service.",
             "parameters": {

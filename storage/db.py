@@ -7,6 +7,7 @@ It is NOT the same as message_history passed to the model each turn.
 
 import sqlite3
 import os
+import sys
 import json
 import time
 import math
@@ -42,9 +43,17 @@ CHUNK_OVERLAP = 400        # more overlap = less chance of splitting mid-thought
 
 # --- Where the DB lives ---
 def _default_db_path():
-    # Use the project directory for the database file
-    project_root = Path(__file__).parent.parent
-    db_file = project_root / "buddy.db"
+    if sys.platform == "darwin":
+        data_root = Path.home() / "Library" / "Application Support" / "Buddy"
+    elif sys.platform == "win32":
+        data_root = Path(os.environ.get("APPDATA", Path.home())) / "Buddy"
+    else:
+        data_root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "Buddy"
+    data_root.mkdir(parents=True, exist_ok=True)
+    db_file = data_root / "buddy.db"
+    legacy_file = Path(__file__).parent.parent / "buddy.db"
+    if legacy_file.exists() and not db_file.exists():
+        legacy_file.replace(db_file)
     return str(db_file)
 
 _DB_PATH = None
@@ -142,7 +151,8 @@ def init_db(conn=None):
             privacy_pin_hash TEXT,             -- sha256 hex digest; NULL = no PIN set
             has_seen_intro_tip INTEGER DEFAULT 0,
             favorite_apps TEXT,                -- comma-separated, user's own "usual apps"
-            quick_links TEXT                   -- comma-separated "Name: URL" pairs
+            quick_links TEXT,                  -- comma-separated "Name: URL" pairs
+            preferred_location TEXT            -- user-confirmed city or neighborhood
             ,auth_provider TEXT
             ,hackclub_verified INTEGER DEFAULT 0
             ,hackclub_verification_status TEXT
@@ -174,6 +184,8 @@ def init_db(conn=None):
             conn.execute("ALTER TABLE user_profile ADD COLUMN favorite_apps TEXT")
         if "quick_links" not in cols:
             conn.execute("ALTER TABLE user_profile ADD COLUMN quick_links TEXT")
+        if "preferred_location" not in cols:
+            conn.execute("ALTER TABLE user_profile ADD COLUMN preferred_location TEXT")
         if "buddy_user_id" not in cols:
             conn.execute("ALTER TABLE user_profile ADD COLUMN buddy_user_id TEXT")
         if "auth_provider" not in cols:
@@ -218,6 +230,8 @@ def init_db(conn=None):
             conn.execute("ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'")
         # migration: add feedback column for older dbs
         msg_cols = [r["name"] for r in conn.execute("PRAGMA table_info(messages)")]
+        if "metadata" not in msg_cols:
+            conn.execute("ALTER TABLE messages ADD COLUMN metadata TEXT")
         if "feedback" not in msg_cols:
             conn.execute("ALTER TABLE messages ADD COLUMN feedback TEXT")
         mem_cols = [r["name"] for r in conn.execute("PRAGMA table_info(task_memories)")]
@@ -650,6 +664,7 @@ def update_profile(**fields):
         "name", "age", "bio", "email", "theme_color", "dark_mode",
         "subscription_tier", "byo_api_key", "has_seen_intro_tip",
         "favorite_apps", "quick_links", "buddy_user_id",
+        "preferred_location",
         "auth_provider", "hackclub_verified", "hackclub_verification_status",
         "hackclub_identity_id", "hackclub_slack_id", "hackclub_ysws_eligible",
         "onboarding_complete",

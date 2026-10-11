@@ -8,6 +8,7 @@ Changing the theme in Settings takes effect on next launch — this module
 computes its constants once, at import time, from whatever was saved.
 """
 import core
+from version import APP_VERSION
 
 # ---------------------------------------------------------------------------
 # Hack Club official palette. Red is the hero; the rest are supporting
@@ -187,7 +188,7 @@ _T = get_theme(_accent_key, _dark_mode)
 FONT_FAMILY = "Segoe UI"
 FONT_FAMILY_FALLBACK = "Helvetica Neue"
 
-WINDOW_TITLE_TEXT = "Buddy v1.0.0"
+WINDOW_TITLE_TEXT = f"Buddy v{APP_VERSION}"
 WINDOW_TITLE_SIZE = 18
 WINDOW_TITLE_WEIGHT = 600
 GREETING_FONT_SIZE = 24

@@ -14,11 +14,17 @@ without the notarization work the roadmap already scopes for 0.9.8.
 import os
 import re
 import subprocess
+import sys
+import tempfile
+import zipfile
+import shlex
+from pathlib import Path
 import requests
+from version import APP_VERSION
 
 from tools.paths import app_root
 
-CURRENT_VERSION = "0.9.5"
+CURRENT_VERSION = APP_VERSION
 GITHUB_OWNER = "shreyanshoffline"
 GITHUB_REPO = "Buddy"
 REPO_ROOT = str(app_root())
@@ -66,6 +72,8 @@ def check_for_update() -> dict:
         "latest_version": CURRENT_VERSION,
         "severity": None,
         "url": f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases",
+        "download_url": "",
+        "asset_name": "",
         "notes": "",
     }
     try:
@@ -82,6 +90,14 @@ def check_for_update() -> dict:
         result["latest_version"] = latest_tag
         result["url"] = data.get("html_url", result["url"])
         result["notes"] = (data.get("body") or "")[:500]
+        assets = data.get("assets") or []
+        preferred = next(
+            (asset for asset in assets if asset.get("name", "").lower().endswith(".zip")),
+            None,
+        )
+        if preferred:
+            result["download_url"] = preferred.get("browser_download_url", "")
+            result["asset_name"] = preferred.get("name", "")
 
         if _parse_version(latest_tag) > _parse_version(CURRENT_VERSION):
             result["available"] = True
@@ -115,11 +131,44 @@ def update_now() -> str:
             return f"Update failed: {e}"
     else:
         info = check_for_update()
-        import subprocess as sp
-        sp.run(["open", info["url"]])
-        return (f"This build can't self-update yet — opened {info['url']} for you to "
-                f"download the new version manually. Full self-update ships once "
-                f"Buddy is signed and notarized.")
+        if not info.get("download_url"):
+            subprocess.run(["open", info["url"]])
+            return f"No downloadable build was attached, so Buddy opened {info['url']}."
+        try:
+            archive = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+            with requests.get(info["download_url"], stream=True, timeout=30) as response:
+                response.raise_for_status()
+                for chunk in response.iter_content(chunk_size=1024 * 256):
+                    if chunk:
+                        archive.write(chunk)
+            archive.close()
+            if not zipfile.is_zipfile(archive.name):
+                os.unlink(archive.name)
+                return "Update failed: the downloaded release was not a valid ZIP archive."
+            executable = Path(os.path.realpath(sys.executable))
+            app_path = next((str(parent) for parent in executable.parents if parent.suffix == ".app"), "")
+            if not app_path:
+                subprocess.run(["open", "-R", archive.name])
+                return "Update downloaded. Open the ZIP to install it manually."
+            install_script = tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False)
+            quoted_archive = shlex.quote(archive.name)
+            quoted_app = shlex.quote(app_path)
+            quoted_script = shlex.quote(install_script.name)
+            install_script.write(
+                "#!/bin/sh\n"
+                "sleep 2\n"
+                "STAGING=$(mktemp -d)\n"
+                f"unzip -q {quoted_archive} -d \"$STAGING\"\n"
+                "REPLACEMENT=$(find \"$STAGING\" -name '*.app' -maxdepth 3 -print -quit)\n"
+                f"if [ -n \"$REPLACEMENT\" ]; then mv {quoted_app} {quoted_app}.old && ditto \"$REPLACEMENT\" {quoted_app} && rm -rf {quoted_app}.old && open {quoted_app}; fi\n"
+                f"rm -rf \"$STAGING\" {quoted_archive} {quoted_script}\n"
+            )
+            install_script.close()
+            os.chmod(install_script.name, 0o700)
+            subprocess.Popen(["/bin/sh", install_script.name])
+            return "Update downloaded. Buddy will restart with the new version."
+        except Exception as e:
+            return f"Update failed: {e}"
 
 
 def severity_message(severity: str) -> str:

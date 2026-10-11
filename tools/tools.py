@@ -32,6 +32,12 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
+
 # Optional imports with graceful fallback
 try:
     import pyautogui
@@ -278,6 +284,15 @@ _WEATHER_CODES = {
 }
 
 
+def get_current_location() -> str:
+    """Return the location the user explicitly confirmed in Plugins."""
+    from storage import db
+    place = (db.get_profile() or {}).get("preferred_location") or ""
+    if not place.strip():
+        return "No confirmed location is set. Ask the user for a city or neighborhood, then save it in Plugins."
+    return "Confirmed user location: %s." % place.strip()
+
+
 def get_weather(location: str, units: str = "fahrenheit") -> str:
     """Fetch current conditions and today's high/low for a named location.
 
@@ -344,10 +359,12 @@ def get_weather(location: str, units: str = "fahrenheit") -> str:
         return f"Live weather lookup failed for {place}: {error}"
 
 def _hackclub_search_key() -> str:
-    """Key for search.hackclub.com. Separate from the Hack Club AI chat key
-    when the user has one; otherwise reuse API_KEY / the Settings BYO key."""
-    import os
-    for name in ("HACKCLUB_SEARCH_KEY", "SEARCH_HACKCLUB_KEY"):
+    """Return the Hack Club Search/Brave proxy key from the active config."""
+    for name in (
+        "HACK_CLUB_SEARCH_API_KEY",
+        "HACKCLUB_SEARCH_KEY",
+        "SEARCH_HACKCLUB_KEY",
+    ):
         value = (os.getenv(name) or "").strip()
         if value:
             return value
@@ -370,7 +387,7 @@ def web_search(query: str, max_results: int = 5) -> str:
     key = _hackclub_search_key()
     if not key:
         return (
-            "Error: no search key. Add HACKCLUB_SEARCH_KEY to .env "
+            "Error: no search key. Add HACK_CLUB_SEARCH_API_KEY to .env "
             "(create one at https://search.hackclub.com) and restart Buddy."
         )
     count = max(1, min(int(max_results or 5), 10))
@@ -392,7 +409,7 @@ def web_search(query: str, max_results: int = 5) -> str:
         return (
             "Hack Club Search rejected the key "
             f"({resp.status_code}). Get a search key at https://search.hackclub.com "
-            "and put it in HACKCLUB_SEARCH_KEY."
+            "and put it in HACK_CLUB_SEARCH_API_KEY."
         )
     if resp.status_code >= 400:
         return f"Hack Club Search failed ({resp.status_code}): {resp.text[:200]}"

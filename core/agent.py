@@ -49,6 +49,17 @@ OVERALL_TIMEOUT_SECONDS = 150  # 2.5 min hard ceiling on a whole turn, no matter
 MEMORY_RETRIEVAL_MIN_OVERLAP = 2
 MEMORY_RETRIEVAL_LIMIT = 2
 
+
+def _tool_failure(result):
+    """Recognize a provider or tool failure before the model can improvise around it."""
+    text = str(result or "").strip()
+    prefixes = (
+        "error:", "failed to", "couldn't", "could not", "unable to",
+        "not connected", "unavailable", "location is unavailable",
+        "buddy's", "this plugin is turned off",
+    )
+    return text.lower().startswith(prefixes)
+
 TITLE_MODEL = "google/gemini-2.5-flash-lite"  # cheap and fast, this doesn't need a smart model
 
 def format_attachment_context(chunks):
@@ -115,7 +126,8 @@ _TASK_HINTS = (
     "delete ", "move ", "copy ", "play ", "pause ", "volume", "click ",
     "type ", "search ", "find ", "download ", "install ", "run ", "kill ",
     "lock ", "sleep ", "note ", "draft ", "folder", "file ", "chrome",
-    "safari", "spotify", "workspace",
+    "safari", "spotify", "workspace", "around me", "near me", "nearby ",
+    "restaurant", "restaurants", "cafe", "cafes", "coffee shop",
 )
 
 
@@ -162,6 +174,28 @@ def get_manager_output(message_history, cancel_check=None, model=None):
     return message_text(manager_message).strip(), usage
  
  
+def _strip_protocol_labels(text: str) -> str:
+    """Worker and manager models are both taught the RESPONSE:/PLAN: routing
+    protocol (see core/instruction.py). That protocol is an internal signal
+    for Buddy's own code — it should never reach the chat bubble. This is a
+    safety net: if a model's final answer still starts with (or contains) a
+    stray RESPONSE:/PLAN: label — usually the worker echoing the manager's
+    own formatting instead of just answering — strip it back down to plain
+    text instead of showing the raw internal tag to the user."""
+    if not text:
+        return text
+    cleaned = text.strip()
+    for label in ("RESPONSE:", "Response:", "PLAN:", "Plan:"):
+        if cleaned.startswith(label):
+            cleaned = cleaned[len(label):].strip()
+    # A stray PLAN: block appended after a real answer (rather than at the
+    # very start) — cut it off rather than showing the raw task list.
+    for label in ("\nPLAN:", "\nPlan:"):
+        if label in cleaned:
+            cleaned = cleaned.split(label, 1)[0].strip()
+    return cleaned or text  # never return an empty string if stripping ate everything
+
+
 def parse_manager_output(manager_output):
     cleaned_output = manager_output.strip()
  
@@ -354,7 +388,7 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
             if step_count == 1:
                 return {"status": "rejected", "complaint": action_msg.content or "No reason given.", "step_count": step_count, **stats}
             else:
-                return {"status": "incomplete", "message": action_msg.content or "Task ended without a summary.", "step_count": step_count, **stats}
+                return {"status": "incomplete", "message": _strip_protocol_labels(action_msg.content) or "Task ended without a summary.", "step_count": step_count, **stats}
  
         action_history.append(action_msg)
  
@@ -366,7 +400,7 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
             stats["tools"].append(tool_name)
  
             if tool_name == "finish_task" or tool_name.endswith("finish_task"):
-                summary = tool_args.get("summary", "Task successfully completed.")
+                summary = _strip_protocol_labels(tool_args.get("summary", "Task successfully completed."))
                 result = {"status": "success", "summary": summary, "step_count": step_count, **stats}
                 if generated_images:
                     result["images"] = generated_images
@@ -397,13 +431,38 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
                 "duration": f"{tool_duration:.2f}s",
             })
 
+            if _tool_failure(result_str):
+                return {
+                    "status": "failed",
+                    "message": (
+                        "I couldn't complete that because the %s tool reported:\n\n%s\n\n"
+                        "I stopped here instead of guessing or using an unrelated workaround."
+                        % (tool_name, result_str)
+                    ),
+                    "step_count": step_count,
+                    **stats,
+                }
+
             action_history.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
                 "content": result_str
             })
  
-    return {"status": "incomplete", "message": "Reached max steps without finishing.", "step_count": step_count, **stats}
+    attempted = ", ".join(stats["tools"]) or "no tools"
+    last_result = stats["tool_log"][-1]["result"] if stats["tool_log"] else "No tool result was returned."
+    return {
+        "status": "incomplete",
+        "message": (
+            "I stopped after %s execution steps without a verified finish.\n\n"
+            "Tools attempted: %s\n"
+            "Last result: %s\n\n"
+            "Tell me how you want me to continue, or fix the issue described above."
+            % (step_count, attempted, last_result)
+        ),
+        "step_count": step_count,
+        **stats,
+    }
  
  
 def process_message(user_input, message_history, on_event=None, file_context=None, cancel_check=None, incognito=False, image_attachments=None, conversation_id=None):
@@ -608,7 +667,7 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
                 response["chat_title"] = response_title
             return response
  
-        elif outcome["status"] in ("incomplete", "cancelled", "timeout"):
+        elif outcome["status"] in ("incomplete", "failed", "cancelled", "timeout"):
             reply = outcome["message"]
             message_history.append({"role": "assistant", "content": reply})
             response = format_response(reply, metrics, start_time)

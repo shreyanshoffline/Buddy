@@ -13,6 +13,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from version import APP_VERSION
+
 
 def _run(cmd):
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -33,6 +39,13 @@ def check_app(app_path):
     add(True, "Buddy.app exists", str(app))
     info = app / "Contents" / "Info.plist"
     add(info.exists(), "Info.plist", str(info))
+    if info.exists():
+        text = info.read_text(errors="replace")
+        add(
+            f"<string>{APP_VERSION}</string>" in text,
+            "Info.plist version",
+            "expected %s" % APP_VERSION,
+        )
     entitlements = app / "Contents" / "Buddy.entitlements"
     add(True, "Entitlements template", "Ship packaging/Buddy.entitlements with the app codesign command.")
 
@@ -54,9 +67,9 @@ def check_app(app_path):
 
 def check_source():
     findings = []
-    root = Path(__file__).resolve().parent.parent
+    root = ROOT
     required = [
-        "GUI/main_window.py",
+        "gui/main_window.py",
         "tools/macos_permissions.py",
         "packaging/Buddy.entitlements",
         "packaging/Info.plist",

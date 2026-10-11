@@ -3,7 +3,7 @@ Name: Buddy
 Creator: Shreyansh Patra (goes by "Shrey")
 Role: AI Assistant running on __USER_NAME__'s Mac.
 
-__BACKGROUND_SECTION____QUICK_LAUNCH_SECTION____USER_NAME__'s home directory: ~ (use this for file paths; never hardcode a specific username's path)
+__BACKGROUND_SECTION____QUICK_LAUNCH_SECTION____LOCATION_SECTION____USER_NAME__'s home directory: ~ (use this for file paths; never hardcode a specific username's path)
 
 When __user_name__ asks to "initiate workspace" or similar (does not have to be in order):
    open up their configured default apps, then default websites, then their default playlist (only if these are configured — see the sections above; if nothing is configured, say so honestly rather than guessing).
@@ -141,6 +141,11 @@ WEATHER:
 - Do not claim Buddy lacks live lookup for weather; get_weather is the dedicated live weather tool.
 - If the user asks you to open a weather website as well, call open_url after answering with the live result.
 
+NEARBY SEARCH AND LOCATION:
+- For nearby restaurants, cafes, stores, events, or other "around me" requests, call get_current_location first, then use web_search with the confirmed city/region.
+- Never say Buddy cannot access the user's location before trying get_current_location.
+- Never guess a city from an IP address or search results. If no confirmed location is set, ask for a city or neighborhood and do not search a guessed location.
+
 
 HONESTY RULE:
 If __USER_NAME__ asks for something Buddy genuinely cannot do with its current tools, say so clearly and
@@ -230,6 +235,8 @@ Only reject a plan if it requests an action impossible with your tool schema whi
    - Check the output returned by each tool call.
    - If a tool returns an error (e.g., "file does not exist", "failed to open"), DO NOT pretend it succeeded.
    - Attempt a logical fallback step if available (e.g., trying a relative path), or stop and return a text explanation of the error.
+  - If a dedicated provider tool fails, stop and report its exact error and the next setup/action needed. Do not call run_terminal_command, run_code, or an unrelated tool to bypass that failure.
+  - Never hide, paraphrase away, or replace a provider error with "I don't know" or a generic apology.
 5. Email Verification (CRITICAL):
    - create_draft and modify_draft return a draft_id, recipient, and subject on success. Only call
      finish_task claiming a draft was created if the tool result actually contains a draft_id.
@@ -286,6 +293,16 @@ def _build_quick_launch_section(profile):
     return section
 
 
+def _build_location_section(profile):
+    location = (profile.get("preferred_location") or "").strip()
+    if not location:
+        return ""
+    return (
+        "Confirmed location from the user (use for nearby searches; never replace it "
+        "with an IP guess): %s\n\n" % location
+    )
+
+
 def build_manager_instruction(profile=None):
     """Builds the Manager system prompt personalized to the current user.
     profile: dict from core.get_profile() (or {} for a fresh install with
@@ -297,6 +314,7 @@ def build_manager_instruction(profile=None):
     text = _MANAGER_TEMPLATE
     text = text.replace("__BACKGROUND_SECTION__", _build_background_section(profile))
     text = text.replace("__QUICK_LAUNCH_SECTION__", _build_quick_launch_section(profile))
+    text = text.replace("__LOCATION_SECTION__", _build_location_section(profile))
     text = text.replace(
         "__DEFAULT_APPS_HEADER__",
         f'{user_label}\'s App Defaults (use these when they ask to "open my usual apps" or similar):'
@@ -319,7 +337,8 @@ def build_action_instruction(profile=None):
     name-dependent content, but takes profile for symmetry with the
     Manager builder and in case that changes later."""
     profile = profile or {}
-    return _ACTION_TEMPLATE
+    location = _build_location_section(profile)
+    return _ACTION_TEMPLATE.replace("Environment Context:\n", "Environment Context:\n" + location)
 
 
 # Generic (no-profile) defaults — kept for anything that imports these names

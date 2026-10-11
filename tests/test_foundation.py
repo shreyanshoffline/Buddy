@@ -52,6 +52,59 @@ class FoundationTests(unittest.TestCase):
         self.db.delete_conversation(conv_id)
         self.assertEqual(self.db.get_profile()["name"], "Lin")
 
+    def test_old_messages_schema_gets_metadata_column(self):
+        import sqlite3
+
+        path = Path(self.db.get_db_path())
+        path.unlink()
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                "CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER, "
+                "role TEXT, content TEXT, tool_calls TEXT, tool_call_id TEXT, created_at REAL)"
+            )
+        self.db._DB_PATH = None
+        self.db.init_db()
+        with self.db._connect() as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(messages)")}
+        self.assertIn("metadata", columns)
+
+    def test_location_plugin_formats_approximate_place(self):
+        import tools.tools as tools
+        self.db.update_profile(preferred_location="Portland, Oregon")
+        result = tools.get_current_location()
+        self.assertEqual(result, "Confirmed user location: Portland, Oregon.")
+
+    def test_confirmed_location_reaches_agent_instructions(self):
+        import importlib.util
+
+        instruction_path = Path(__file__).resolve().parents[1] / "core" / "instruction.py"
+        spec = importlib.util.spec_from_file_location("buddy_instruction", instruction_path)
+        instruction = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(instruction)
+
+        profile = {"preferred_location": "Portland, Oregon"}
+        self.assertIn("Portland, Oregon", instruction.build_manager_instruction(profile))
+        self.assertIn("Portland, Oregon", instruction.build_action_instruction(profile))
+
+    def test_hack_club_search_api_key_is_primary(self):
+        import tools.tools as tools
+
+        previous = {
+            name: os.environ.get(name)
+            for name in ("HACK_CLUB_SEARCH_API_KEY", "HACKCLUB_SEARCH_KEY", "SEARCH_HACKCLUB_KEY")
+        }
+        try:
+            os.environ["HACK_CLUB_SEARCH_API_KEY"] = "documented-key"
+            os.environ["HACKCLUB_SEARCH_KEY"] = "legacy-key"
+            os.environ["SEARCH_HACKCLUB_KEY"] = "other-legacy-key"
+            self.assertEqual(tools._hackclub_search_key(), "documented-key")
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
 
 if __name__ == "__main__":
     unittest.main()

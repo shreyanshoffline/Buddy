@@ -38,6 +38,13 @@ class ApiKeyValidationWorker(QThread):
         self.finished.emit(is_valid, message)
 
 
+class UpdateCheckWorker(QThread):
+    finished = QtSignal(dict)
+
+    def run(self):
+        self.finished.emit(core.check_for_update())
+
+
 FIELD_STYLE = f"""
     QLineEdit {{
         background-color: {INPUT_BG};
@@ -105,7 +112,10 @@ class SettingsPage(CardPage):
         self.profile = core.get_profile()
         self.inputs = {}
         self._validation_worker = None
+        self._update_worker = None
+        self.latest_update = None
 
+        self._build_software_version_card()
         self._build_profile_card()
         self._build_appearance_card()
         self._build_privacy_card()
@@ -177,6 +187,80 @@ class SettingsPage(CardPage):
             label_widget.setText(original),
             label_widget.setStyleSheet(f"color: {CARD_SUBTITLE_COLOR}; font-size: 11px; font-weight: bold; background: transparent; border: none; margin-top: 4px;")
         ))
+
+    # --- Software Version card -------------------------------------------
+    def _build_software_version_card(self):
+        layout = self._make_card("Software Version")
+
+        self.update_status_label = self._field_label(f"Buddy {core.CURRENT_VERSION}")
+        self.update_status_label.setWordWrap(True)
+        layout.addWidget(self.update_status_label)
+
+        self.update_hint_label = self._field_label("Checking for updates...")
+        self.update_hint_label.setWordWrap(True)
+        layout.addWidget(self.update_hint_label)
+
+        row = QHBoxLayout()
+        self.check_update_btn = QPushButton("Check for update")
+        self.check_update_btn.setCursor(Qt.PointingHandCursor)
+        self.check_update_btn.setStyleSheet(f"""
+            QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border-radius: 8px; padding: 6px 14px; border: none; font-size: 12px; }}
+            QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
+        """)
+        self.check_update_btn.clicked.connect(self.check_for_updates)
+        row.addWidget(self.check_update_btn)
+
+        self.update_now_btn = QPushButton("Update Buddy")
+        self.update_now_btn.setCursor(Qt.PointingHandCursor)
+        self.update_now_btn.setVisible(False)
+        self.update_now_btn.setStyleSheet(f"""
+            QPushButton {{ background: {PRIMARY_COLOR_DARK}; color: {ON_PRIMARY_TEXT}; border-radius: 8px; padding: 6px 14px; border: none; font-size: 12px; }}
+            QPushButton:hover {{ background: {PRIMARY_COLOR_PRESSED}; }}
+        """)
+        self.update_now_btn.clicked.connect(self._on_update_now)
+        row.addWidget(self.update_now_btn)
+        row.addStretch()
+        layout.addLayout(row)
+
+    def check_for_updates(self):
+        if self._update_worker is not None and self._update_worker.isRunning():
+            return
+        self.check_update_btn.setEnabled(False)
+        self.update_hint_label.setText("Checking for updates...")
+        worker = UpdateCheckWorker()
+        self._update_worker = worker
+        worker.finished.connect(self._on_update_checked)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_update_checked(self, info):
+        self._update_worker = None
+        self.latest_update = info
+        self.check_update_btn.setEnabled(True)
+        if info.get("available"):
+            self.update_status_label.setText(
+                f"Buddy {info['current_version']}  |  {info['latest_version']} available"
+            )
+            self.update_hint_label.setText(core.severity_message(info["severity"]))
+            self.update_now_btn.setVisible(True)
+            return
+        self.update_now_btn.setVisible(False)
+        self.update_status_label.setText(f"Buddy {core.CURRENT_VERSION}")
+        self.update_hint_label.setText(info.get("notes") or "Buddy is up to date.")
+
+    def _on_update_now(self):
+        if not self.latest_update or not self.latest_update.get("available"):
+            return
+        result = core.update_now()
+        QMessageBox.information(self, "Buddy Update", result)
+
+    def shutdown_workers(self):
+        worker = self._update_worker
+        self._update_worker = None
+        if worker is not None:
+            worker.requestInterruption()
+            worker.quit()
+            worker.wait(3000)
 
     # --- User Profile card ----------------------------------------------
     def _build_profile_card(self):
@@ -343,20 +427,20 @@ class SettingsPage(CardPage):
         swatch_row.addStretch()
         layout.addLayout(swatch_row)
 
-        # Non-intrusive banner: hidden until a theme change actually needs
-        # a restart to show up, so it never interrupts unless required.
+        # Keep restart available even when no theme change is pending.
         self.restart_banner = QFrame()
-        self.restart_banner.setVisible(False)
+        self.restart_banner.setVisible(True)
         self.restart_banner.setStyleSheet(f"QFrame {{ background: {ACTIVE_BG_COLOR}; border-radius: 8px; border: none; }}")
         banner_layout = QHBoxLayout(self.restart_banner)
         banner_layout.setContentsMargins(10, 6, 10, 6)
-        banner_label = QLabel("Theme updated —")
+        banner_label = QLabel("Restart Buddy to apply settings")
         banner_label.setStyleSheet(f"color: {PRIMARY_COLOR}; font-size: 11px; font-weight: 600; background: transparent; border: none;")
         banner_layout.addWidget(banner_label)
         banner_layout.addStretch()
         restart_btn = QPushButton("Restart Now")
         restart_btn.setCursor(Qt.PointingHandCursor)
-        restart_btn.setToolTip("Restart Buddy to see your new theme")
+        restart_btn.setAccessibleName("Restart Buddy")
+        restart_btn.setToolTip("Restart Buddy")
         restart_btn.setStyleSheet(f"""
             QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; }}
             QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
@@ -470,19 +554,6 @@ class SettingsPage(CardPage):
         forget_btn.clicked.connect(self._on_forget_activity)
         layout.addWidget(forget_btn)
 
-        update_row = QHBoxLayout()
-        self.update_status_label = self._field_label(f"Buddy {core.CURRENT_VERSION}")
-        update_row.addWidget(self.update_status_label)
-        update_row.addStretch()
-        check_update_btn = QPushButton("Check for update")
-        check_update_btn.setCursor(Qt.PointingHandCursor)
-        check_update_btn.setStyleSheet(f"""
-            QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border-radius: 8px; padding: 6px 14px; border: none; font-size: 12px; }}
-            QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
-        """)
-        check_update_btn.clicked.connect(self._on_check_update)
-        update_row.addWidget(check_update_btn)
-        layout.addLayout(update_row)
 
     def _on_activity_toggle(self, on):
         message = core.set_activity_watch_enabled(on)
@@ -496,24 +567,6 @@ class SettingsPage(CardPage):
         result = core.forget_activity_data()
         self.activity_toggle.setChecked(False)
         QMessageBox.information(self, "Activity Tracking", result)
-
-    def _on_check_update(self):
-        info = core.check_for_update()
-        if not info["available"]:
-            self.update_status_label.setText(f"Buddy {core.CURRENT_VERSION} — up to date")
-            if info.get("notes"):
-                QMessageBox.information(self, "Updates", info["notes"])
-            return
-        severity_text = core.severity_message(info["severity"])
-        reply = QMessageBox.question(
-            self, f"Update available: {info['latest_version']}",
-            f"{severity_text}\n\nUpdate now?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if reply == QMessageBox.Yes:
-            result = core.update_now()
-            self.update_status_label.setText(f"Buddy {core.CURRENT_VERSION}")
-            QMessageBox.information(self, "Update", result)
 
     # --- Danger Zone card --------------------------------------------------
     def _build_danger_card(self):

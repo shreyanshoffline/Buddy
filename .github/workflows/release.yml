@@ -1,0 +1,23 @@
+name: Buddy release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt pyinstaller
+      - run: pyinstaller --windowed --name Buddy main.py
+      - run: ditto -c -k --sequesterRsrc --keepParent dist/Buddy.app dist/Buddy-macOS.zip
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Buddy-macOS.zip
+          generate_release_notes: true

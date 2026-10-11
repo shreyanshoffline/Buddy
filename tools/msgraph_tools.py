@@ -90,6 +90,30 @@ def _save_cache(cache):
             f.write(cache.serialize())
 
 
+def start_device_flow():
+    """Start Microsoft login and return the code for the GUI to display."""
+    app, cache = _get_app()
+    flow = app.initiate_device_flow(scopes=SCOPES)
+    if "user_code" not in flow:
+        raise RuntimeError(
+            "Microsoft rejected the device-flow request. Check the Azure client ID "
+            "and supported account types."
+        )
+    return flow
+
+
+def finish_device_flow(flow):
+    """Wait for the user to approve a GUI-displayed device code."""
+    app, cache = _get_app()
+    result = app.acquire_token_by_device_flow(flow)
+    if "access_token" not in result:
+        raise RuntimeError(
+            "Microsoft login failed: %s" % (result.get("error_description") or result.get("error"))
+        )
+    _save_cache(cache)
+    return result["access_token"]
+
+
 def _get_token() -> str:
     app, cache = _get_app()
     accounts = app.get_accounts()
@@ -97,24 +121,10 @@ def _get_token() -> str:
     if accounts:
         result = app.acquire_token_silent(SCOPES, account=accounts[0])
     if not result:
-        flow = app.initiate_device_flow(scopes=SCOPES)
-        if "user_code" not in flow:
-            raise RuntimeError(
-                f"Microsoft rejected the device-flow request before issuing a code — this is "
-                f"usually a bad CLIENT_ID or an app registration set to the wrong account type. "
-                f"Raw response: {flow}"
-            )
-        expires_in = flow.get("expires_in", 900)
-        print(f"\n>>> Go to {flow['verification_uri']} and enter code: {flow['user_code']}")
-        print(f">>> This code is valid for {expires_in // 60} minutes — do it now, don't reuse an old code.\n")
-        started = time.time()
+        flow = start_device_flow()
         result = app.acquire_token_by_device_flow(flow)
-        elapsed = time.time() - started
         if "access_token" not in result:
-            raise RuntimeError(
-                f"Microsoft login failed after {elapsed:.0f}s "
-                f"({result.get('error')}): {result.get('error_description')}"
-            )
+            raise RuntimeError("Microsoft login failed: %s" % (result.get("error_description") or result.get("error")))
     _save_cache(cache)
     return result["access_token"]
 

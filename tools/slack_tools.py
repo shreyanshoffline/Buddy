@@ -1,6 +1,13 @@
 """Slack tools Buddy calls from the desktop chat — not from Slack itself."""
 import core
 import billing_client
+from tools import integrations
+
+
+def _local_token():
+    connection = core.get_plugin_connection("slack") or {}
+    token = connection.get("access_token") or ""
+    return token if token.startswith("xox") else ""
 
 
 def _uid():
@@ -8,7 +15,18 @@ def _uid():
 
 
 def slack_list_channels() -> str:
-    data = billing_client.slack_list_channels(_uid())
+    token = _local_token()
+    if token:
+        integrations._require_requests()
+        response = integrations.requests.get(
+            "https://slack.com/api/conversations.list",
+            headers={"Authorization": "Bearer %s" % token},
+            params={"types": "public_channel,private_channel", "limit": 200},
+            timeout=15,
+        )
+        data = response.json()
+    else:
+        data = billing_client.slack_list_channels(_uid())
     if not data.get("ok"):
         return "Slack is not connected. Plugins > Slack > Connect, then /invite @Buddy in the channel."
     channels = data.get("channels") or []
@@ -22,7 +40,22 @@ def slack_list_channels() -> str:
 
 
 def slack_recent_messages(channel: str, limit: int = 15) -> str:
-    data = billing_client.slack_channel_history(_uid(), channel, limit=limit)
+    token = _local_token()
+    if token:
+        integrations._require_requests()
+        response = integrations.requests.get(
+            "https://slack.com/api/conversations.history",
+            headers={"Authorization": "Bearer %s" % token},
+            params={"channel": channel, "limit": limit},
+            timeout=15,
+        )
+        data = response.json()
+        data["messages"] = [
+            "%s: %s" % (message.get("user") or "Slack", message.get("text") or "")
+            for message in reversed(data.get("messages") or [])
+        ]
+    else:
+        data = billing_client.slack_channel_history(_uid(), channel, limit=limit)
     if not data.get("ok"):
         return (
             data.get("error")
@@ -35,7 +68,12 @@ def slack_recent_messages(channel: str, limit: int = 15) -> str:
 
 
 def slack_send_message(channel: str, text: str) -> str:
-    data = billing_client.slack_post_message(_uid(), channel, text)
+    token = _local_token()
+    if token:
+        data = integrations.slack_post_message(token, channel, text)
+        data = {"ok": True, "result": data}
+    else:
+        data = billing_client.slack_post_message(_uid(), channel, text)
     if not data.get("ok"):
         return data.get("error") or "Slack could not send that message."
     return "Sent to Slack."

@@ -37,11 +37,13 @@ def app_root() -> Path:
 
 
 def data_dir(subfolder: str = "data") -> Path:
-    """A writable folder inside Buddy's own directory tree — created if
-    it doesn't exist yet. This is where anything Buddy generates for
-    itself (tokens, local databases, caches) should live, so the whole
-    app stays self-contained and movable as one folder."""
-    d = app_root() / subfolder
+    """Return Buddy's writable per-user data directory."""
+    if sys.platform == "darwin":
+        d = Path.home() / "Library" / "Application Support" / "Buddy" / subfolder
+    elif sys.platform == "win32":
+        d = Path(os.environ.get("APPDATA", Path.home())) / "Buddy" / subfolder
+    else:
+        d = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "Buddy" / subfolder
     d.mkdir(parents=True, exist_ok=True)
     return d
 

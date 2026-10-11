@@ -4,6 +4,7 @@ never blocks on an LLM call."""
 import sys
 import random
 import threading
+from pathlib import Path
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
@@ -13,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import (
     Qt, QEvent, QPoint, QVariantAnimation, QEasingCurve,
-    QPropertyAnimation, QTimer, QSize, QThread, Signal as QtSignal
+    QPropertyAnimation, QTimer, QSize, QThread, Signal as QtSignal, QProcess
 )
 from PySide6.QtGui import (
     QFont, QIcon, QPixmap, QPainter, QKeyEvent,
@@ -22,6 +23,7 @@ from PySide6.QtGui import (
 from PySide6.QtSvg import QSvgRenderer
 
 import core
+from version import APP_VERSION
 
 from .widgets import ChatBubble, ChatInput, FeedbackDialog, AttachmentTray
 from .widgets.window_chrome import EdgeResizeController
@@ -122,7 +124,7 @@ class RedoWorker(QThread):
 class BuddyWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Buddy v1.0.0")
+        self.setWindowTitle(f"Buddy v{APP_VERSION}")
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.resize(WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
@@ -151,17 +153,39 @@ class BuddyWindow(QWidget):
 
         self._build_ui()
         self._setup_tray_icon()
+        QTimer.singleShot(900, self._check_for_startup_update)
  
     def restart_app(self):
-        """Fully restarts the Buddy process to apply a new theme. A real
-        restart is slower than an in-place live swap, but it's 100%
-        reliable — module hot-reloading proved fragile in real use (it
-        passed in testing but didn't consistently apply for real), so this
-        is the honest, dependable choice instead."""
-        import os
-        import sys
+        """Start a replacement process, then close this process cleanly."""
         self._shutdown_workers()
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        if getattr(sys, "frozen", False):
+            executable = Path(sys.executable).resolve()
+            app_bundle = next(
+                (str(parent) for parent in executable.parents if parent.suffix == ".app"),
+                sys.executable,
+            )
+            started = QProcess.startDetached("open", [app_bundle])
+        else:
+            started = QProcess.startDetached(sys.executable, [sys.argv[0], *sys.argv[1:]])
+        if started:
+            QApplication.quit()
+        else:
+            QMessageBox.warning(self, "Restart Buddy", "Buddy could not start the replacement process.")
+
+    def _check_for_startup_update(self):
+        """Check after the first window paint so network access never delays launch."""
+        self.settings_page.check_for_updates()
+        worker = self.settings_page._update_worker
+        if worker is not None:
+            worker.finished.connect(self._on_startup_update_checked)
+
+    def _on_startup_update_checked(self, info):
+        if not info.get("available"):
+            return
+        self.update_banner_label.setText(
+            f"Buddy {info['latest_version']} is available. Update in Settings."
+        )
+        self.update_banner.setVisible(True)
 
     def _fix_sidebar_layout(self):
         """Forces the sidebar back to its correct collapsed width and a real
@@ -191,6 +215,9 @@ class BuddyWindow(QWidget):
             getattr(talk_page, "_turn_worker", None),
             getattr(self.input_box, "_pending_worker", None),
         ]
+        settings_page = getattr(self, "settings_page", None)
+        if settings_page is not None:
+            settings_page.shutdown_workers()
         for worker in candidates:
             if worker is not None and worker.isRunning():
                 if hasattr(worker, "cancel_event"):
@@ -544,6 +571,27 @@ class BuddyWindow(QWidget):
         self.header_layout.addWidget(self.close_btn)
  
         self.content_area_layout.addWidget(self.header_bar)
+
+        self.update_banner = QFrame()
+        self.update_banner.setVisible(False)
+        self.update_banner.setStyleSheet(f"QFrame {{ background: {ACTIVE_BG_COLOR}; border-bottom: 1px solid {BORDER_COLOR}; }}")
+        update_banner_layout = QHBoxLayout(self.update_banner)
+        update_banner_layout.setContentsMargins(12, 6, 12, 6)
+        self.update_banner_label = QLabel("")
+        self.update_banner_label.setStyleSheet(f"color: {TEXT_COLOR_DARK}; font-size: 11px; background: transparent; border: none;")
+        update_banner_layout.addWidget(self.update_banner_label)
+        update_banner_layout.addStretch()
+        update_settings_btn = QPushButton("Open Settings")
+        update_settings_btn.setCursor(Qt.PointingHandCursor)
+        update_settings_btn.setStyleSheet(f"QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; }}")
+        update_settings_btn.clicked.connect(self.show_settings_view)
+        update_banner_layout.addWidget(update_settings_btn)
+        dismiss_update_btn = QPushButton("Dismiss")
+        dismiss_update_btn.setCursor(Qt.PointingHandCursor)
+        dismiss_update_btn.setStyleSheet(f"QPushButton {{ background: transparent; color: {TEXT_COLOR_SUBTITLE}; border: none; padding: 4px 6px; font-size: 11px; }}")
+        dismiss_update_btn.clicked.connect(lambda: self.update_banner.setVisible(False))
+        update_banner_layout.addWidget(dismiss_update_btn)
+        self.content_area_layout.addWidget(self.update_banner)
  
         self.content_stack = QStackedWidget()
         self.content_stack.setContentsMargins(0, 0, 0, 0)

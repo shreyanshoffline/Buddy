@@ -20,6 +20,7 @@ GMAIL_TOOLS = {
 }
 SEARCH_TOOLS = {"web_search"}
 WEATHER_TOOLS = {"get_weather"}
+LOCATION_TOOLS = {"get_current_location"}
 MESSAGES_TOOLS = {
     "lookup_contact_number",
     "send_imessage",
@@ -101,7 +102,7 @@ APP_ALIASES = {
 
 def default_plugins():
     return {
-        "universal": {"gmail": False, "web_search": True, "weather": True},
+        "universal": {"gmail": False, "web_search": True, "weather": True, "location": True},
         "apps": {},
         "websites": [],
         "system": {
@@ -157,6 +158,8 @@ def tool_allowed(tool_name, plugins=None):
     if name in SEARCH_TOOLS and not plugins["universal"].get("web_search", True):
         return False
     if name in WEATHER_TOOLS and not plugins["universal"].get("weather", True):
+        return False
+    if name in LOCATION_TOOLS and not plugins["universal"].get("location", True):
         return False
     if name in MESSAGES_TOOLS and not _app_on(plugins, "messages"):
         return False
