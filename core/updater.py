@@ -145,6 +145,19 @@ def update_now() -> str:
             if not zipfile.is_zipfile(archive.name):
                 os.unlink(archive.name)
                 return "Update failed: the downloaded release was not a valid ZIP archive."
+            # Integrity: verify against the published .sha256 asset when the release has one.
+            try:
+                import hashlib
+                sha_url = info["download_url"] + ".sha256"
+                sha_resp = requests.get(sha_url, timeout=10)
+                if sha_resp.ok:
+                    expected = sha_resp.text.split()[0].strip().lower()
+                    digest = hashlib.sha256(open(archive.name, "rb").read()).hexdigest()
+                    if digest != expected:
+                        os.unlink(archive.name)
+                        return "Update failed: the download didn't match its checksum, so Buddy discarded it."
+            except Exception:
+                pass  # checksum asset missing/unreachable: fall back to the ZIP validity check
             executable = Path(os.path.realpath(sys.executable))
             app_path = next((str(parent) for parent in executable.parents if parent.suffix == ".app"), "")
             if not app_path:
@@ -160,7 +173,7 @@ def update_now() -> str:
                 "STAGING=$(mktemp -d)\n"
                 f"unzip -q {quoted_archive} -d \"$STAGING\"\n"
                 "REPLACEMENT=$(find \"$STAGING\" -name '*.app' -maxdepth 3 -print -quit)\n"
-                f"if [ -n \"$REPLACEMENT\" ]; then mv {quoted_app} {quoted_app}.old && ditto \"$REPLACEMENT\" {quoted_app} && rm -rf {quoted_app}.old && open {quoted_app}; fi\n"
+                f"if [ -n \"$REPLACEMENT\" ]; then mv {quoted_app} {quoted_app}.old && (ditto \"$REPLACEMENT\" {quoted_app} && rm -rf {quoted_app}.old || (rm -rf {quoted_app}; mv {quoted_app}.old {quoted_app})); open {quoted_app}; fi\n"
                 f"rm -rf \"$STAGING\" {quoted_archive} {quoted_script}\n"
             )
             install_script.close()

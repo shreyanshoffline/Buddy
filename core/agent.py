@@ -5,6 +5,7 @@ which is model-facing context, not conversation storage) — that split lives
 in conversations.py.
 """
 import json
+import re
 import time
 
 import tools.tools as tools
@@ -19,6 +20,17 @@ try:
     import tools.msgraph_tools as msgraph_tools
 except ImportError:
     msgraph_tools = None  # msal not installed yet
+import tools.browser_control as browser_control
+import tools.lessons as lessons
+import tools.guides as guides
+try:
+    import tools.google_extras as google_extras
+except ImportError:
+    google_extras = None
+try:
+    import tools.microsoft_extras as microsoft_extras
+except ImportError:
+    microsoft_extras = None
 from tools.tools_schema import tools_schema
 from core.instruction import build_action_instruction
 from models import run_manager_step, run_action_step, BuddyCancelled, extract_image_urls, message_text
@@ -27,16 +39,16 @@ from core.thinking import thinking_config
 from core.model_config import image_model, load_model_config
 from core.plugins import active_tools_schema, blocked_reason
 
-GREETER_MODEL = "google/gemini-2.5-flash-lite"
-MANAGER_MODEL = "google/gemini-3.5-flash-lite"
-DEFAULT_WORKER_MODEL = "google/gemini-3.5-flash-lite"
-DEEP_CHAT_MODEL = "google/gemini-3.5-flash-lite"
+GREETER_MODEL = "anthropic/claude-haiku-5.5"
+MANAGER_MODEL = "anthropic/claude-haiku-5.5"
+DEFAULT_WORKER_MODEL = "anthropic/claude-haiku-5.5"
+DEEP_CHAT_MODEL = "anthropic/claude-sonnet-5.5"
  
 WORKER_MODELS = {
-    "simple_task": "google/gemini-3.5-flash-lite",
-    "moderate_task": "google/gemini-3.5-flash-lite",
-    "heavy_task": "google/gemini-3.8-flash",
-    "vision_task": "google/gemini-3.5-flash-lite",
+    "simple_task": "anthropic/claude-haiku-5.5",
+    "moderate_task": "anthropic/claude-haiku-5.5",
+    "heavy_task": "anthropic/claude-sonnet-5.5",
+    "vision_task": "anthropic/claude-sonnet-5.5",
     "creation_task": "google/gemini-3.1-flash-lite-image"
 }
  
@@ -53,6 +65,8 @@ MEMORY_RETRIEVAL_LIMIT = 2
 def _tool_failure(result):
     """Recognize a provider or tool failure before the model can improvise around it."""
     text = str(result or "").strip()
+    if re.search(r"\[exit code:\s*[1-9]\d*\]", text.lower()):
+        return True
     prefixes = (
         "error:", "failed to", "couldn't", "could not", "unable to",
         "not connected", "unavailable", "location is unavailable",
@@ -60,7 +74,7 @@ def _tool_failure(result):
     )
     return text.lower().startswith(prefixes)
 
-TITLE_MODEL = "google/gemini-2.5-flash-lite"  # cheap and fast, this doesn't need a smart model
+TITLE_MODEL = "anthropic/claude-haiku-5.5"  # cheap and fast, this doesn't need a smart model
 
 def format_attachment_context(chunks):
     if not chunks:
@@ -310,7 +324,10 @@ def run_image_creation_task(plan_text, source_images=None, cancel_check=None):
     }
 
 
-TOOL_MODULES = tuple(m for m in (tools, gmail_tools, apple_tools, google_workspace_tools, msgraph_tools, github_ops) if m is not None)
+TOOL_MODULES = tuple(m for m in (
+    tools, gmail_tools, apple_tools, google_workspace_tools, msgraph_tools, github_ops,
+    browser_control, lessons, guides, google_extras, microsoft_extras,
+) if m is not None)
 
 
 def execute_tool(tool_name, tool_args):
@@ -388,7 +405,16 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
             if step_count == 1:
                 return {"status": "rejected", "complaint": action_msg.content or "No reason given.", "step_count": step_count, **stats}
             else:
-                return {"status": "incomplete", "message": _strip_protocol_labels(action_msg.content) or "Task ended without a summary.", "step_count": step_count, **stats}
+                message = _strip_protocol_labels(message_text(action_msg))
+                if message:
+                    return {"status": "success", "summary": message, "step_count": step_count, **stats}
+                attempted = ", ".join(stats["tools"]) or "the requested tools"
+                return {
+                    "status": "success",
+                    "summary": "Completed the requested work using %s." % attempted,
+                    "step_count": step_count,
+                    **stats,
+                }
  
         action_history.append(action_msg)
  
@@ -465,7 +491,7 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
     }
  
  
-def process_message(user_input, message_history, on_event=None, file_context=None, cancel_check=None, incognito=False, image_attachments=None, conversation_id=None):
+def process_message(user_input, message_history, on_event=None, file_context=None, cancel_check=None, incognito=False, image_attachments=None, conversation_id=None, voice_mode=False):
     """Pure model-facing turn: takes a message + history, talks to the
     Manager/Worker pipeline, returns a result dict. Knows nothing about
     conversation_id or the database — that's send_and_save_message's job.
@@ -489,6 +515,17 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
 
     user_message = {"role": "user", "content": user_input}
     message_history.append(user_message)
+
+    if voice_mode:
+        message_history.append({
+            "role": "system",
+            "content": (
+                "VOICE CONVERSATION MODE: Your next reply will be spoken aloud. "
+                "Be natural and brief: usually 1 to 3 short sentences, under 60 words. "
+                "Answer the user's question directly. Do not give an essay, long list, "
+                "markdown, headings, or unnecessary preamble."
+            ),
+        })
 
     if file_context:
         message_history.append({"role": "system", "content": file_context})
@@ -585,7 +622,7 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
             on_event({"type": "thinking"})
  
         try:
-            manager_model = "google/gemini-3.8-flash" if image_attachments else cfg["manager"]
+            manager_model = "anthropic/claude-sonnet-5.5" if image_attachments else cfg["manager"]
             manager_output, usage = get_manager_output(message_history, cancel_check=cancel_check, model=manager_model)
         except BuddyCancelled:
             reply = "Cancelled."
@@ -602,14 +639,28 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
             worker_model = cfg["worker"]
  
         if route == "invalid":
+            # Claude may return a useful plain-language plan without the
+            # legacy Plan:/Response: wrapper. For an explicit task, send that
+            # content to the tool worker instead of making the user rephrase.
+            if looks_like_task(user_input) and content:
+                route = "plan"
+                plan_text = (
+                    "Complete the user's request using the available tools. "
+                    "Verify each created file or folder before finishing.\n\n" + content
+                )
+                worker_model = cfg["worker"]
+            else:
+                plan_text = None
             if on_event:
                 on_event({"type": "malformed_retry"})
-            if attempt <= MAX_PLAN_RETRIES:
+            if route == "invalid" and attempt <= MAX_PLAN_RETRIES:
                 continue
- 
-            reply = "I'm having trouble planning that. Could you rephrase?"
-            message_history.append({"role": "assistant", "content": reply})
-            return format_response(reply, metrics, start_time)
+            if route == "invalid":
+                reply = "I couldn't turn that request into an executable plan."
+                message_history.append({"role": "assistant", "content": reply})
+                return format_response(reply, metrics, start_time)
+        else:
+            plan_text = None
  
         if route == "response":
             message_history.append({"role": "assistant", "content": content})
@@ -619,7 +670,8 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
             return response
  
         # We have a plan!
-        plan_text = content
+        if plan_text is None:
+            plan_text = content
         metrics["final_plan"] = f"**Plan:**\n{plan_text}"  # Format cleanly for Markdown
  
         if on_event:

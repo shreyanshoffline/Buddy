@@ -712,7 +712,7 @@ class PluginsPage(CardPage):
             core.remove_plugin_connection("slack")
             self._refresh_slack_status()
             return
-        if not billing_client.backend_is_up():
+        if not billing_client.slack_configured():
             self._connect_slack_token_locally()
             return
         self.slack_button.setEnabled(False)
@@ -737,7 +737,10 @@ class PluginsPage(CardPage):
         token, ok = QInputDialog.getText(
             self,
             "Connect Slack directly",
-            "Paste a Slack token beginning with xoxb- or xoxp-.\n"
+            "Paste your Slack bot token (starts with xoxb-).\n"
+            "Get one: api.slack.com/apps > Create App > OAuth & Permissions > add scopes\n"
+            "channels:read channels:history groups:read groups:history chat:write users:read\n"
+            "> Install to Workspace. Then /invite the bot in each channel.\n"
             "Buddy verifies it and stores it only on this Mac:",
             QLineEdit.Password,
         )

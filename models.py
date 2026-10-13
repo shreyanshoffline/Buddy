@@ -33,7 +33,7 @@ def _get_client():
     return _client_cache["client"]
 
 
-MAX_RETRIES = 3
+MAX_RETRIES = max(1, int(os.getenv("BUDDY_MAX_MODEL_RETRIES", "2")))
 RETRY_BASE_DELAY = 2  # seconds; doubles each attempt
 REQUEST_TIMEOUT_MS = 30_000  # hard ceiling per network call — nothing hangs forever
 CANCEL_POLL_INTERVAL = 0.25  # seconds; how often we check cancel_check during backoff sleeps
@@ -115,11 +115,25 @@ def embed_texts(texts, cancel_check=None):
     only function that needs to change — nothing else depends on the shape."""
     if not texts:
         return []
-    response = _with_retry(
-        lambda: _get_client().embeddings.create(model=EMBED_MODEL, input=texts, timeout_ms=REQUEST_TIMEOUT_MS),
-        cancel_check=cancel_check,
-    )
-    return [item.embedding for item in response.data]
+    try:
+        from storage import db
+        cached = db.get_cached_embeddings(texts, model=EMBED_MODEL)
+    except Exception:
+        cached = {}
+    missing = [text for text in texts if text not in cached]
+    if missing:
+        response = _with_retry(
+            lambda: _get_client().embeddings.create(model=EMBED_MODEL, input=missing, timeout_ms=REQUEST_TIMEOUT_MS),
+            cancel_check=cancel_check,
+        )
+        fresh = [item.embedding for item in response.data]
+        try:
+            from storage import db
+            db.save_cached_embeddings(missing, fresh, model=EMBED_MODEL)
+        except Exception:
+            pass
+        cached.update(dict(zip(missing, fresh)))
+    return [cached[text] for text in texts]
 
 
 def run_manager_step(model, message_history, max_tokens, cancel_check=None):

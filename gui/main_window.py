@@ -60,6 +60,52 @@ from .pages import (
     TalkToBuddyPage, PluginsPage, ModelConfigurationPage,
 )
 
+
+class ScreenEdgeGlow(QWidget):
+    """A subtle click-through border showing that Buddy is working."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(
+            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+        )
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self._phase = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(45)
+        self._timer.timeout.connect(self._pulse)
+        self.hide()
+
+    def start(self):
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        self.setGeometry(screen.geometry())
+        self._timer.start()
+        self.show()
+        self.raise_()
+
+    def stop(self):
+        self._timer.stop()
+        self.hide()
+
+    def _pulse(self):
+        self._phase = (self._phase + 1) % 80
+        self.update()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        wave = (self._phase if self._phase <= 40 else 80 - self._phase) / 40.0
+        alpha = int(35 + wave * 55)
+        pen = painter.pen()
+        pen.setColor(QColor(0, 153, 233, alpha))
+        pen.setWidth(5)
+        painter.setPen(pen)
+        rect = self.rect().adjusted(3, 3, -3, -3)
+        painter.drawRect(rect)
+
 class SendWorker(QThread):
     """Runs send_and_save_message off the main thread so the UI stays responsive."""
     finished = QtSignal(dict)   # emits the result dict on success
@@ -146,10 +192,12 @@ class BuddyWindow(QWidget):
         self._send_worker = None
         self._redo_worker = None
         self.incognito_mode = False
+        self._screen_glow = ScreenEdgeGlow()
 
         app = QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._shutdown_workers)
+            app.installEventFilter(self)
 
         self._build_ui()
         self._setup_tray_icon()
@@ -204,6 +252,7 @@ class BuddyWindow(QWidget):
         self.update()
 
     def _shutdown_workers(self):
+        self._screen_glow.stop()
         talk_page = getattr(self, "talk_page", None)
         if talk_page is not None and hasattr(talk_page, "shutdown"):
             talk_page.shutdown()
@@ -303,6 +352,10 @@ class BuddyWindow(QWidget):
         super().mouseReleaseEvent(event)
 
     def eventFilter(self, obj, event):
+        if obj is QApplication.instance() and event.type() == QEvent.ApplicationActivate:
+            if not self.isVisible():
+                self.show_window()
+            return False
         if obj in (getattr(self, "header_bar", None), getattr(self, "title_label", None)):
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                 pos = self.mapFromGlobal(event.globalPosition().toPoint())
@@ -1373,6 +1426,7 @@ class BuddyWindow(QWidget):
         self._set_send_button_stop_mode(True)
 
         self._is_sending = True
+        self._screen_glow.start()
         if self.incognito_mode:
             # Incognito: no conversation_id, no db writes — the pipeline works
             # purely off the in-memory message_history this window owns.
@@ -1448,6 +1502,7 @@ class BuddyWindow(QWidget):
 
     def _on_send_result(self, result):
         self._is_sending = False
+        self._screen_glow.stop()
         self._send_worker = None
         self._set_send_button_stop_mode(False)
         self._remove_thinking_bubble()
@@ -1492,6 +1547,7 @@ class BuddyWindow(QWidget):
 
     def _on_send_error(self, error_msg):
         self._is_sending = False
+        self._screen_glow.stop()
         self._send_worker = None
         self._set_send_button_stop_mode(False)
         self._remove_thinking_bubble()

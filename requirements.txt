@@ -7,3 +7,4 @@ requests
 Flask
 stripe
 gunicorn
+playwright

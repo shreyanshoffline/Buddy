@@ -98,6 +98,14 @@ def build_memory_context(user_input, conversation_id=None, file_context=None):
         sections.append("Who the user is:\n- " + "\n- ".join(identity))
 
     try:
+        from tools import lessons as _lessons
+        taught = _lessons._relevant(user_input)
+    except Exception:
+        taught = []
+    if taught:
+        sections.append("Lessons the user already taught you (follow them, never ask again):\n- " + "\n- ".join(taught))
+
+    try:
         facts = db.find_relevant_facts(user_input, limit=FACT_LIMIT)
     except Exception:
         facts = []

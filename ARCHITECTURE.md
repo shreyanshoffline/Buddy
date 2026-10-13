@@ -19,8 +19,8 @@ User data belongs in macOS Application Support, not in the source tree:
 
 This includes the database, OAuth caches, and local provider settings.
 
-## Historical code
+## Project hygiene
 
-`app-draft/` and `Archives/` are reference snapshots only. They are not
-runtime imports and should not receive feature changes. New production code
-belongs in the lowercase active directories listed above.
+The repository keeps one active runtime tree. New production code belongs in
+the active directories listed above. Historical snapshots and generated local
+artifacts are intentionally excluded so there is one obvious place to edit.

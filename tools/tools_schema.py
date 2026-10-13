@@ -864,7 +864,7 @@ tools_schema = [
         "type": "function",
         "function": {
             "name": "get_unread_messages",
-            "description": "Reads unread incoming iMessages/SMS directly from the local Messages database (read-only). Includes messages from both individual contacts and group chats. Requires Full Disk Access permission for the Python process.",
+            "description": "Reads the actual text of unread incoming iMessages/SMS directly from the local Messages database (read-only), including group chats. Uses modern attributed message bodies when needed. Requires Full Disk Access permission for the Buddy process.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1266,3 +1266,8 @@ tools_schema = [
         }
     }
 ]
+
+
+# Newer modules (browser, lessons, guides, Google/Microsoft extras) build their schema from source.
+from tools.extra_schema import build_extra_schema  # noqa: E402
+tools_schema += build_extra_schema()

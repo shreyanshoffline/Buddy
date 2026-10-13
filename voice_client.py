@@ -355,7 +355,12 @@ def synthesize_speech(text, voice=DEFAULT_TTS_VOICE, cancel_check=None, on_parti
 
 
 def mac_premium_voice():
-    """Pick a downloaded Enhanced/Premium macOS voice, then a Siri/Samantha voice."""
+    """Pick the most Siri-like installed free macOS voice.
+
+    macOS does not expose every Siri voice to the ``say`` command, so Buddy
+    prefers Apple conversational voices when installed and falls back to a
+    downloaded Premium/Enhanced voice.
+    """
     import shutil
     import subprocess
 
@@ -379,6 +384,13 @@ def mac_premium_voice():
         if voice:
             names.append(voice)
 
+    # Prefer the conversational Apple voices already available on most Macs.
+    for wanted in ("Samantha", "Samantha (Premium)", "Samantha (Enhanced)",
+                   "Allison", "Allison (Premium)", "Ava", "Siri Voice 1",
+                   "Daniel (Premium)", "Daniel (Enhanced)", "Oliver (Premium)",
+                   "Oliver (Enhanced)", "Arthur (Enhanced)", "Daniel", "Oliver", "Arthur"):
+        if wanted in names:
+            return wanted
     for needle in ("Premium", "Enhanced"):
         for voice in names:
             if needle.lower() in voice.lower() and ("en_" in voice.lower() or True):
@@ -387,10 +399,28 @@ def mac_premium_voice():
         matches = [voice for voice in names if needle.lower() in voice.lower()]
         if matches:
             return matches[0]
-    for preferred in ("Samantha (Premium)", "Allison (Premium)", "Zoe (Premium)", "Samantha", "Allison", "Siri Voice 1"):
+    for preferred in ("Samantha", "Allison", "Ava", "Siri Voice 1", "Samantha (Premium)", "Allison (Premium)", "Zoe (Premium)"):
         if preferred in names:
             return preferred
     return names[0] if names else None
+
+
+def clean_for_speech(text, max_sentences=3):
+    """Make a written reply sound like a person talking: no markdown, links or code,
+    and only the first few sentences (the full reply stays in the chat)."""
+    import re
+    t = text or ""
+    t = re.sub(r"```.*?```", " ", t, flags=re.S)
+    t = re.sub(r"`([^`]*)`", r"\1", t)
+    t = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", t)
+    t = re.sub(r"https?://\S+", "the link in the chat", t)
+    t = re.sub(r"(?m)^\s*(#+|[-*•]|\d+[.)])\s*", "", t)
+    t = re.sub(r"[*_~>|]", "", t)
+    t = " ".join(t.split())
+    sentences = re.split(r"(?<=[.!?])\s+", t)
+    if len(sentences) > max_sentences:
+        t = " ".join(sentences[:max_sentences]) + " The rest is in the chat."
+    return t
 
 
 def system_say_command(text):

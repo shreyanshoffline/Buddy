@@ -84,9 +84,9 @@ def get_userinfo() -> dict:
 
 def calendar_today() -> str:
     service = build("calendar", "v3", credentials=_get_credentials())
-    now = datetime.utcnow()
-    start = now.replace(hour=0, minute=0, second=0).isoformat() + "Z"
-    end = now.replace(hour=23, minute=59, second=59).isoformat() + "Z"
+    now = datetime.now().astimezone()  # the user's local day, not UTC
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    end = now.replace(hour=23, minute=59, second=59, microsecond=0).isoformat()
     events = service.events().list(
         calendarId="primary", timeMin=start, timeMax=end, singleEvents=True, orderBy="startTime"
     ).execute().get("items", [])

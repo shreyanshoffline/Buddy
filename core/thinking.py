@@ -19,47 +19,46 @@ LEVEL_LABELS = {
 }
 
 # Real IDs from the current agent — do not invent new model names here.
-FLASH_LITE_25 = "google/gemini-2.5-flash-lite"
-FLASH_LITE_35 = "google/gemini-3.5-flash-lite"
-FLASH_38 = "google/gemini-3.8-flash"
+HAIKU_55 = "anthropic/claude-haiku-5.5"
+SONNET_55 = "anthropic/claude-sonnet-5.5"
 
 CONFIG = {
     "low": {
-        "manager": FLASH_LITE_25,
-        "worker": FLASH_LITE_25,
-        "deep": FLASH_LITE_25,
+        "manager": HAIKU_55,
+        "worker": HAIKU_55,
+        "deep": HAIKU_55,
         "max_tokens": 350,
         "max_steps": 4,
         "timeout": 60,
     },
     "medium": {
-        "manager": FLASH_LITE_35,
-        "worker": FLASH_LITE_35,
-        "deep": FLASH_LITE_35,
+        "manager": HAIKU_55,
+        "worker": HAIKU_55,
+        "deep": HAIKU_55,
         "max_tokens": 500,
         "max_steps": 8,
         "timeout": 150,
     },
     "high": {
-        "manager": FLASH_LITE_35,
-        "worker": FLASH_38,
-        "deep": FLASH_LITE_35,
+        "manager": HAIKU_55,
+        "worker": SONNET_55,
+        "deep": SONNET_55,
         "max_tokens": 700,
         "max_steps": 10,
         "timeout": 180,
     },
     "extra": {
-        "manager": FLASH_38,
-        "worker": FLASH_38,
-        "deep": FLASH_38,
+        "manager": HAIKU_55,
+        "worker": SONNET_55,
+        "deep": SONNET_55,
         "max_tokens": 900,
         "max_steps": 12,
         "timeout": 210,
     },
     "max": {
-        "manager": FLASH_38,
-        "worker": FLASH_38,
-        "deep": FLASH_38,
+        "manager": HAIKU_55,
+        "worker": SONNET_55,
+        "deep": SONNET_55,
         "max_tokens": 1200,
         "max_steps": 16,
         "timeout": 240,

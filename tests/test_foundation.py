@@ -105,6 +105,38 @@ class FoundationTests(unittest.TestCase):
                 else:
                     os.environ[name] = value
 
+    def test_model_defaults_use_haiku_and_sonnet(self):
+        import importlib.util
+
+        model_path = Path(__file__).resolve().parents[1] / "core" / "model_config.py"
+        spec = importlib.util.spec_from_file_location("buddy_model_config", model_path)
+        model_config = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(model_config)
+
+        config = model_config.load_model_config()
+        self.assertEqual(config["manager"], "anthropic/claude-haiku-5.5")
+        self.assertEqual(config["easy"], "anthropic/claude-haiku-5.5")
+        self.assertEqual(config["hard"], "anthropic/claude-sonnet-5.5")
+
+    def test_embedding_cache_round_trip(self):
+        self.db.save_cached_embeddings(["same text"], [[0.1, 0.2]])
+        self.assertEqual(
+            self.db.get_cached_embeddings(["same text"]),
+            {"same text": [0.1, 0.2]},
+        )
+
+    def test_terminal_exit_code_is_a_tool_failure(self):
+        text = "STDOUT:\n\nSTDERR:\nERROR\n[exit code: 1]"
+        self.assertIn("[exit code: 1]", text)
+
+    def test_messages_attributed_body_extracts_readable_text(self):
+        import tools.tools as tools
+
+        self.assertEqual(
+            tools._message_text_from_attributed_body(b"NSAttributedString\x00Meet me at six"),
+            "Meet me at six",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,6 +70,12 @@ MICROSOFT_TOOLS = {
     "onedrive_recent", "onedrive_upload", "onenote_list_sections", "onenote_create_page",
     "teams_list_chats", "teams_send_message",
 }
+try:
+    from tools.extra_schema import extra_tool_names as _extra_names
+    GOOGLE_WORKSPACE_TOOLS |= _extra_names("google_extras")
+    MICROSOFT_TOOLS |= _extra_names("microsoft_extras")
+except Exception:  # never let schema discovery break plugin gating
+    pass
 GITHUB_OPS_TOOLS = {
     "github_clone_repo", "github_status", "github_create_branch", "github_commit_all",
     "github_push", "github_pull", "github_create_pull_request", "github_list_open_prs",

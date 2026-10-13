@@ -95,7 +95,10 @@ class _VoiceTurnWorker(QThread):
             if self.conversation_id and self.message_history:
                 self.message_history[0]["conversation_id"] = self.conversation_id
             result = core.process_message(
-                user_text, self.message_history, cancel_check=self.cancel_event.is_set,
+                user_text,
+                self.message_history,
+                cancel_check=self.cancel_event.is_set,
+                voice_mode=True,
             )
             self.reply_ready.emit(result.get("reply", ""))
         except voice_client.VoiceError as e:
@@ -224,6 +227,11 @@ class TalkToBuddyPage(CardPage):
         self.voice_hint.setAlignment(Qt.AlignCenter)
         self.voice_hint.setStyleSheet(f"color: {CARD_SUBTITLE_COLOR}; font-size: 10px; background: transparent; border: none; margin-top: 8px;")
         self.main_layout.addWidget(self.voice_hint)
+        try:
+            from voice_client import mac_premium_voice
+            self._system_voice = mac_premium_voice()
+        except Exception:
+            self._system_voice = None
         self._refresh_voice_hint()
 
     def _action_button(self, text):
@@ -319,9 +327,12 @@ class TalkToBuddyPage(CardPage):
             return
         listener = self.listening_model_combo.currentText()
         speaker = self.speaking_model_combo.currentText()
+        voice_detail = ""
+        if self.speaking_model_combo.currentData() == "system" and getattr(self, "_system_voice", None):
+            voice_detail = " Voice: %s." % self._system_voice
         self.voice_hint.setText(
-            "Listening: %s. Speaking: %s. This session is saved in Library as a Voice chat."
-            % (listener, speaker)
+            "Listening: %s. Speaking: %s.%s This session is saved in Library as a Voice chat."
+            % (listener, speaker, voice_detail)
         )
 
     def _mic_style(self, bg, hover_bg):
@@ -726,7 +737,7 @@ class TalkToBuddyPage(CardPage):
         self._record_timer.start(MAX_RECORDING_SECONDS * 1000)
 
     def _speak(self, text):
-        spoken = (text or "").strip()
+        spoken = voice_client.clean_for_speech((text or "").strip())
         if not spoken:
             self._start_listening()
             return

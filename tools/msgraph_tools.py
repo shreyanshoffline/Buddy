@@ -29,8 +29,8 @@ from msal import PublicClientApplication, SerializableTokenCache
 from tools.paths import data_file, resolve_existing
 
 CLIENT_ID = os.environ.get("BUDDY_MS_CLIENT_ID", "")
-AUTHORITY = "https://login.microsoftonline.com/consumers"  # personal MS accounts
-SCOPES = ["Mail.Read", "Mail.Send", "Calendars.ReadWrite", "Files.ReadWrite", "Notes.ReadWrite", "Chat.ReadWrite"]
+AUTHORITY = "https://login.microsoftonline.com/common"  # personal AND work/school accounts (Azure app must be multitenant + personal)
+SCOPES = ["Mail.Read", "Mail.Send", "Calendars.ReadWrite", "Files.ReadWrite", "Notes.ReadWrite", "Chat.ReadWrite", "Tasks.ReadWrite", "Contacts.Read"]
 TOKEN_CACHE_PATH = data_file("ms_token_cache.json")  # lives inside Buddy's own folder, portable
 CLIENT_ID_PATH = resolve_existing("ms_client_id.txt")
 SETUP_HELP = (

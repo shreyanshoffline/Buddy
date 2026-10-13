@@ -11,11 +11,11 @@ from storage import db
 
 
 DEFAULT_MODEL_CONFIG = {
-    "chat": "google/gemini-2.5-flash-lite",
-    "manager": "google/gemini-3.5-flash-lite",
-    "easy": "google/gemini-2.5-flash-lite",
-    "medium": "google/gemini-3.5-flash-lite",
-    "hard": "google/gemini-3.8-flash",
+    "chat": "anthropic/claude-haiku-5.5",
+    "manager": "anthropic/claude-haiku-5.5",
+    "easy": "anthropic/claude-haiku-5.5",
+    "medium": "anthropic/claude-haiku-5.5",
+    "hard": "anthropic/claude-sonnet-5.5",
     "image_create": "google/gemini-3.1-flash-lite-image",
     "image_edit": "google/gemini-3.1-flash-lite-image",
 }
@@ -43,6 +43,8 @@ MODEL_FIELD_LABELS = {
 # These are the model IDs Buddy already uses or has already been configured
 # to use. The editable combo boxes also accept a custom model ID.
 MODEL_OPTIONS = (
+    "anthropic/claude-haiku-5.5",
+    "anthropic/claude-sonnet-5.5",
     "google/gemini-2.5-flash-lite",
     "google/gemini-3.1-flash-lite-image",
     "google/gemini-3.5-flash-lite",
@@ -50,10 +52,20 @@ MODEL_OPTIONS = (
 )
 
 MODEL_LABELS = {
+    "anthropic/claude-haiku-5.5": "Claude Haiku 5.5",
+    "anthropic/claude-sonnet-5.5": "Claude Sonnet 5.5",
     "google/gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
     "google/gemini-3.1-flash-lite-image": "Gemini 3.1 Flash Lite Image",
     "google/gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
     "google/gemini-3.8-flash": "Gemini 3.8 Flash",
+}
+
+_LEGACY_DEFAULTS = {
+    "chat": "google/gemini-2.5-flash-lite",
+    "manager": "google/gemini-3.5-flash-lite",
+    "easy": "google/gemini-2.5-flash-lite",
+    "medium": "google/gemini-3.5-flash-lite",
+    "hard": "google/gemini-3.8-flash",
 }
 
 
@@ -72,7 +84,10 @@ def load_model_config():
     for key in MODEL_FIELDS:
         value = saved.get(key)
         if isinstance(value, str) and value.strip():
-            config[key] = value.strip()
+            value = value.strip()
+            if value == _LEGACY_DEFAULTS.get(key):
+                continue
+            config[key] = value
     return config
 
 

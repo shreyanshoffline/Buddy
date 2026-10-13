@@ -76,6 +76,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/presentations",
     "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/contacts.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
@@ -1302,8 +1305,9 @@ def get_unread_messages(limit: int = 20) -> List[Dict]:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         query = """
-        SELECT 
+        SELECT
             message.text,
+            message.attributedBody,
             message.date,
             message.is_from_me,
             handle.id AS sender,
@@ -1323,8 +1327,9 @@ def get_unread_messages(limit: int = 20) -> List[Dict]:
         results = []
         for r in rows:
             ts = epoch + timedelta(seconds=r["date"] / 1_000_000_000)
+            text = r["text"] or _message_text_from_attributed_body(r["attributedBody"])
             results.append({
-                "text": r["text"],
+                "text": text or "[Message text is unavailable in the local Messages database.]",
                 "sender": r["sender"],
                 "chat_name": r["chat_name"] or r["chat_id"],
                 "timestamp": ts.isoformat(),
@@ -1332,6 +1337,22 @@ def get_unread_messages(limit: int = 20) -> List[Dict]:
         return results
     except Exception as e:
         return [{"error": str(e)}]
+
+
+def _message_text_from_attributed_body(value):
+    """Recover readable text from modern macOS Messages attributed bodies."""
+    if not value:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        raw = bytes(value)
+        candidates = re.findall(rb"[\x20-\x7e]{2,}", raw)
+        ignored = {b"NSString", b"NSDictionary", b"NSAttributedString"}
+        readable = [item.decode("utf-8", "ignore") for item in candidates if item not in ignored]
+        return max(readable, key=len, default="").strip()
+    except Exception:
+        return ""
 
 
 def list_group_chats(limit: int = 20) -> List[Dict]:
@@ -1570,17 +1591,21 @@ def run_code(file_path: str) -> str:
 
 
 def manage_package(action: str, package_name: str) -> str:
-    """Installs, updates, or uninstalls a Python package using pip3."""
+    """Installs, updates, or uninstalls a package in Buddy's Python environment."""
+    import sys
     cmd_map = {
-        "install": ["pip3", "install", package_name],
-        "update": ["pip3", "install", "--upgrade", package_name],
-        "uninstall": ["pip3", "uninstall", "-y", package_name],
+        "install": [sys.executable, "-m", "pip", "install", package_name],
+        "update": [sys.executable, "-m", "pip", "install", "--upgrade", package_name],
+        "uninstall": [sys.executable, "-m", "pip", "uninstall", "-y", package_name],
     }
     if action not in cmd_map:
         return f"Unknown package action: {action}. Use install/update/uninstall."
     try:
         result = subprocess.run(cmd_map[action], capture_output=True, text=True, timeout=120)
-        return f"Package '{action}' for {package_name}:\n{result.stdout}\n{result.stderr}"
+        output = f"Package '{action}' for {package_name}:\n{result.stdout}\n{result.stderr}".strip()
+        if result.returncode != 0:
+            return f"Error: package action failed with exit code {result.returncode}.\n{output}"
+        return output
     except Exception as e:
         return f"Package action failed: {e}"
 

@@ -32,13 +32,27 @@ class BillingNotConfigured(Exception):
 
 
 def _alive(url):
-    for path in ("/health", "/"):
-        try:
-            resp = requests.get(url + path, timeout=1.5)
-            if resp.status_code < 500:
-                return True
-        except Exception:
-            pass
+    """True only if this is really Buddy's backend. A bare 'any HTTP response' check
+    is fooled by macOS AirPlay Receiver, which squats on port 5000 and answers 403."""
+    try:
+        resp = requests.get(url + "/health", timeout=1.5)
+        return resp.ok and bool((resp.json() or {}).get("ok"))
+    except Exception:
+        return False
+
+
+def _health(url):
+    try:
+        return requests.get(url + "/health", timeout=3).json() or {}
+    except Exception:
+        return {}
+
+
+def slack_configured():
+    """True when a reachable backend has the Slack app credentials set."""
+    for base in (SLACK_API_BASE, discover_backend()):
+        if base and _alive(base) and _health(base).get("slack_client_id_set") and _health(base).get("slack_secret_set"):
+            return True
     return False
 
 
@@ -62,7 +76,7 @@ def ensure_backend():
         return url
     global _started
     app = _ROOT / "backend" / "app.py"
-    if app.exists() and not _started:
+    if app.exists() and not _started and not getattr(sys, "frozen", False):  # a frozen app would relaunch itself
         _started = True
         subprocess.Popen(
             [sys.executable, str(app)],

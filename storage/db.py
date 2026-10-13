@@ -37,6 +37,39 @@ def _safe_embed(texts):
         return models.embed_texts(texts)
     except Exception:
         return None
+
+
+def get_cached_embeddings(texts, model="openai/text-embedding-3-small"):
+    """Return cached vectors keyed by model and exact text hash."""
+    if not texts:
+        return {}
+    found = {}
+    with _connect() as conn:
+        for text in texts:
+            text_hash = hashlib.sha256(str(text).encode("utf-8")).hexdigest()
+            cache_key = "%s:%s" % (model, text_hash)
+            row = conn.execute(
+                "SELECT embedding FROM embedding_cache WHERE cache_key = ?", (cache_key,)
+            ).fetchone()
+            if row:
+                try:
+                    found[text] = json.loads(row["embedding"])
+                except (TypeError, ValueError):
+                    pass
+    return found
+
+
+def save_cached_embeddings(texts, vectors, model="openai/text-embedding-3-small"):
+    if not texts or not vectors:
+        return
+    with _connect() as conn:
+        for text, vector in zip(texts, vectors):
+            text_hash = hashlib.sha256(str(text).encode("utf-8")).hexdigest()
+            conn.execute(
+                "INSERT OR REPLACE INTO embedding_cache "
+                "(cache_key, model, text_hash, embedding, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("%s:%s" % (model, text_hash), model, text_hash, json.dumps(vector), time.time()),
+            )
 MAX_FILE_CHARS = 60_000    # ~20-30 pages; more than this rarely gets retrieved
 CHUNK_CHARS = 3000         # bigger chunks = more context per retrieval hit
 CHUNK_OVERLAP = 400        # more overlap = less chance of splitting mid-thought
@@ -313,6 +346,15 @@ def init_db(conn=None):
             CREATE TABLE IF NOT EXISTS plugin_toggles (
                 key TEXT PRIMARY KEY,
                 enabled INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS embedding_cache (
+                cache_key TEXT PRIMARY KEY,
+                model TEXT NOT NULL,
+                text_hash TEXT NOT NULL,
+                embedding TEXT NOT NULL,
+                created_at REAL NOT NULL
             )
         """)
         conn.execute("""
