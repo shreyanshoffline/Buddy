@@ -189,14 +189,14 @@ def message_text(message):
     return str(content)
 
 
-def run_action_step(model, message_history, max_tokens, tools, cancel_check=None):
+def run_action_step(model, message_history, max_tokens, tools, cancel_check=None, timeout_ms=None):
     return _with_retry(
         lambda: _get_client().chat.send(
             model=model,
             messages=message_history,
             max_tokens=max_tokens,
             tools=tools,
-            timeout_ms=REQUEST_TIMEOUT_MS,
+            timeout_ms=timeout_ms or REQUEST_TIMEOUT_MS,
         ),
         cancel_check=cancel_check,
     )

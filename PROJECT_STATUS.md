@@ -37,6 +37,7 @@ The free build is ad-hoc signed. Developer ID signing and notarization are optio
 - Concise voice-mode replies and free macOS system speech.
 - Google, Microsoft, Slack, GitHub, and Gmail connection surfaces.
 - Modern macOS Messages attributed-body reading for unread group messages.
+- Coding mode (`core/coding_agent.py`, `tools/code_agent.py`, `knowledge/coding.md`): build, test, fix, and upgrade software autonomously (60 steps, 8000 tokens/step, 20 min, real execution feedback, undo without git). Needs Files & Folders and Terminal enabled in Plugins. Reference output: `examples/space_invaders/`.
 
 ## Known gaps
 
@@ -45,6 +46,8 @@ The free build is ad-hoc signed. Developer ID signing and notarization are optio
 - macOS may warn on first launch because the free build is not notarized.
 - Qt stylesheet warnings and full accessibility review still need a real GUI run.
 - `tools/tools.py` and the generated tool schema remain large and deserve future modularization.
+
+- Coding mode has been verified with a scripted model and the real tools (21 tests), not yet with a live model run on a Mac. Try: "build me a space invaders game" and "go into ~/path/to/project and add type hints and error handling".
 
 ## Useful commands
 

@@ -4,7 +4,7 @@ a docstring and type hints. Appended to tools_schema at the bottom of that file.
 import ast
 from pathlib import Path
 
-_MODULES = ("browser_control", "lessons", "guides", "google_extras", "microsoft_extras")
+_MODULES = ("browser_control", "lessons", "guides", "code_agent", "google_extras", "microsoft_extras")
 _TYPES = {"int": "integer", "float": "number", "bool": "boolean", "list": "array", "dict": "object", "str": "string"}
 
 

@@ -23,6 +23,7 @@ except ImportError:
 import tools.browser_control as browser_control
 import tools.lessons as lessons
 import tools.guides as guides
+import tools.code_agent as code_agent
 try:
     import tools.google_extras as google_extras
 except ImportError:
@@ -36,6 +37,7 @@ from core.instruction import build_action_instruction
 from models import run_manager_step, run_action_step, BuddyCancelled, extract_image_urls, message_text
 from storage import db
 from core.thinking import thinking_config
+from core.coding_agent import looks_like_coding_task, run_coding_agent
 from core.model_config import image_model, load_model_config
 from core.plugins import active_tools_schema, blocked_reason
 
@@ -326,7 +328,7 @@ def run_image_creation_task(plan_text, source_images=None, cancel_check=None):
 
 TOOL_MODULES = tuple(m for m in (
     tools, gmail_tools, apple_tools, google_workspace_tools, msgraph_tools, github_ops,
-    browser_control, lessons, guides, google_extras, microsoft_extras,
+    browser_control, lessons, guides, code_agent, google_extras, microsoft_extras,
 ) if m is not None)
 
 
@@ -557,6 +559,9 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         if memory_note:
             message_history.append({"role": "system", "content": memory_note})
 
+    if not image_attachments and not voice_mode and looks_like_coding_task(user_input):
+        return _run_coding_turn(user_input, message_history, metrics, start_time, on_event, cancel_check, incognito)
+
     cfg = thinking_config()
     deadline = start_time + cfg["timeout"]
 
@@ -745,6 +750,38 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
     reply = "I'm having trouble with that request."
     return format_response(reply, metrics, start_time)
  
+
+def _run_coding_turn(user_input, message_history, metrics, start_time, on_event, cancel_check, incognito):
+    """Build/fix/upgrade code with the long-running coding loop (see core/coding_agent.py)."""
+    model = WORKER_MODELS["heavy_task"]
+    if on_event:
+        on_event({"type": "plan", "model": model, "plan": "Coding mode: build, run, and verify."})
+    profile = db.get_profile() or {}
+    outcome = run_coding_agent(
+        user_input, message_history,
+        step_fn=lambda h, mt, sc, tm: run_action_step(model, h, mt, sc, cancel_check=cancel_check, timeout_ms=tm),
+        execute=execute_tool,
+        schema=active_tools_schema(),
+        user_name=(profile.get("name") or "").strip() or "the user",
+        on_event=on_event,
+        cancel_check=cancel_check,
+    )
+    metrics["requests"] += outcome.get("requests", 0)
+    metrics["tokens_in"] += outcome.get("tokens_in", 0)
+    metrics["tokens_out"] += outcome.get("tokens_out", 0)
+    metrics["tools_executed"].extend(outcome.get("tools", []))
+    metrics["tool_log"].extend(outcome.get("tool_log", []))
+    metrics["final_plan"] = "**Coding mode** — %d steps" % outcome.get("step_count", 0)
+    reply = outcome.get("summary") if outcome["status"] == "success" else outcome.get("message")
+    reply = _strip_protocol_labels(reply or "I couldn't finish that.")
+    message_history.append({"role": "assistant", "content": reply})
+    if outcome["status"] == "success" and not incognito:
+        try:
+            db.save_task_memory(task_summary=user_input, plan_text="coding mode", outcome_summary=reply)
+        except Exception:
+            pass
+    return format_response(reply, metrics, start_time)
+
 
 def process_message_incognito(user_text, message_history, on_event=None, cancel_check=None, image_attachments=None):
     """Runs the full Manager/Worker pipeline entirely in-memory: no message

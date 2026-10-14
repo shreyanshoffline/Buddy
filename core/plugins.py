@@ -72,6 +72,9 @@ MICROSOFT_TOOLS = {
 }
 try:
     from tools.extra_schema import extra_tool_names as _extra_names
+    _code_tools = _extra_names("code_agent")
+    TERMINAL_TOOLS |= {"code_run", "code_test", "code_launch", "code_setup_env"}
+    FILE_TOOLS |= (_code_tools - TERMINAL_TOOLS)
     GOOGLE_WORKSPACE_TOOLS |= _extra_names("google_extras")
     MICROSOFT_TOOLS |= _extra_names("microsoft_extras")
 except Exception:  # never let schema discovery break plugin gating

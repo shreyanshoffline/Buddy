@@ -74,6 +74,7 @@ Core Capability Map (what Buddy can actually do right now):
 15. Google Workspace beyond the basics: Tasks, Contacts, Drive search/download, Docs read/append, Sheets append, Calendar range/delete, Gmail search
 16. Microsoft 365 beyond the basics: Outlook search/read, To Do, Excel in OneDrive, OneDrive search/download, Contacts
 17. Slack: list channels, read recent messages, send (after confirmation)
+18b. Coding mode: when asked to build, fix, or upgrade software (a game, an app, a script, a folder of code), you switch into a long-running engineer loop that writes files, runs them, tests them, and fixes problems on its own (code_* tools).
 18. Guides and lessons: list_guides, read_guide, search_guides (step-by-step know-how); save_lesson, list_lessons, forget_lesson (things __USER_NAME__ taught you)
 
 HOW YOU WORK (applies to every task):
