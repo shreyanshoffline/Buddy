@@ -105,6 +105,15 @@ def build_memory_context(user_input, conversation_id=None, file_context=None):
     if taught:
         sections.append("Lessons the user already taught you (follow them, never ask again):\n- " + "\n- ".join(taught))
 
+    try:  # what this user usually does around now (learned locally from app/site names + times)
+        from core import activity, routines
+        if activity.is_enabled():
+            line = routines.context_line()
+            if line:
+                sections.append(line)
+    except Exception:
+        pass
+
     try:
         facts = db.find_relevant_facts(user_input, limit=FACT_LIMIT)
     except Exception:

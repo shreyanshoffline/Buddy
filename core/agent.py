@@ -38,6 +38,9 @@ from models import run_manager_step, run_action_step, BuddyCancelled, extract_im
 from storage import db
 from core.thinking import thinking_config
 from core.coding_agent import looks_like_coding_task, run_coding_agent
+from core.staged import run_steps
+from core.call_format import format_call, format_result
+from core.tiers import CostTracker, TIER_ORDER, looks_like_long_form, parse_tiered_plan, tier_model
 from core.model_config import image_model, load_model_config
 from core.plugins import active_tools_schema, blocked_reason
 
@@ -180,9 +183,9 @@ def route_first_pass(user_input, cancel_check=None, model=None):
     return "say", raw, usage
 
 
-def get_manager_output(message_history, cancel_check=None, model=None):
+def get_manager_output(message_history, cancel_check=None, model=None, max_tokens=None):
     model = model or load_model_config()["manager"]
-    plan_response = run_manager_step(model, message_history, MANAGER_MAX_TOKENS, cancel_check=cancel_check)
+    plan_response = run_manager_step(model, message_history, max_tokens or MANAGER_MAX_TOKENS, cancel_check=cancel_check)
     manager_message = plan_response.choices[0].message
  
     # Safely extract token usage if the LLM provider returns it
@@ -438,7 +441,8 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
                 return {"status": "cancelled", "message": "Stopped before %s." % tool_name, "step_count": step_count, **stats}
 
             if on_event:
-                on_event({"type": "tool_call", "name": tool_name, "args": tool_args})
+                on_event({"type": "tool_call", "name": tool_name, "args": tool_args,
+                          "call": format_call(tool_name, tool_args)})
 
             tool_start = time.time()
             result = execute_tool(tool_name, tool_args)
@@ -447,6 +451,8 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
                 on_event({
                     "type": "tool_done",
                     "name": tool_name,
+                    "call": format_call(tool_name, tool_args),
+                    "result": format_result(result),
                     "duration": tool_duration,
                     "ok": not str(result).lower().startswith("error"),
                 })
@@ -586,10 +592,12 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
                 deep_history = list(message_history) + [
                     {"role": "system", "content": "Give a complete, careful reply. No tools. No PLAN tags."}
                 ]
+                long_form = looks_like_long_form(user_input)  # essays etc.: heavy model, room to finish
                 deep_out, deep_usage = get_manager_output(
                     deep_history,
                     cancel_check=cancel_check,
-                    model=cfg["deep"],
+                    model=tier_model("heavy") if long_form else cfg["deep"],
+                    max_tokens=6000 if long_form else 1500,
                 )
                 metrics["requests"] += 1
                 if deep_usage:
@@ -682,7 +690,10 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         if on_event:
             on_event({"type": "plan", "model": worker_model, "plan": plan_text})
  
-        outcome = (
+        tiered_steps = None if worker_model == IMAGE_GEN_MODEL else parse_tiered_plan(plan_text)
+        outcome = _run_tiered_plan(tiered_steps, user_input, on_event, cancel_check, deadline, metrics) if tiered_steps else None
+        if outcome is None:
+          outcome = (
             run_image_creation_task(
                 plan_text,
                 source_images=[item["data_url"] for item in image_attachments] or None,
@@ -707,6 +718,9 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         metrics["tools_executed"].extend(outcome.get("tools", []))
         metrics["tool_log"].extend(outcome.get("tool_log", []))
         metrics["generated_images"] = outcome.get("images", [])
+        if outcome.get("extra_stats"):  # staged run: per-tier calls + estimated cost
+            metrics["extra_stats"] = outcome["extra_stats"]
+            metrics["final_plan"] = "**Plan (by tier):**\n" + outcome.get("plan_text", plan_text)
  
         if outcome["status"] == "success":
             reply = outcome["summary"]
@@ -751,27 +765,61 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
     return format_response(reply, metrics, start_time)
  
 
-def _run_coding_turn(user_input, message_history, metrics, start_time, on_event, cancel_check, incognito):
-    """Build/fix/upgrade code with the long-running coding loop (see core/coding_agent.py)."""
-    model = WORKER_MODELS["heavy_task"]
-    if on_event:
-        on_event({"type": "plan", "model": model, "plan": "Coding mode: build, run, and verify."})
-    profile = db.get_profile() or {}
-    outcome = run_coding_agent(
-        user_input, message_history,
-        step_fn=lambda h, mt, sc, tm: run_action_step(model, h, mt, sc, cancel_check=cancel_check, timeout_ms=tm),
-        execute=execute_tool,
-        schema=active_tools_schema(),
-        user_name=(profile.get("name") or "").strip() or "the user",
-        on_event=on_event,
-        cancel_check=cancel_check,
-    )
+TIERED_PLAN_TIMEOUT_SECONDS = 15 * 60
+
+
+def _step_fn(cancel_check):
+    return lambda model, h, mt, sc, tm: run_action_step(model, h, mt, sc, cancel_check=cancel_check, timeout_ms=tm)
+
+
+def _tier_models():
+    return {t: tier_model(t) for t in TIER_ORDER}
+
+
+def _merge_staged(metrics, outcome):
     metrics["requests"] += outcome.get("requests", 0)
     metrics["tokens_in"] += outcome.get("tokens_in", 0)
     metrics["tokens_out"] += outcome.get("tokens_out", 0)
     metrics["tools_executed"].extend(outcome.get("tools", []))
     metrics["tool_log"].extend(outcome.get("tool_log", []))
-    metrics["final_plan"] = "**Coding mode** — %d steps" % outcome.get("step_count", 0)
+    metrics["extra_stats"] = outcome.get("extra_stats") or {}
+    if outcome.get("plan_text"):
+        metrics["final_plan"] = "**Plan (by tier):**\n" + outcome["plan_text"]
+
+
+def _run_tiered_plan(steps, user_input, on_event, cancel_check, deadline, metrics):
+    """A manager plan with [easy_task]/[medium_task]/[heavy_task] steps: each step runs on its own tier's model."""
+    models = _tier_models()
+    tracker = CostTracker(heavy_model=models["heavy"])
+    profile = db.get_profile() or {}
+    deadline = time.time() + TIERED_PLAN_TIMEOUT_SECONDS  # staged jobs legitimately outlast the quick-action deadline
+    result = run_steps(
+        steps, goal=user_input, step_fn=_step_fn(cancel_check), execute=execute_tool,
+        schema=active_tools_schema(), models=models, tracker=tracker, kind="general",
+        user_name=(profile.get("name") or "").strip() or "the user",
+        on_event=on_event, cancel_check=cancel_check, deadline=deadline,
+    )
+    if result["status"] == "success" and result.get("heavy_text"):
+        result["summary"] = "\n\n".join(result["heavy_text"] + ([result["summary"]] if result["summary"] not in result["heavy_text"] else []))
+    return result
+
+
+def _run_coding_turn(user_input, message_history, metrics, start_time, on_event, cancel_check, incognito):
+    """Build/fix/upgrade code: a cheap planner assigns steps to easy/medium/heavy workers (core/coding_agent.py)."""
+    profile = db.get_profile() or {}
+    outcome = run_coding_agent(
+        user_input, message_history,
+        step_fn=_step_fn(cancel_check),
+        plan_fn=lambda model, h, mt: run_manager_step(model, h, mt, cancel_check=cancel_check),
+        execute=execute_tool,
+        schema=active_tools_schema(),
+        models=_tier_models(),
+        user_name=(profile.get("name") or "").strip() or "the user",
+        on_event=on_event,
+        cancel_check=cancel_check,
+    )
+    _merge_staged(metrics, outcome)
+    metrics["final_plan"] = "**Coding mode — plan by tier:**\n" + (outcome.get("plan_text") or "")
     reply = outcome.get("summary") if outcome["status"] == "success" else outcome.get("message")
     reply = _strip_protocol_labels(reply or "I couldn't finish that.")
     message_history.append({"role": "assistant", "content": reply})
@@ -805,6 +853,7 @@ def format_response(reply_text, metrics, start_time):
             "Tokens In": metrics["tokens_in"],
             "Tokens Out": metrics["tokens_out"],
             "Requests": metrics["requests"],
-            "Latency": f"{latency:.2f}s"
+            "Latency": f"{latency:.2f}s",
+            **(metrics.get("extra_stats") or {}),
         }
     }

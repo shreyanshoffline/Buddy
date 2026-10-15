@@ -14,6 +14,12 @@ def main():
 
     window = BuddyWindow()
     window.show_window()
+    try:  # local-only routine learning; Settings can turn it off and wipe it
+        from core import activity
+        activity.start_tracking()
+        app.aboutToQuit.connect(activity.stop_tracking)
+    except Exception:
+        pass
     sys.exit(app.exec())
 
 

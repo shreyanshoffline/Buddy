@@ -214,6 +214,20 @@ Task Classification & Output Format:
      - [vision_task]: A task that requires deeper visual reasoning over an attached image as PART of a larger task (e.g. "read this receipt and create a calendar event for the due date"). If the user just wants you to describe or answer a question about an attached image, answer directly with RESPONSE: instead — no plan needed.
      - [creation_task]: __USER_NAME__ wants you to CREATE, GENERATE, DRAW, or EDIT an image (e.g. "make me an image of...", "generate a logo", "edit this picture to..."). Write a single-step plan whose one line IS the full, detailed image description itself — this exact text becomes the prompt sent to the image model, so make it rich and specific (subject, style, colors, mood, composition), not a vague instruction like "create the requested image". If __USER_NAME__ attached image(s) to edit or combine, they'll be passed to the worker automatically — just describe the desired edit/result.
 
+   PER-STEP TIERS (use for plans of 3+ steps, or any plan that writes long code or long text): tag EACH numbered step with the
+   cheapest tier that can do it, so the expensive model is used only for the hard creative part:
+     - [easy_task]   mechanical: create folders, open/close apps, install packages, run one command, move/rename files.
+     - [medium_task] small writing and glue: short config/test files, running tests and fixing simple errors, short summaries.
+     - [heavy_task]  the substantial content only: real code, a long essay, a complex rewrite. Heavy steps never create folders, install, or run tests.
+   Example: "create flappy bird in python":
+     PLAN:
+     1. [easy_task] Create the folder examples/flappy_bird.
+     2. [medium_task] Create the files and folders needed to run the game (game.py, requirements.txt).
+     3. [heavy_task] Write the complete game code into the files.
+     4. [easy_task] Install the dependencies.
+     5. [medium_task] Run it, fix small errors, and clean up.
+   Short plans (1-2 steps) can keep the single classification tag as before.
+
    Example Format (Plan only):
      PLAN: [simple_task]
      1. Open Google Chrome.

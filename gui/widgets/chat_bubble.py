@@ -19,6 +19,13 @@ from ..theme import (
     UI_LABEL_FONT_SIZE, LOADER_COLOR, DEV_TEXT_COLOR,
 )
 
+import html as _html
+
+
+def _esc(text):
+    return _html.escape(str(text), quote=False)
+
+
 class BuddyPawLoader(QWidget):
     """Compact Buddy response indicator: a soft pulse with paw prints walking upward."""
 
@@ -246,8 +253,9 @@ class ChatBubble(QWidget):
 
             self.thinking_current_label = QLabel("Buddy is thinking...")
             self.thinking_current_label.setStyleSheet(f"color: {TEXT_COLOR_MUTED}; font-size: {UI_THINKING_FONT_SIZE}px; font-weight: 500; font-style: italic; background: transparent; border: none;")
-            current_row.addWidget(self.thinking_current_label)
-            current_row.addStretch()
+            self.thinking_current_label.setWordWrap(True)
+            self.thinking_current_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            current_row.addWidget(self.thinking_current_label, 1)
             self.thinking_container.addLayout(current_row)
 
             self.content_layout.addLayout(self.thinking_container)
@@ -493,6 +501,47 @@ class ChatBubble(QWidget):
 
     def _trigger_redo(self):
         self.callbacks.get('redo', lambda: None)()
+
+    _ACTION_MAX_LINES = 26
+
+    def _push_history_html(self, html_text, max_lines=None):
+        label = QLabel(html_text)
+        label.setTextFormat(Qt.RichText)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        label.setStyleSheet(f"color: {TEXT_COLOR_MUTED}; font-size: 11px; background: transparent; border: none; padding-left: 24px;")
+        self.thinking_history_layout.addWidget(label)
+        limit = max_lines or self._ACTION_MAX_LINES
+        while self.thinking_history_layout.count() > limit:
+            old = self.thinking_history_layout.takeAt(0)
+            if old.widget():
+                old.widget().deleteLater()
+
+    def add_action_header(self, text, color="#3b82f6"):
+        """A coloured step header, e.g. 'Step 3/6 · Heavy · Claude Sonnet 5.5 — Write game logic'."""
+        if not self.is_thinking or not hasattr(self, "thinking_history_layout"):
+            return
+        self._push_history_html('<span style="color:%s">●</span> <b style="color:%s">%s</b>' % (color, color, _esc(text)))
+
+    def set_current_call(self, call_text, color="#3b82f6"):
+        """The call being executed right now: full function name and parameters, monospace."""
+        if not self.is_thinking or not hasattr(self, "thinking_current_label"):
+            return
+        self.thinking_current_label.setTextFormat(Qt.RichText)
+        self.thinking_current_label.setText(
+            '<span style="color:%s">▶</span> <span style="font-family:Menlo,Consolas,monospace; font-style:normal; font-size:11px">%s</span>' % (color, _esc(call_text)))
+
+    def finish_call(self, call_text, ok, duration=None, result=None, color="#3b82f6"):
+        """Moves a finished call into the log with a ✓/✗, timing, and a one-line result."""
+        if not self.is_thinking or not hasattr(self, "thinking_history_layout"):
+            return
+        mark = '<span style="color:#34c759">✓</span>' if ok else '<span style="color:#ff453a">✗</span>'
+        secs = (" · %.1fs" % duration) if isinstance(duration, (int, float)) else ""
+        body = '%s <span style="font-family:Menlo,Consolas,monospace">%s</span><span style="color:%s">%s</span>' % (mark, _esc(call_text), color, secs)
+        if result:
+            body += '<br><span style="color:%s">&nbsp;&nbsp;→ %s</span>' % ("#8a94a6" if ok else "#ff453a", _esc(result))
+        self._push_history_html(body)
+        self.thinking_current_label.setText("Working…")
 
     def add_progress_step(self, text, max_history=4):
         """Pushes the current 'thinking' status into the transcript as a

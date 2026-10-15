@@ -1,4 +1,8 @@
-"""Coding mode: a long-running build/fix/upgrade loop (Copilot + Claude Code style).
+"""Coding mode: plan -> staged build/fix/upgrade (Copilot + Claude Code style, tiered for cost).
+
+A cheap planner splits the job into steps tagged easy / medium / heavy (core/tiers.py); core/staged.py
+runs each step on its tier's model with a tiny brief, so the heavy model is billed only for writing
+the substantial code. If planning fails, one heavy step runs the full loop (the original behavior).
 
 Why separate from the normal Manager -> Worker pipeline: that pipeline is tuned for quick
 Mac actions (8 steps, 500 tokens per step, 150 s, any tool error aborts). Writing a game or
@@ -8,8 +12,12 @@ and failures that are *information* (a failing test is a result, not a crash).
 The loop is model-agnostic: pass `step_fn` (messages, max_tokens, schema, timeout_ms) -> response.
 """
 import json
+import os
 import re
 import time
+
+from core.staged import run_steps
+from core.tiers import CostTracker, TIER_ORDER, normalize_tier, tier_model
 
 CODING_MAX_STEPS = 60
 CODING_MAX_TOKENS = 8000
@@ -73,17 +81,52 @@ RULES
 """
 
 
-def _result_text(r):
-    s = str(r)
-    return s if len(s) <= RESULT_CHAR_LIMIT else s[:RESULT_CHAR_LIMIT] + "\n…[output truncated]"
+
+EASY_TOOLS = {"code_new_project", "code_write", "code_setup_env", "code_run", "code_overview", "code_read",
+              "code_launch", "code_check", "open_url", "open_in_finder", "finish_task"}
+MEDIUM_TOOLS = EASY_TOOLS | {"code_edit", "code_search", "code_test", "code_undo", "code_changes", "read_guide",
+                             "search_guides", "list_guides", "web_search", "save_lesson"}
+HEAVY_TOOLS = {"code_write", "code_edit", "code_read", "code_search", "code_overview", "code_check", "code_undo",
+               "read_guide", "search_guides", "web_search", "finish_task"}
+TOOL_SETS = {"easy": EASY_TOOLS, "medium": MEDIUM_TOOLS, "heavy": HEAVY_TOOLS}
+
+PLANNER_PROMPT = """You are the planning manager for a coding job. Split the task into ordered steps and give each step to the CHEAPEST tier that can do it well. Output ONE JSON object and nothing else.
+
+TIERS
+- easy: mechanical actions with no creativity: create the project folder, create empty folders/files, set up the virtual environment and install dependencies, run one command, launch the finished program, open something.
+- medium: small writing and glue: short config/README/requirements files, short test files, running tests/checks and fixing simple errors, small edits, renames, reading code to summarize what must change.
+- heavy: writing the substantial new code or long prose: real logic modules, a game loop, algorithms, a rewrite of a complicated function. The heavy worker ONLY writes content; it never creates folders, installs, or runs tests.
+
+RULES
+- Each step's "instruction" must be fully self-contained: exact file paths relative to the project, the public classes/functions with signatures that other files depend on, and the key behaviours. The heavy worker sees only its instruction plus short notes, not the conversation.
+- A heavy step writes at most 3 files. Split big programs into several heavy steps (e.g. game logic, then rendering + main loop).
+- Final step: tier medium, "verify": true: run syntax check and tests (headless for games), fix small problems, and finish with how to run it. Add a short tests step before it when the project has behaviour worth testing.
+- Small tasks need only 1-3 steps. Upgrading existing code: first a medium step that reads the relevant files and reports exactly what must change, then heavy/medium edit steps, then verify.
+- Never put an easy step's work in a heavy step.
+- For games or apps, tell the heavy step to read_guide("coding", section="games") first when relevant.
+
+FORMAT
+{"project_name": "short_snake_case_name", "steps": [{"tier": "easy|medium|heavy", "title": "short title", "instruction": "...", "verify": false}]}
+
+EXAMPLE for "create flappy bird in python":
+{"project_name": "flappy_bird", "steps": [
+ {"tier": "easy", "title": "Create project folder", "instruction": "Call code_new_project('flappy_bird') and report the path."},
+ {"tier": "easy", "title": "Set up environment", "instruction": "Call code_setup_env(<folder>, 'pygame') to create .venv with pygame."},
+ {"tier": "heavy", "title": "Write game logic", "instruction": "Create game.py with no pygame imports: class Game(seed=None) with update(dt, flap: bool), fields bird_y, bird_vy, pipes (list of dicts with x, gap_y), score, state ('playing'|'game_over'), reset(). Gravity, flap impulse, pipe spawning every ~1.6s, gap 150px, scoring when a pipe passes, collision with pipes/ground/ceiling."},
+ {"tier": "heavy", "title": "Write rendering and main loop", "instruction": "Create render.py with draw(screen, game, font) and main.py with main(max_frames=None): 60 FPS loop, SPACE flaps, R restarts, ESC quits, hi-score saved to .hiscore."},
+ {"tier": "medium", "title": "Write tests", "instruction": "Create tests/test_game.py (unittest) covering gravity, flap, scoring, collisions, game over, plus a 60s random-input soak."},
+ {"tier": "medium", "title": "Verify and fix", "verify": true, "instruction": "code_check the project, code_test, run main(max_frames=120) headless with code_run(headless=true), fix small problems, finish with the exact run command."}
+]}"""
 
 
-def _trim_history(history):
-    tool_idx = [i for i, m in enumerate(history) if isinstance(m, dict) and m.get("role") == "tool"]
-    for i in tool_idx[:-KEEP_FULL_RESULTS]:
-        c = history[i]["content"]
-        if len(c) > 300:
-            history[i]["content"] = c[:300] + " …[older output trimmed]"
+def _find_folder(text):
+    for m in re.finditer(r"(~?/[^\s'\"`,;]+(?:\s[^\s'\"`,;/]+)*)", text or ""):
+        cand = os.path.expanduser(m.group(1).rstrip(".,)"))
+        while cand and cand != "/" and not os.path.isdir(cand):
+            cand = os.path.dirname(cand)
+        if cand and cand not in ("/", os.path.expanduser("~")) and os.path.isdir(cand):
+            return cand
+    return None
 
 
 def _memory_note(message_history):
@@ -93,96 +136,84 @@ def _memory_note(message_history):
     return ""
 
 
-def _recent_turns(message_history, user_input="", n=6):
+def _recent_turns(message_history, user_input="", n=4):
     turns = [m for m in (message_history or [])
              if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)]
     if turns and turns[-1]["role"] == "user" and turns[-1]["content"] == user_input:
-        turns = turns[:-1]  # the current request is added separately
-    return [{"role": m["role"], "content": m["content"][:1500]} for m in turns[-n:]]
+        turns = turns[:-1]
+    return [{"role": m["role"], "content": m["content"][:1200]} for m in turns[-n:]]
+
+
+def parse_plan(text):
+    """Planner JSON -> list of step dicts, or None if unusable."""
+    if not text:
+        return None
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    steps = []
+    for raw in (data.get("steps") or [])[:10]:
+        if not isinstance(raw, dict) or not raw.get("instruction"):
+            continue
+        steps.append({"tier": normalize_tier(raw.get("tier")), "title": str(raw.get("title") or "Step")[:80],
+                      "instruction": str(raw["instruction"]), "verify": bool(raw.get("verify"))})
+    return steps or None
+
+
+def plan_coding_task(user_input, message_history, plan_fn, execute, model, tracker, deadline_ok=lambda: True):
+    folder = _find_folder(user_input)
+    context = []
+    note = _memory_note(message_history)
+    if note:
+        context.append(note)
+    if folder:
+        try:
+            context.append("EXISTING FOLDER (overview):\n" + str(execute("code_overview", {"folder": folder}))[:3000])
+        except Exception:
+            pass
+    history = [{"role": "system", "content": PLANNER_PROMPT + ("\n\n" + "\n\n".join(context) if context else "")},
+               *_recent_turns(message_history, user_input), {"role": "user", "content": user_input}]
+    try:
+        resp = plan_fn(model, history, 2500)
+    except Exception:
+        return None
+    u = getattr(resp, "usage", None)
+    tracker.add("medium", model, getattr(u, "prompt_tokens", 0) or 0, getattr(u, "completion_tokens", 0) or 0)
+    return parse_plan(getattr(resp.choices[0].message, "content", "") or "")
 
 
 def _is_blocked(result):
-    low = str(result).strip().lower()
-    return low.startswith(("buddy's", "this plugin is turned off", "this is an apple-only"))
+    return str(result).strip().lower().startswith(("buddy's", "this plugin is turned off", "this is an apple-only"))
 
 
-def run_coding_agent(user_input, message_history, step_fn, execute, schema, user_name="the user",
-                     on_event=None, cancel_check=None, max_steps=CODING_MAX_STEPS,
+def run_coding_agent(user_input, message_history, step_fn, execute, schema, plan_fn=None, models=None,
+                     user_name="the user", on_event=None, cancel_check=None,
                      timeout_seconds=CODING_TIMEOUT_SECONDS):
-    tools = [t for t in schema if t.get("function", {}).get("name") in CODING_TOOL_NAMES]
-    system = CODING_PROMPT.replace("__USER__", user_name or "the user")
-    note = _memory_note(message_history)
-    if note:
-        system += "\n" + note
-    history = [{"role": "system", "content": system}, *_recent_turns(message_history, user_input),
-               {"role": "user", "content": user_input}]
-    stats = {"tools": [], "tool_log": [], "tokens_in": 0, "tokens_out": 0, "requests": 0}
+    """step_fn(model, history, max_tokens, tools, timeout_ms); plan_fn(model, history, max_tokens)."""
+    models = models or {t: tier_model(t) for t in TIER_ORDER}
+    tracker = CostTracker(heavy_model=models["heavy"])
     deadline = time.time() + timeout_seconds
-    seen = {}
-
-    def done(status, **kw):
-        return {"status": status, "step_count": step, **stats, **kw}
-
-    step = 0
-    while step < max_steps:
-        step += 1
-        if cancel_check and cancel_check():
-            return done("cancelled", message="Stopped. Everything written so far is saved in the project folder.")
-        if time.time() > deadline:
-            return done("timeout", message="I hit my time limit on this build. The work so far is saved; say 'continue' and I'll pick it up.")
-        _trim_history(history)
-        try:
-            resp = step_fn(history, CODING_MAX_TOKENS, tools, CODING_REQUEST_TIMEOUT_MS)
-        except Exception as exc:  # BuddyCancelled and network errors surface here
-            if exc.__class__.__name__ == "BuddyCancelled":
-                return done("cancelled", message="Stopped. Everything written so far is saved in the project folder.")
-            return done("failed", message="I lost the connection to the model: %s. Say 'continue' to resume." % exc)
-        stats["requests"] += 1
-        usage = getattr(resp, "usage", None)
-        if usage:
-            stats["tokens_in"] += getattr(usage, "prompt_tokens", 0) or 0
-            stats["tokens_out"] += getattr(usage, "completion_tokens", 0) or 0
-        choice = resp.choices[0]
-        msg = choice.message
-        calls = getattr(msg, "tool_calls", None)
-        if not calls:
-            text = (getattr(msg, "content", "") or "").strip()
-            if getattr(choice, "finish_reason", "") == "length" and step < max_steps:
-                history.append({"role": "user", "content": "Your reply was cut off. Continue with smaller steps."})
-                continue
-            return done("success" if step > 1 else "incomplete", summary=text or "Done.", message=text or "Done.")
-        history.append(msg)
-        for call in calls:
-            name = call.function.name
-            try:
-                args = json.loads(call.function.arguments or "{}")
-            except ValueError:
-                history.append({"role": "tool", "tool_call_id": call.id,
-                                "content": "Error: your tool call was cut off (too long). Split the work into smaller files/edits and retry."})
-                continue
-            stats["tools"].append(name)
-            if name.endswith("finish_task"):
-                return done("success", summary=str(args.get("summary", "Done.")).strip())
-            if on_event:
-                on_event({"type": "tool_call", "name": name, "args": {k: (str(v)[:80]) for k, v in args.items()}})
-            t0 = time.time()
-            try:
-                result = execute(name, args)
-            except Exception as exc:  # a tool crash is feedback for the model, not the end
-                result = "Error running %s: %s" % (name, exc)
-            if on_event:
-                on_event({"type": "tool_done", "name": name, "duration": time.time() - t0,
-                          "ok": not str(result).lower().startswith(("error", "exit code 1", "old_text not found"))})
-            text = _result_text(result)
-            stats["tool_log"].append({"name": name, "args": {k: str(v)[:120] for k, v in args.items()},
-                                      "result": text[:300], "duration": "%.2fs" % (time.time() - t0)})
-            if _is_blocked(result):
-                return done("failed", message="I can't continue: %s" % text)
-            key = (name, json.dumps(args, sort_keys=True)[:400], text[:200])
-            seen[key] = seen.get(key, 0) + 1
-            if seen[key] >= 3:
-                text += "\n[Buddy: you have repeated this exact call 3 times with the same result. Change your approach.]"
-            history.append({"role": "tool", "tool_call_id": call.id, "content": text})
-    last = stats["tool_log"][-1]["result"] if stats["tool_log"] else ""
-    return done("incomplete", message=("I reached my step limit before finishing. Everything so far is saved in the project folder. "
-                                       "Last result: %s\nSay 'continue' and I'll keep going." % last))
+    steps = None
+    if plan_fn:
+        if on_event:
+            on_event({"type": "thinking"})
+        steps = plan_coding_task(user_input, message_history, plan_fn, execute, models["medium"], tracker)
+    full_loop = steps is None
+    if full_loop:  # planner unavailable or unusable: one heavy worker with the complete toolset
+        steps = [{"tier": "heavy", "title": "Build it", "instruction": user_input, "full": True}]
+    if on_event:
+        on_event({"type": "plan", "model": models["heavy"] if full_loop else models["medium"],
+                  "plan": "\n".join("%d. [%s] %s" % (i + 1, s["tier"], s["title"]) for i, s in enumerate(steps))})
+    result = run_steps(steps, goal=user_input, step_fn=step_fn, execute=execute, schema=schema, models=models,
+                       tracker=tracker, user_name=user_name, tool_sets=TOOL_SETS, kind="coding",
+                       on_event=on_event, cancel_check=cancel_check, deadline=deadline,
+                       full_rules=CODING_PROMPT, full_tools=CODING_TOOL_NAMES)
+    summary = result["summary"]
+    if result["status"] == "success" and result["folder"] and result["folder"] not in summary:
+        summary += "\n\nProject folder: %s" % result["folder"]
+    result["summary"] = result["message"] = summary
+    return result

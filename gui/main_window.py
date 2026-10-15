@@ -55,56 +55,20 @@ from .theme import (
     PREVIEW_PANEL_WIDTH_RATIO, PREVIEW_PANEL_HEIGHT_RATIO
 )
 from .sidebar import Sidebar
+from .widgets.screen_glow import ScreenEdgeGlow
+from .widgets.suggestion_bar import SuggestionBar
 from .pages import (
     SettingsPage, LibraryPage, BillingPage, ArtifactsPage, OnboardingPage,
     TalkToBuddyPage, PluginsPage, ModelConfigurationPage,
 )
 
 
-class ScreenEdgeGlow(QWidget):
-    """A subtle click-through border showing that Buddy is working."""
+import html as _html_mod
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(
-            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
-        )
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self._phase = 0
-        self._timer = QTimer(self)
-        self._timer.setInterval(45)
-        self._timer.timeout.connect(self._pulse)
-        self.hide()
 
-    def start(self):
-        screen = QApplication.primaryScreen()
-        if screen is None:
-            return
-        self.setGeometry(screen.geometry())
-        self._timer.start()
-        self.show()
-        self.raise_()
+def _html_escape(text):
+    return _html_mod.escape(str(text), quote=False)
 
-    def stop(self):
-        self._timer.stop()
-        self.hide()
-
-    def _pulse(self):
-        self._phase = (self._phase + 1) % 80
-        self.update()
-
-    def paintEvent(self, _event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        wave = (self._phase if self._phase <= 40 else 80 - self._phase) / 40.0
-        alpha = int(35 + wave * 55)
-        pen = painter.pen()
-        pen.setColor(QColor(0, 153, 233, alpha))
-        pen.setWidth(5)
-        painter.setPen(pen)
-        rect = self.rect().adjusted(3, 3, -3, -3)
-        painter.drawRect(rect)
 
 class SendWorker(QThread):
     """Runs send_and_save_message off the main thread so the UI stays responsive."""
@@ -918,6 +882,10 @@ class BuddyWindow(QWidget):
         self.main_layout.addWidget(self.greeting_spacer, stretch=1)
         self.main_layout.addWidget(self.greeting, stretch=0)
         self.main_layout.setAlignment(self.greeting, Qt.AlignCenter)
+        self.suggestion_bar = SuggestionBar()
+        self.suggestion_bar.chosen.connect(self._on_suggestion_chosen)
+        self.suggestion_bar.opt_in_requested.connect(self._on_learn_opt_in)
+        self.main_layout.addWidget(self.suggestion_bar, stretch=0)
         self.greeting_spacer_bottom = QWidget()
         self.greeting_spacer_bottom.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.main_layout.addWidget(self.greeting_spacer_bottom, stretch=1)
@@ -941,6 +909,7 @@ class BuddyWindow(QWidget):
         self.settings_page = SettingsPage(close_callback=self.hide, on_theme_changed=self.restart_app)
         self._activity_watcher = core.ActivityWatcher()
         self._activity_watcher.start()
+        QTimer.singleShot(0, self._refresh_suggestions)
         self.library_page = LibraryPage(close_callback=self.hide, on_chat_selected=self._request_open_chat, on_delete_chat=self._delete_chat_from_library)
         self.billing_page = BillingPage(close_callback=self.hide)
         self.artifacts_page = ArtifactsPage(close_callback=self.hide)
@@ -1276,6 +1245,7 @@ class BuddyWindow(QWidget):
         self.greeting.setVisible(False)
         self.greeting_spacer.setVisible(False)
         self.greeting_spacer_bottom.setVisible(False)
+        self._sync_suggestions(False)
 
     def _toggle_incognito_mode(self):
         if self.current_conversation_id is not None:
@@ -1323,12 +1293,42 @@ class BuddyWindow(QWidget):
             self.greeting.setVisible(True)
             self.greeting_spacer.setVisible(True)
             self.greeting_spacer_bottom.setVisible(True)
+            self._sync_suggestions(True)
         self.sidebar.refresh_recents(on_chat_click=self._request_open_chat, on_delete_chat=self.delete_chat)
 
     def _delete_chat_from_library(self, conversation_id):
         self.delete_chat(conversation_id)
         self.library_page.refresh_chats()
  
+    def _sync_suggestions(self, visible):
+        if not hasattr(self, "suggestion_bar"):
+            return
+        self.suggestion_bar.setVisible(visible)
+        if visible:
+            self._refresh_suggestions()
+
+    def _refresh_suggestions(self):
+        """Three chips from this user's own routine; honest defaults until Buddy has learned something."""
+        try:
+            from core import routines
+            learning = core.activity_watch_enabled()
+            profile = core.get_profile() or {}
+            connected = {str(c.get("service", "")).lower() for c in (core.list_plugin_connections() or [])}
+            items = routines.build_suggestions(
+                connected=connected, has_location=bool((profile.get("preferred_location") or "").strip()),
+                sessions=None if learning else [], prompts=None if learning else [])
+            self.suggestion_bar.set_suggestions(items, show_opt_in=not learning)
+        except Exception:
+            self.suggestion_bar.set_suggestions([], show_opt_in=False)
+
+    def _on_suggestion_chosen(self, item):
+        self.handle_send(item["prompt"])
+
+    def _on_learn_opt_in(self):
+        message = core.set_activity_watch_enabled(True)
+        QMessageBox.information(self, "Routine learning", message)
+        self._refresh_suggestions()
+
     def _random_greeting(self):
         """Personalizes the greeting with the user's saved name, if any —
         falls back to a friendly generic greeting for a fresh install."""
@@ -1363,6 +1363,7 @@ class BuddyWindow(QWidget):
         self.greeting.setVisible(True)
         self.greeting_spacer.setVisible(True)
         self.greeting_spacer_bottom.setVisible(True)
+        self._sync_suggestions(True)
  
     def _set_input_enabled(self, enabled):
         self.input_box.setReadOnly(not enabled)
@@ -1404,6 +1405,7 @@ class BuddyWindow(QWidget):
         self.greeting.setVisible(False)
         self.greeting_spacer.setVisible(False)
         self.greeting_spacer_bottom.setVisible(False)
+        self._sync_suggestions(False)
 
         # process_message_incognito appends the user turn itself; only track
         # it here for non-incognito bookkeeping to avoid a duplicate entry.
@@ -1470,29 +1472,45 @@ class BuddyWindow(QWidget):
                 pass  # loader keeps animating until the worker actually returns
 
     def _on_send_progress(self, event):
-        if not self._thinking_bubble:
+        bubble = self._thinking_bubble
+        if not bubble:
             return
+        from core.call_format import format_call
+        from core.model_config import display_model_name
+        from core.tiers import LABELS
+        from .widgets.screen_glow import TIER_COLORS
         etype = event.get("type")
-        label = None
+        tier = event.get("tier")
+        color = "#%02x%02x%02x" % TIER_COLORS.get(tier, (59, 130, 246))
         if etype == "thinking":
-            label = "Buddy is thinking…"
+            bubble.add_progress_step("Buddy is thinking…")
+            self._screen_glow.set_mode("thinking")
         elif etype == "plan":
-            label = "Working on it…"
+            lines = [l for l in str(event.get("plan", "")).splitlines() if l.strip()]
+            if len(lines) > 1:
+                bubble.add_action_header("Plan")
+                for line in lines[:10]:
+                    bubble._push_history_html("&nbsp;&nbsp;" + _html_escape(line))
+            bubble.add_progress_step("Working on it…")
+            self._screen_glow.set_mode("working", tier)
+        elif etype == "step_start":
+            bubble.add_action_header("Step %s · %s · %s — %s" % (
+                event.get("label", ""), LABELS.get(tier, tier or "?"), display_model_name(event.get("model", "")), event.get("title", "")), color)
+            self._screen_glow.set_mode("working", tier)
         elif etype == "tool_call":
-            label = f"Using {event.get('name', 'a tool')}…"
-        elif etype == "refining":
-            label = "Refining the plan…"
-        elif etype == "malformed_retry":
-            label = "Retrying…"
+            call = event.get("call") or format_call(event.get("name", "tool"), event.get("args") or {})
+            bubble.set_current_call(call, color)
+            self._screen_glow.set_mode("working", tier)
         elif etype == "tool_done":
-            name = event.get("name", "tool")
-            secs = event.get("duration")
+            call = event.get("call") or event.get("name", "tool")
             ok = event.get("ok", True)
-            label = "%s %s" % (name, "done" if ok else "failed")
-            if isinstance(secs, (int, float)):
-                label = "%s · %.1fs" % (label, secs)
-        if label:
-            self._thinking_bubble.add_progress_step(label)
+            bubble.finish_call(call, ok, event.get("duration"), event.get("result"), color)
+            if not ok:
+                self._screen_glow.flash(False)
+        elif etype == "refining":
+            bubble.add_progress_step("Refining the plan…")
+        elif etype == "malformed_retry":
+            bubble.add_progress_step("Retrying…")
 
     def _remove_thinking_bubble(self):
         if self._thinking_bubble:
@@ -1502,7 +1520,7 @@ class BuddyWindow(QWidget):
 
     def _on_send_result(self, result):
         self._is_sending = False
-        self._screen_glow.stop()
+        self._screen_glow.finish(True)
         self._send_worker = None
         self._set_send_button_stop_mode(False)
         self._remove_thinking_bubble()
@@ -1547,7 +1565,7 @@ class BuddyWindow(QWidget):
 
     def _on_send_error(self, error_msg):
         self._is_sending = False
-        self._screen_glow.stop()
+        self._screen_glow.finish(False)
         self._send_worker = None
         self._set_send_button_stop_mode(False)
         self._remove_thinking_bubble()

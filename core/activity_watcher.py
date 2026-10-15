@@ -48,9 +48,10 @@ def set_enabled(on: bool) -> str:
     if on:
         with open(CONSENT_FLAG_PATH, "w") as f:
             f.write(f"enabled at {datetime.now().isoformat()}\n")
-        return ("Background activity tracking is ON. Buddy will note which app is frontmost "
-                "every 5-10 minutes while it's running, and after about a week can summarize "
-                "your habits. Nothing leaves this machine. Turn off any time in Settings.")
+        return ("Routine learning is ON. Buddy notes which app (and website name, like canvas.school.edu) "
+                "is in front and when, only on this Mac: no window titles, page contents, or keystrokes. "
+                "After a few days it starts suggesting your usual routines on new chats. "
+                "Turn it off or wipe it any time in Settings.")
     else:
         if os.path.exists(CONSENT_FLAG_PATH):
             os.remove(CONSENT_FLAG_PATH)
@@ -68,6 +69,12 @@ def forget_everything() -> str:
         os.remove(LAST_SUMMARY_META_PATH)
     patterns.forget_all()
     removed.append("activity log")
+    try:
+        from core import activity
+        activity.clear_all()
+        removed.append("app/website sessions")
+    except Exception:
+        pass
     return "Cleared: " + ", ".join(removed) if removed else "Nothing recorded yet."
 
 

@@ -518,9 +518,11 @@ class SettingsPage(CardPage):
         layout = self._make_card("Activity Tracking & Updates")
 
         desc = self._field_label(
-            "Off by default. If on, Buddy notes which app is frontmost every "
-            "few minutes, purely on this machine, and after about a week can "
-            "summarize your habits. Nothing is ever uploaded."
+            "Off by default. If on, Buddy notes which app (and website name) is in "
+            "front and when, only on this Mac. It never records window titles, page "
+            "contents, or keystrokes, and skips password managers and banking sites. "
+            "After a few days it suggests your usual routines when you start a new "
+            "chat. Nothing is ever uploaded."
         )
         desc.setWordWrap(True)
         layout.addWidget(desc)
@@ -533,7 +535,7 @@ class SettingsPage(CardPage):
         self.activity_toggle = ToggleSwitch(
             checked=core.activity_watch_enabled(), accent=PRIMARY_COLOR, track_off=CARD_SUBTITLE_COLOR
         )
-        self.activity_toggle.setToolTip("Track which apps you use, locally, to notice patterns over time")
+        self.activity_toggle.setToolTip("Learn which apps and sites you use, and when, locally, to suggest your routines")
         self.activity_toggle.toggled.connect(self._on_activity_toggle)
         activity_row.addWidget(self.activity_toggle)
         layout.addLayout(activity_row)

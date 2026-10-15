@@ -358,6 +358,16 @@ def init_db(conn=None):
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app TEXT NOT NULL,
+                domain TEXT,
+                start_ts REAL NOT NULL,
+                end_ts REAL NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_app_sessions_start ON app_sessions (start_ts)")
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS schema_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT
@@ -1174,6 +1184,51 @@ def list_plugin_connections():
     with _connect() as conn:
         rows = conn.execute("SELECT service, account_label, connected_at FROM plugin_connections").fetchall()
     return [dict(row) for row in rows]
+
+
+# ---- activity (local-only routine learning: app + website NAMES and times, nothing else) ----
+def add_activity_sample(app, domain, ts, gap_seconds=90):
+    """Extends the current session when the same app/site continues, else starts a new one."""
+    domain = domain or None
+    with _connect() as conn:
+        row = conn.execute("SELECT id, app, domain, end_ts FROM app_sessions ORDER BY end_ts DESC LIMIT 1").fetchone()
+        if row and row["app"] == app and (row["domain"] or None) == domain and ts - row["end_ts"] <= gap_seconds:
+            conn.execute("UPDATE app_sessions SET end_ts = ? WHERE id = ?", (ts, row["id"]))
+        else:
+            conn.execute("INSERT INTO app_sessions (app, domain, start_ts, end_ts) VALUES (?, ?, ?, ?)", (app, domain, ts, ts))
+
+
+def list_activity(since_ts=0):
+    with _connect() as conn:
+        rows = conn.execute("SELECT app, domain, start_ts, end_ts FROM app_sessions WHERE end_ts >= ? ORDER BY start_ts",
+                            (since_ts,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def prune_activity(older_than_ts):
+    with _connect() as conn:
+        conn.execute("DELETE FROM app_sessions WHERE end_ts < ?", (older_than_ts,))
+
+
+def clear_activity():
+    with _connect() as conn:
+        conn.execute("DELETE FROM app_sessions")
+
+
+def activity_stats():
+    with _connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS n, MIN(start_ts) AS first FROM app_sessions").fetchone()
+    return {"sessions": row["n"], "first_ts": row["first"]}
+
+
+def recent_user_prompts(since_ts=0, limit=600):
+    """The user's own past messages (non-private chats), for spotting prompts they repeat."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT m.content FROM messages m JOIN conversations c ON c.id = m.conversation_id "
+            "WHERE m.role = 'user' AND COALESCE(c.is_private, 0) = 0 AND m.content IS NOT NULL "
+            "AND m.created_at >= ? ORDER BY m.id DESC LIMIT ?", (since_ts, limit)).fetchall()
+    return [r["content"] for r in rows if isinstance(r["content"], str)]
 
 
 def get_plugin_toggle(key, default=False):

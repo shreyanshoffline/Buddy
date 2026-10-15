@@ -104,7 +104,7 @@ def _tail(text, limit=_MAX_OUT):
 
 
 def _env(folder, headless):
-    env = dict(_os.environ, PYTHONUNBUFFERED="1")
+    env = dict(_os.environ, PYTHONUNBUFFERED="1", PYTHONDONTWRITEBYTECODE="1")  # no stale .pyc after a same-second edit
     venv_bin = folder / ".venv" / "bin"
     if venv_bin.is_dir():
         env["PATH"] = str(venv_bin) + _os.pathsep + env.get("PATH", "")
