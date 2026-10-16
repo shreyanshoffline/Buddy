@@ -45,7 +45,7 @@ def test_clean_for_speech():
 
 
 def test_alive_rejects_non_buddy_server(monkeypatch):
-    import billing_client as b
+    from backend import client as b
 
     class R:
         ok = True

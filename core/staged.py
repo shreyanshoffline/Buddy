@@ -39,8 +39,41 @@ STEP_SYSTEM = """You are Buddy, __USER__'s personal AI, executing ONE step of a 
 OVERALL GOAL: {goal}
 {state}
 Call finish_task(summary) when the step is done: 1-3 plain sentences saying what you did, plus exact paths/names the next step needs.
+If a tool result or new information creates additional work that was not in the
+current plan, call append_plan with a short list of follow-up steps. Each step
+needs a tier (easy, medium, or heavy), title, and instruction. The new steps
+will be inserted after this step and run in order; do not pretend they happened.
 Never claim something works unless a tool result in THIS step shows it. If a tool says you are blocked by a permission, stop and say what to enable.
 Confirm before anything destructive or irreversible. Never use sudo. Stay inside the project folder."""
+
+APPEND_PLAN_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "append_plan",
+        "description": "Add conditional follow-up steps to the active plan after new information changes the work.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "description": "What new information caused the plan to change."},
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tier": {"type": "string", "enum": ["easy", "medium", "heavy"]},
+                            "title": {"type": "string"},
+                            "instruction": {"type": "string"},
+                        },
+                        "required": ["tier", "title", "instruction"],
+                    },
+                },
+            },
+            "required": ["steps"],
+        },
+    },
+}
+
+MAX_PLAN_STEPS = 32
 
 
 def _trim(history):
@@ -64,7 +97,7 @@ def run_step_loop(*, model, tier, system, user, tools, step_fn, execute, tracker
                   deadline, cancel_check=None, on_event=None, step_label="", allow_text=True):
     history = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     out = {"status": "incomplete", "summary": "", "text": "", "files": [], "folder": None, "last_check": None,
-           "tools": [], "tool_log": [], "message": ""}
+           "tools": [], "tool_log": [], "append_steps": [], "message": ""}
     seen = {}
     for n in range(1, max_steps + 1):
         if cancel_check and cancel_check():
@@ -110,7 +143,30 @@ def run_step_loop(*, model, tier, system, user, tools, step_fn, execute, tracker
             if name.endswith("finish_task"):
                 out.update(status="success", summary=str(args.get("summary", "Done.")).strip()[:1500])
                 return out
-            call_text = format_call(name, args)
+            if name in ("append_plan", "add_plan_steps"):
+                requested = args.get("steps") or args.get("plan") or []
+                if isinstance(requested, dict):
+                    requested = [requested]
+                additions = []
+                for item in requested if isinstance(requested, list) else []:
+                    if isinstance(item, str):
+                        item = {"tier": "medium", "title": item[:80], "instruction": item}
+                    if not isinstance(item, dict):
+                        continue
+                    instruction = str(item.get("instruction") or item.get("title") or "").strip()
+                    if not instruction:
+                        continue
+                    additions.append({
+                        "tier": normalize_tier(item.get("tier")),
+                        "title": str(item.get("title") or instruction[:80]).strip()[:120],
+                        "instruction": instruction[:4000],
+                    })
+                out["append_steps"].extend(additions)
+                reason = str(args.get("reason") or "New information changed the work.").strip()
+                history.append({"role": "tool", "tool_call_id": call.id,
+                                "content": f"Added {len(additions)} follow-up step(s). Reason: {reason}"})
+                continue
+            call_text = format_call(name, args, limit=12000)
             if on_event:
                 on_event({"type": "tool_call", "name": name, "args": args, "call": call_text,
                           "tier": tier, "model": model, "step": step_label})
@@ -125,9 +181,9 @@ def run_step_loop(*, model, tier, system, user, tools, step_fn, execute, tracker
                 and not (name in ("code_run", "code_test") and not text.startswith("exit code 0"))
             if on_event:
                 on_event({"type": "tool_done", "name": name, "call": call_text, "duration": dur, "ok": ok,
-                          "result": format_result(text), "tier": tier})
-            out["tool_log"].append({"name": name, "args": {k: str(v)[:200] for k, v in args.items()},
-                                    "result": text[:300], "duration": "%.2fs" % dur})
+                          "result": format_result(text, limit=20000), "tier": tier})
+            out["tool_log"].append({"name": name, "args": {k: str(v) for k, v in args.items()},
+                                    "result": text, "duration": "%.2fs" % dur})
             if name in ("code_run", "code_test"):
                 out["last_check"] = (name, text.startswith("exit code 0"))
             if name in ("code_write", "code_edit") and args.get("path"):
@@ -170,8 +226,6 @@ def run_steps(steps, *, goal, step_fn, execute, schema, models, tracker, user_na
     state = {"folder": None, "files": [], "notes": []}
     outputs, all_tools, all_log, escalations = [], [], [], 0
     heavy_text = []
-    total = len(steps)
-
     def tools_for(tier):
         names = (tool_sets or {}).get(tier)
         return [t for t in schema if names is None or t.get("function", {}).get("name") in names]
@@ -181,7 +235,7 @@ def run_steps(steps, *, goal, step_fn, execute, schema, models, tracker, user_na
         model = models[tier]
         rules = _GENERAL_HEAVY if (tier == "heavy" and kind != "coding") else _RULES[tier]
         budget = BUDGET[tier]
-        tools = tools_for(tier)
+        tools = tools_for(tier) + [APPEND_PLAN_SCHEMA]
         if step.get("full") and full_rules:  # single long-running step with the whole toolset
             rules = full_rules.replace("__USER__", user_name)
             budget = {"max_steps": 60, "max_tokens": 8000}
@@ -201,10 +255,10 @@ def run_steps(steps, *, goal, step_fn, execute, schema, models, tracker, user_na
         return res
 
     i = 0
-    while i < total:
+    while i < len(steps):
         step = steps[i]
         tier = normalize_tier(step.get("tier"))
-        label = "%d/%d" % (i + 1, total)
+        label = "%d/%d" % (i + 1, len(steps))
         res = run_one(step, label)
         if res["status"] in ("cancelled", "timeout") or (res["status"] == "failed" and _is_blocked(res["message"].replace("I can't continue: ", ""))):
             return _finish(res["status"], res["message"], state, outputs, all_tools, all_log, tracker, steps, heavy_text)
@@ -233,6 +287,14 @@ def run_steps(steps, *, goal, step_fn, execute, schema, models, tracker, user_na
         if res["folder"]:
             state["folder"] = res["folder"]
         state["files"] += [f for f in res["files"] if f not in state["files"]]
+        additions = res.get("append_steps") or []
+        if additions:
+            room = max(0, MAX_PLAN_STEPS - len(steps))
+            accepted = additions[:room]
+            steps.extend(accepted)
+            if on_event and accepted:
+                on_event({"type": "plan_extended", "reason": "Worker found conditional follow-up work.",
+                          "count": len(accepted), "total": len(steps)})
         if res["summary"]:
             state["notes"].append("%s: %s" % (step.get("title", "")[:60], res["summary"][:600]))
         if tier == "heavy" and res["text"]:

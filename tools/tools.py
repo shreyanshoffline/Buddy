@@ -1,12 +1,10 @@
 """
-macOS Agent Tools - Masterpiece Edition
-=======================================
-Comprehensive, safe toolset for an AI agent controlling a Mac.
+Buddy's shared desktop and web tools.
+
+Common actions work on macOS, Windows and Linux/ChromeOS. Apple-specific
+actions remain in ``tools.apple_tools`` and are gated by the plugin layer.
 All dangerous operations (delete, kill, shutdown, empty trash, etc.)
 require explicit user confirmation via native macOS dialog.
-
-Designed for macOS only (AppleScript + native commands).
-Future: abstract backend for Linux/Windows.
 
 Dependencies (install via manage_package if missing):
   - pyautogui
@@ -14,9 +12,8 @@ Dependencies (install via manage_package if missing):
   - google-auth, google-auth-oauthlib, google-api-python-client  (for Gmail)
   - Optional: psutil, send2trash
 
-Place Gmail credentials at:
-  ~/Buddy/credentials.json
-  ~/Buddy/token.json
+Google credentials are resolved through ``tools.paths`` and stored in Buddy's
+per-user data directory when OAuth completes.
 """
 
 import os
@@ -31,6 +28,15 @@ from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
+
+from tools.platform_support import (
+    close_application,
+    list_available_applications,
+    list_running_applications,
+    open_application,
+    open_url as platform_open_url,
+    reveal_path,
+)
 
 try:
     from dotenv import load_dotenv
@@ -123,6 +129,13 @@ DANGEROUS_COMMAND_PATTERNS = [
 
 def _run_applescript(script: str, timeout: int = 10) -> subprocess.CompletedProcess:
     """Run an AppleScript and return the completed process."""
+    if platform.system() != "Darwin":
+        return subprocess.CompletedProcess(
+            args=["osascript"],
+            returncode=1,
+            stdout="",
+            stderr="This Apple-only action is unavailable on this operating system.",
+        )
     return subprocess.run(
         ["osascript", "-e", script],
         capture_output=True,
@@ -181,15 +194,16 @@ def _expand(path: str) -> str:
 # =============================================================================
 
 def open_app(app: str) -> str:
-    """Launches an application installed on the Mac by name."""
-    result = subprocess.run(["open", "-a", app], capture_output=True, text=True)
-    if result.returncode == 0:
-        return f"Opened {app}."
-    return f"Couldn't open {app}: {result.stderr.strip()}"
+    """Launch an application on the current desktop OS."""
+    ok, detail = open_application(app)
+    return detail if ok else f"Couldn't open {app}: {detail}"
 
 
 def close_app(app: str) -> str:
     """Gracefully quits an application."""
+    if platform.system() != "Darwin":
+        ok, detail = close_application(app)
+        return detail if ok else f"Couldn't close {app}: {detail}"
     try:
         result = _run_applescript(f'quit app "{_escape_applescript(app)}"', timeout=5)
         if result.returncode == 0:
@@ -210,7 +224,9 @@ def force_close_app(app: str) -> str:
 
 
 def list_apps() -> List[str]:
-    """Lists installed applications in /Applications and /System/Applications."""
+    """Lists installed applications without scanning the whole disk."""
+    if platform.system() != "Darwin":
+        return list_available_applications()
     result = subprocess.run(
         [
             "/bin/sh", "-c",
@@ -224,7 +240,9 @@ def list_apps() -> List[str]:
 
 
 def list_apps_running() -> List[str]:
-    """Lists all active visible GUI applications currently running."""
+    """Lists active applications using the current OS process table."""
+    if platform.system() != "Darwin":
+        return list_running_applications()
     result = _run_applescript(
         'tell application "System Events" to get name of (processes where background only is false)'
     )
@@ -245,6 +263,9 @@ def get_frontmost_app() -> str:
 
 def activate_app(app: str) -> str:
     """Brings an already-running app to the foreground (or launches it)."""
+    if platform.system() != "Darwin":
+        ok, detail = open_application(app)
+        return detail if ok else f"Couldn't activate {app}: {detail}"
     result = _run_applescript(f'tell application "{_escape_applescript(app)}" to activate')
     if result.returncode == 0:
         return f"Activated {app}."
@@ -447,11 +468,9 @@ def web_search(query: str, max_results: int = 5) -> str:
 
 
 def open_url(url: str, browser: str = "Google Chrome") -> str:
-    """Opens a specific URL in the given browser (default Google Chrome)."""
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    result = subprocess.run(["open", "-a", browser, url], capture_output=True, text=True)
-    return f"Opened {url} in {browser}." if result.returncode == 0 else f"Couldn't open {url}: {result.stderr.strip()}"
+    """Open a URL in the requested browser on macOS, Windows or Linux."""
+    ok, detail = platform_open_url(url, browser)
+    return detail if ok else f"Couldn't open {url}: {detail}"
 
 
 def browser_action(action: str, browser: str = "Google Chrome") -> str:
@@ -756,15 +775,24 @@ def search_local_files(query: str, max_results: int = 10) -> str:
 
 
 def open_in_finder(path: str) -> str:
-    """Reveals a file or folder in Finder."""
-    p = _expand(path)
-    result = subprocess.run(["open", "-R", p], capture_output=True, text=True)
-    return f"Revealed in Finder: {p}" if result.returncode == 0 else f"Failed: {result.stderr.strip()}"
+    """Reveal a file or folder using the current OS file manager."""
+    ok, detail = reveal_path(path)
+    return detail if ok else f"Failed: {detail}"
 
 
 def open_folder_in_editor(file_path: str) -> str:
     """Opens a folder or file in VS Code (falls back to Finder)."""
     expanded = _expand(file_path)
+    if platform.system() != "Darwin":
+        code = shutil.which("code")
+        if code:
+            try:
+                subprocess.Popen([code, expanded])
+                return f"Opened {expanded} in VS Code."
+            except OSError as exc:
+                return f"Could not open VS Code: {exc}"
+        ok, detail = reveal_path(expanded)
+        return detail if ok else f"Could not open {expanded}: {detail}"
     try:
         subprocess.run(["open", "-a", "Visual Studio Code", expanded], check=False)
         return f"Opened {expanded} in VS Code."
@@ -1094,7 +1122,7 @@ def music_control(action: str) -> str:
 
 
 # =============================================================================
-# GMAIL (requires credentials in ~/Buddy/)
+# GMAIL (requires a Google desktop OAuth client; paths are resolved centrally)
 # =============================================================================
 
 def gmail_connection_status():
@@ -1662,6 +1690,8 @@ def remember_fact(fact, category="general"):
     if not text:
         return "Nothing to remember — the fact was empty."
     fact_id = db.save_memory_fact(text, category=category or "general")
+    if fact_id is None:
+        return "That memory category is turned off, so I did not save the fact."
     return f"Remembered ({category or 'general'}) as fact #{fact_id}: {text}"
 
 

@@ -3,6 +3,7 @@ main ChatBubble widget (user/assistant messages, feedback footer, redo)."""
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFrame,
     QLabel, QHBoxLayout, QApplication, QSizePolicy, QFileDialog,
+    QScrollArea,
 )
 from PySide6.QtCore import Qt, Signal, QSize, QTimer, QRectF
 from PySide6.QtGui import QKeyEvent, QTextDocument, QFontMetrics, QPainter, QColor, QPainterPath, QPixmap
@@ -119,9 +120,10 @@ class DevChamber(QWidget):
         self.layout.setContentsMargins(0, 4, 0, 0)
         self.layout.setSpacing(0)
 
-        self.toggle_btn = QPushButton("▶ See thought process")
+        self.toggle_btn = QPushButton("▼ Hide work log")
         self.toggle_btn.setCursor(Qt.PointingHandCursor)
         self.toggle_btn.setCheckable(True)
+        self.toggle_btn.setChecked(True)
         self.toggle_btn.setStyleSheet(f"""
             QPushButton {{
                 text-align: left;
@@ -138,7 +140,12 @@ class DevChamber(QWidget):
         self.toggle_btn.toggled.connect(self.on_toggle)
 
         self.content_frame = QFrame()
-        self.content_frame.setVisible(False)
+        # The observable plan, tool calls, results, and timings are useful
+        # after a task finishes too. Keep the full work log open by default;
+        # the user can collapse it without losing the record.
+        self.content_frame.setVisible(True)
+        self.content_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.content_frame.setMinimumWidth(0)
         self.content_frame.setStyleSheet("""
             QFrame {
                 background-color: rgba(0, 0, 0, 10);
@@ -157,6 +164,9 @@ class DevChamber(QWidget):
             plan_doc.setMarkdown(plan_text)
             plan_label = QLabel(plan_doc.toHtml())
             plan_label.setWordWrap(True)
+            plan_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            plan_label.setMinimumWidth(0)
+            plan_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             plan_label.setStyleSheet("color: #555; font-size: 11px; background: transparent; border: none;")
             content_layout.addWidget(plan_label)
 
@@ -168,16 +178,22 @@ class DevChamber(QWidget):
 
             for i, entry in enumerate(tool_log, start=1):
                 args_str = ", ".join(f"{k}={v!r}" for k, v in (entry.get("args") or {}).items())
-                call_line = f"{i}. <b>{entry.get('name', 'tool')}</b>({args_str}) — {entry.get('duration', '?')}"
+                call_line = f"{i}. <b>{_esc(entry.get('name', 'tool'))}</b>({_esc(args_str)}) — {_esc(entry.get('duration', '?'))}"
                 call_label = QLabel(call_line)
                 call_label.setWordWrap(True)
+                call_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+                call_label.setMinimumWidth(0)
+                call_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
                 call_label.setStyleSheet("color: #666; font-size: 10px; background: transparent; border: none;")
                 content_layout.addWidget(call_label)
 
                 result_text = entry.get("result", "")
                 if result_text:
-                    result_label = QLabel(f"↳ {result_text}")
+                    result_label = QLabel(f"↳ {_esc(result_text)}")
                     result_label.setWordWrap(True)
+                    result_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+                    result_label.setMinimumWidth(0)
+                    result_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
                     result_label.setStyleSheet("color: #999; font-size: 10px; font-family: monospace; background: transparent; border: none; padding-left: 8px;")
                     content_layout.addWidget(result_label)
         elif tools_used:
@@ -185,6 +201,8 @@ class DevChamber(QWidget):
             tools_str = f"<b>Tools Executed:</b> {', '.join(tools_used)}"
             tools_label = QLabel(tools_str)
             tools_label.setWordWrap(True)
+            tools_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            tools_label.setMinimumWidth(0)
             tools_label.setStyleSheet("color: #999; font-size: 10px; font-style: italic; background: transparent; border: none;")
             content_layout.addWidget(tools_label)
 
@@ -192,6 +210,9 @@ class DevChamber(QWidget):
             stats_str = " • ".join([f"{k}: {v}" for k, v in stats.items()])
             stats_label = QLabel(stats_str)
             stats_label.setWordWrap(True)
+            stats_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            stats_label.setMinimumWidth(0)
+            stats_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             stats_label.setStyleSheet("color: #aaa; font-size: 10px; font-family: monospace; background: transparent; border: none;")
             content_layout.addWidget(stats_label)
 
@@ -199,8 +220,31 @@ class DevChamber(QWidget):
         self.layout.addWidget(self.content_frame)
 
     def on_toggle(self, checked):
-        self.toggle_btn.setText("▼ Hide thought process" if checked else "▶ See thought process")
+        self.toggle_btn.setText("▼ Hide work log" if checked else "▶ Show work log")
         self.content_frame.setVisible(checked)
+        # Dynamic expansion happens after the button signal returns. Re-run
+        # the parent layouts then so the chat scroll area grows instead of
+        # leaving the lower half of the log behind the composer.
+        QTimer.singleShot(0, self._refresh_parent_layout)
+
+    def _refresh_parent_layout(self):
+        current = self
+        for _ in range(8):
+            current.updateGeometry()
+            layout = current.layout()
+            if layout is not None:
+                layout.invalidate()
+                layout.activate()
+            parent = current.parentWidget()
+            if parent is None:
+                break
+            current = parent
+        for scroll_area in self.window().findChildren(QScrollArea):
+            if scroll_area.widget() is None or not scroll_area.widget().isAncestorOf(self):
+                continue
+            scroll_area.widget().adjustSize()
+            scroll_area.widget().updateGeometry()
+            break
 
 
 class ChatBubble(QWidget):
@@ -502,7 +546,7 @@ class ChatBubble(QWidget):
     def _trigger_redo(self):
         self.callbacks.get('redo', lambda: None)()
 
-    _ACTION_MAX_LINES = 26
+    _ACTION_MAX_LINES = 500
 
     def _push_history_html(self, html_text, max_lines=None):
         label = QLabel(html_text)
@@ -543,7 +587,7 @@ class ChatBubble(QWidget):
         self._push_history_html(body)
         self.thinking_current_label.setText("Working…")
 
-    def add_progress_step(self, text, max_history=4):
+    def add_progress_step(self, text, max_history=500):
         """Pushes the current 'thinking' status into the transcript as a
         completed step, then shows the new text as the active step. Older
         steps are capped so a long-running task doesn't grow the bubble

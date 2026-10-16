@@ -4,6 +4,7 @@
 - working: brighter, faster breathing plus a light that travels around the edge;
   the colour follows the tier of the current step (easy teal, medium blue, heavy violet)
 - finish(True/False): a quick green / red flash, then it fades away
+- pulse(): a tiny, short edge shimmer for ordinary button interactions
 """
 import math
 import time
@@ -14,9 +15,11 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 TIER_COLORS = {"easy": (20, 184, 166), "medium": (59, 130, 246), "heavy": (168, 85, 247)}
 THINKING = (0, 153, 233)
+INTERACTION = (100, 181, 246)
 SUCCESS = (52, 199, 89)
 ERROR = (255, 69, 58)
 THICKNESS = 48
+INTERACTION_THICKNESS = 10
 
 
 class ScreenEdgeGlow(QWidget):
@@ -31,6 +34,7 @@ class ScreenEdgeGlow(QWidget):
         self._target = THINKING
         self._t0 = time.monotonic()
         self._flash = None  # (rgb, start, duration)
+        self._interaction = None  # (rgb, start, duration)
         self._fading = False
         self._intensity = 0.0
         self._timer = QTimer(self)
@@ -43,7 +47,10 @@ class ScreenEdgeGlow(QWidget):
         screen = QApplication.primaryScreen()
         if screen is None:
             return
-        self.setGeometry(screen.geometry())
+        # Cover the complete virtual desktop so the glow is not clipped when
+        # a user has a second monitor or a display positioned left of the
+        # primary screen (negative virtual coordinates are valid here).
+        self.setGeometry(screen.virtualGeometry())
         self._fading = False
         self.set_mode(mode, tier)
         if not self._timer.isActive():
@@ -58,6 +65,23 @@ class ScreenEdgeGlow(QWidget):
     def flash(self, ok=True):
         self._flash = (SUCCESS if ok else ERROR, time.monotonic(), 0.8 if ok else 1.0)
 
+    def pulse(self, color=None, duration=0.18):
+        """Show a very small, click-through shimmer for a normal interaction.
+
+        This deliberately does not change the task glow's mode or intensity.
+        It is just enough feedback to make a click feel acknowledged without
+        turning every button press into a full-screen animation.
+        """
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        self.setGeometry(screen.virtualGeometry())
+        self._interaction = (tuple(color or INTERACTION), time.monotonic(), max(0.08, float(duration)))
+        if not self._timer.isActive():
+            self._timer.start()
+        self.show()
+        self.raise_()
+
     def finish(self, ok=True):
         """End of a task: flash, then fade out and hide."""
         if not self.isVisible():
@@ -68,19 +92,25 @@ class ScreenEdgeGlow(QWidget):
 
     def stop(self):
         self._timer.stop()
-        self._flash, self._fading, self._intensity = None, False, 0.0
+        self._flash, self._interaction, self._fading, self._intensity = None, None, False, 0.0
         self.hide()
 
     # ---- animation ----
     def _tick(self):
+        now = time.monotonic()
         for i in range(3):  # ease the colour toward its target
             self._color[i] += (self._target[i] - self._color[i]) * 0.12
         goal = 1.0 if self._mode != "idle" else 0.0
         self._intensity += (goal - self._intensity) * 0.15
+        if self._interaction and now - self._interaction[1] >= self._interaction[2]:
+            self._interaction = None
         if self._fading and self._flash is None and self._intensity < 0.02:
             self.stop()
             return
-        if self._flash and time.monotonic() - self._flash[1] > self._flash[2]:
+        if self._mode == "idle" and self._flash is None and self._interaction is None and self._intensity < 0.02:
+            self.stop()
+            return
+        if self._flash and now - self._flash[1] > self._flash[2]:
             self._flash = None
         self.update()
 
@@ -98,8 +128,8 @@ class ScreenEdgeGlow(QWidget):
             return QPointF(w - d, h)
         return QPointF(0, h - (d - w))
 
-    def _edges(self, painter, rgb, alpha):
-        w, h, t = self.width(), self.height(), THICKNESS
+    def _edges(self, painter, rgb, alpha, thickness=THICKNESS):
+        w, h, t = self.width(), self.height(), thickness
         for rect, p0, p1 in (
             (QRectF(0, 0, w, t), QPointF(0, 0), QPointF(0, t)),
             (QRectF(0, h - t, w, t), QPointF(0, h), QPointF(0, h - t)),
@@ -136,3 +166,10 @@ class ScreenEdgeGlow(QWidget):
             frgb, start, dur = self._flash
             k = 1 - (time.monotonic() - start) / dur
             self._edges(p, frgb, 230 * max(0.0, k) ** 1.4)
+        if self._interaction:
+            irgb, start, dur = self._interaction
+            k = 1 - (time.monotonic() - start) / dur
+            self._edges(
+                p, irgb, 42 * max(0.0, k) ** 1.8,
+                thickness=INTERACTION_THICKNESS,
+            )

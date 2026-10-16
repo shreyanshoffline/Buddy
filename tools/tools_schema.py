@@ -1,5 +1,5 @@
 # tools_schema.py
-# Master schema matching the complete tools.py (macOS Agent Tools)
+# Master schema matching the complete shared desktop and provider tools.
 
 tools_schema = [
     # ==================== APP TOOLS ====================
@@ -7,7 +7,7 @@ tools_schema = [
         "type": "function",
         "function": {
             "name": "open_app",
-            "description": "Launches an application installed on the Mac by name.",
+            "description": "Launches an application installed on the current desktop OS by name.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -49,7 +49,7 @@ tools_schema = [
         "type": "function",
         "function": {
             "name": "list_apps",
-            "description": "Lists installed applications in /Applications and /System/Applications.",
+            "description": "Lists discoverable installed applications on the current desktop OS.",
             "parameters": {"type": "object", "properties": {}}
         }
     },
@@ -419,7 +419,7 @@ tools_schema = [
         "type": "function",
         "function": {
             "name": "open_in_finder",
-            "description": "Reveals a file or folder in Finder.",
+            "description": "Reveals a file or folder in the current OS file manager.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1102,12 +1102,12 @@ tools_schema = [
         "type": "function",
         "function": {
             "name": "remember_fact",
-            "description": "Save a durable fact the user wants remembered across chats (name spellings, preferences, ongoing projects).",
+            "description": "Save a durable fact the user wants remembered across chats. Use one of these categories: relationships, work_patterns, preferences, important, communication.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "fact": {"type": "string", "description": "The fact to remember, in one short sentence."},
-                    "category": {"type": "string", "description": "Optional bucket such as preference, project, person, school."}
+                    "category": {"type": "string", "enum": ["relationships", "work_patterns", "preferences", "important", "communication"], "description": "The memory category that should control whether this kind of information is stored and used."}
                 },
                 "required": ["fact"]
             }

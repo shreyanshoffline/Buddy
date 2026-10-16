@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.model_config import MODEL_OPTIONS, display_model_name
-from ..theme import (
+from gui.theme import (
     ACTIVE_BG_COLOR,
     BORDER_COLOR,
     CARD_SUBTITLE_COLOR,

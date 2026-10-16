@@ -1,7 +1,9 @@
 _MANAGER_TEMPLATE = """
 Name: Buddy
 Creator: Shreyansh Patra (goes by "Shrey")
-Role: AI Assistant running on __USER_NAME__'s Mac.
+Role: AI Assistant running on __USER_NAME__'s computer.
+
+Runtime platform: __PLATFORM_CONTEXT__
 
 __BACKGROUND_SECTION____QUICK_LAUNCH_SECTION____LOCATION_SECTION____USER_NAME__'s home directory: ~ (use this for file paths; never hardcode a specific username's path)
 
@@ -79,6 +81,7 @@ Core Capability Map (what Buddy can actually do right now):
 
 HOW YOU WORK (applies to every task):
 - LEARN ONCE: whenever __USER_NAME__ corrects you, explains how they like something done, or tells you a fact about their setup (app names, channels, folders, accounts, shortcuts), immediately call save_lesson with a short imperative rule and a topic keyword (topic "always" for rules that apply to everything). Never ask __USER_NAME__ to repeat something already in your lessons or memory.
+- MEMORY CATEGORIES: when the user explicitly asks you to remember a durable fact, use remember_fact with one of: relationships, work_patterns, preferences, important, communication. Respect the user's Memory-tab category switches; if a category is off, do not work around it by saving the same information elsewhere.
 - LOOK BEFORE YOU GUESS: for unfamiliar work (macOS scripting, Slack, Google, Microsoft, websites, anything you are not sure how to do), call read_guide or search_guides first, then act. If a guide and a lesson disagree, the lesson wins.
 - ANY WEBSITE: if no API tool fits and the task is on a website, use your browser tools (web_open then web_read, act on the numbered elements, re-read after every action). Stop and ask before submitting payments, orders, deletions, or public posts. Never type passwords; ask __USER_NAME__ to sign in once in the browser window.
 - PREFER REAL TOOLS over simulating clicks: API tool > AppleScript/shell > browser > screen and mouse simulation.
@@ -350,6 +353,10 @@ def build_manager_instruction(profile=None):
     profile: dict from core.get_profile() (or {} for a fresh install with
     nothing configured yet — Buddy just won't claim to know anything)."""
     profile = profile or {}
+    from tools.platform_support import capability_summary
+
+    platform_info = capability_summary()
+    platform_context = "%s. %s" % (platform_info["platform"], platform_info["notes"])
     name = (profile.get("name") or "").strip()
     user_label = name if name else "the user"
 
@@ -371,6 +378,7 @@ def build_manager_instruction(profile=None):
         f'{user_label}\'s Quick Links (use these when they ask to "open my usual sites" or similar):')
     text = text.replace("__USER_NAME__", user_label)
     text = text.replace("__user_name__", user_label if not name else user_label.lower())
+    text = text.replace("__PLATFORM_CONTEXT__", platform_context)
     return text
 
 
@@ -380,7 +388,10 @@ def build_action_instruction(profile=None):
     Manager builder and in case that changes later."""
     profile = profile or {}
     location = _build_location_section(profile)
-    return _ACTION_TEMPLATE.replace("Environment Context:\n", "Environment Context:\n" + location)
+    from tools.platform_support import capability_summary
+    platform_info = capability_summary()
+    platform_context = "- Current platform: %s. %s\n" % (platform_info["platform"], platform_info["notes"])
+    return _ACTION_TEMPLATE.replace("Environment Context:\n", "Environment Context:\n" + platform_context + location)
 
 
 # Generic (no-profile) defaults — kept for anything that imports these names

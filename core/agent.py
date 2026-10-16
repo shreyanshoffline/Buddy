@@ -442,7 +442,7 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
 
             if on_event:
                 on_event({"type": "tool_call", "name": tool_name, "args": tool_args,
-                          "call": format_call(tool_name, tool_args)})
+                          "call": format_call(tool_name, tool_args, limit=12000)})
 
             tool_start = time.time()
             result = execute_tool(tool_name, tool_args)
@@ -451,8 +451,8 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
                 on_event({
                     "type": "tool_done",
                     "name": tool_name,
-                    "call": format_call(tool_name, tool_args),
-                    "result": format_result(result),
+                    "call": format_call(tool_name, tool_args, limit=12000),
+                    "result": format_result(result, limit=20000),
                     "duration": tool_duration,
                     "ok": not str(result).lower().startswith("error"),
                 })
@@ -461,7 +461,7 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
             stats["tool_log"].append({
                 "name": tool_name,
                 "args": tool_args,
-                "result": result_str[:500] + ("…" if len(result_str) > 500 else ""),
+                "result": result_str,
                 "duration": f"{tool_duration:.2f}s",
             })
 

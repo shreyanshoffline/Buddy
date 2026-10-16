@@ -5,7 +5,7 @@ runs each step on its tier's model with a tiny brief, so the heavy model is bill
 the substantial code. If planning fails, one heavy step runs the full loop (the original behavior).
 
 Why separate from the normal Manager -> Worker pipeline: that pipeline is tuned for quick
-Mac actions (8 steps, 500 tokens per step, 150 s, any tool error aborts). Writing a game or
+quick desktop actions (8 steps, 500 tokens per step, 150 s, any tool error aborts). Writing a game or
 upgrading a codebase needs dozens of steps, whole files per call, real execution feedback,
 and failures that are *information* (a failing test is a result, not a crash).
 
@@ -56,7 +56,7 @@ def looks_like_coding_task(text):
     return (has_verb and has_object) or (folder and has_verb)
 
 
-CODING_PROMPT = """You are Buddy in CODING MODE: a senior engineer who builds and upgrades software on __USER__'s Mac by yourself, end to end. You write real files, run them, read the real output, and fix problems until it works. You are persistent, careful, and honest.
+CODING_PROMPT = """You are Buddy in CODING MODE: a senior engineer who builds and upgrades software on __USER__'s computer by yourself, end to end. You write real files, run them, read the real output, and fix problems until it works. You are persistent, careful, and honest.
 
 TOOLS: code_new_project, code_overview, code_search, code_read, code_write, code_edit, code_undo, code_changes, code_check, code_setup_env, code_run, code_test, code_launch, read_guide/search_guides, web_search + browser tools for docs, finish_task.
 

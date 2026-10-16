@@ -6,9 +6,9 @@ from .artifacts_page import ArtifactsPage
 from .onboarding_page import OnboardingPage
 from .talk_to_buddy_page import TalkToBuddyPage
 from .plugins_page import PluginsPage
-from .model_configuration_page import ModelConfigurationPage
+from .memory_page import MemoryPage
 
 __all__ = [
     "CardPage", "SettingsPage", "LibraryPage", "BillingPage", "ArtifactsPage",
-    "OnboardingPage", "TalkToBuddyPage", "PluginsPage", "ModelConfigurationPage",
+    "OnboardingPage", "TalkToBuddyPage", "PluginsPage", "MemoryPage",
 ]

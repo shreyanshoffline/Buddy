@@ -2,7 +2,7 @@
 tools/google_workspace_tools.py
 
 Uses the SAME credentials.json / token.json that tools.py's Gmail
-functions already use — same file, same folder (~/Buddy/), same
+functions already use — one shared file and one shared user-data location, same
 Credentials format (JSON, not pickle). No second OAuth client needed.
 
 IMPORTANT ONE-TIME STEP: tools.py's SCOPES list just grew (Calendar,
@@ -11,7 +11,7 @@ Your existing token.json was issued under the OLD, narrower scope
 list, so it won't actually be authorized for the new ones even though
 this code will happily load it. Delete token.json ONCE:
 
-    rm ~/Buddy/token.json   (or wherever tools.py actually found it —
+    Remove the token from Buddy's user-data directory (or wherever tools.py found it —
                               run tools.gmail_connection_status() to check)
 
 Then call anything in this file (or gmail_connect() again) and it will

@@ -702,7 +702,7 @@ class PluginsPage(CardPage):
 
     def _on_slack_button(self):
         import core
-        import billing_client
+        from backend import client as billing_client
         uid = core.get_or_create_buddy_user_id()
         if core.get_plugin_connection("slack"):
             try:
@@ -757,7 +757,7 @@ class PluginsPage(CardPage):
 
     def _poll_slack_install(self):
         import core
-        import billing_client
+        from backend import client as billing_client
         self._slack_polls = getattr(self, "_slack_polls", 0) + 1
         uid = core.get_or_create_buddy_user_id()
         try:

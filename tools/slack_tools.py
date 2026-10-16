@@ -1,6 +1,6 @@
 """Slack tools Buddy calls from the desktop chat — not from Slack itself."""
 import core
-import billing_client
+from backend import client as billing_client
 from tools import integrations
 
 

@@ -9,7 +9,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QBoxLayout
 
 import core
-import billing_client
+from backend import client as billing_client
 from .card_page import CardPage
 from ..theme import (
     CARD_TEXT_COLOR, CARD_SUBTITLE_COLOR, PRIMARY_COLOR, PRIMARY_COLOR_DARK, ON_PRIMARY_TEXT,

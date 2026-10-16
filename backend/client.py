@@ -1,23 +1,19 @@
-"""Talks to the local Buddy backend. Never uses localhost — AirPlay owns that."""
+"""Talks to Buddy's local or deployed backend."""
 import os
-import sys
-import time
 import webbrowser
-import subprocess
-from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
+from tools.paths import app_root
 
-_ROOT = Path(__file__).resolve().parent
+_ROOT = app_root()
 load_dotenv(_ROOT / ".env")
 load_dotenv()
 
-PREFERRED = "http://127.0.0.1:5000"
+PREFERRED = "http://127.0.0.1:%s" % os.getenv("BUDDY_BACKEND_PORT", "5000")
 BACKEND_URL = os.getenv("BUDDY_BILLING_URL", "").rstrip("/")
 SLACK_API_BASE = (os.getenv("SLACK_API_BASE") or "https://api.buddy.dino.icu").rstrip("/")
 _discovered = None
-_started = False
 
 PRICE_IDS = {
     "pro_monthly": os.getenv("PRICE_ID_PRO_MONTHLY", ""),
@@ -74,22 +70,15 @@ def ensure_backend():
     url = discover_backend()
     if url:
         return url
-    global _started
-    app = _ROOT / "backend" / "app.py"
-    if app.exists() and not _started and not getattr(sys, "frozen", False):  # a frozen app would relaunch itself
-        _started = True
-        subprocess.Popen(
-            [sys.executable, str(app)],
-            cwd=str(_ROOT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        for _ in range(24):
-            time.sleep(0.25)
-            url = discover_backend()
-            if url:
-                return url
+    # main.py normally starts this already. The fallback keeps provider pages
+    # usable when billing_client is imported by itself (tests or a CLI).
+    try:
+        from backend.runtime import start_local_backend
+        local = start_local_backend()
+        if local:
+            return local.url
+    except Exception:
+        pass
     return discover_backend() or PREFERRED
 
 

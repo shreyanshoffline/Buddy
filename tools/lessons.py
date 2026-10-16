@@ -49,6 +49,12 @@ def save_lesson(lesson: str, topic: str = "general") -> str:
     lesson = (lesson or "").strip()
     if not lesson:
         return "Nothing to save."
+    try:
+        from storage import db
+        if not db.memory_category_enabled("work_patterns"):
+            return "Work-pattern memory is turned off, so I did not save that lesson."
+    except Exception:
+        pass
     items = _load()
     new_words = _words(lesson)
     for item in items:
@@ -70,6 +76,46 @@ def list_lessons() -> str:
     return "\n".join("%d. [%s] %s" % (i + 1, it.get("topic", "general"), it["lesson"]) for i, it in enumerate(items))
 
 
+def list_lesson_items():
+    """Return lessons in the shape needed by the Memory page."""
+    return [
+        {
+            "number": index + 1,
+            "lesson": item.get("lesson", ""),
+            "topic": item.get("topic", "general"),
+            "updated": item.get("updated", item.get("created", 0)),
+        }
+        for index, item in enumerate(_load())
+    ]
+
+
+def update_lesson(number: int, lesson: str) -> bool:
+    items = _load()
+    try:
+        index = int(number) - 1
+        text = (lesson or "").strip()
+        if index < 0 or index >= len(items) or not text:
+            return False
+        items[index].update({"lesson": text, "updated": _time.time()})
+    except (TypeError, ValueError):
+        return False
+    _save(items)
+    return True
+
+
+def delete_lesson(number: int) -> bool:
+    items = _load()
+    try:
+        index = int(number) - 1
+        if index < 0 or index >= len(items):
+            return False
+        items.pop(index)
+    except (TypeError, ValueError):
+        return False
+    _save(items)
+    return True
+
+
 def forget_lesson(number: int) -> str:
     """Deletes lesson number N (from list_lessons)."""
     items = _load()
@@ -83,6 +129,12 @@ def forget_lesson(number: int) -> str:
 
 def _relevant(query, limit=5):
     """Lessons to inject for this user message (not a tool)."""
+    try:
+        from storage import db
+        if not db.memory_category_enabled("work_patterns"):
+            return []
+    except Exception:
+        pass
     items = _load()
     q = _words(query)
     always = [it for it in items if it.get("topic") == "always"][:4]

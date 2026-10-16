@@ -23,6 +23,7 @@ import stripe
 import requests
 from flask import Flask, request, jsonify, redirect
 from dotenv import load_dotenv
+from tools.paths import data_dir
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.abspath(os.path.join(_HERE, ".."))
@@ -58,7 +59,9 @@ def _resolve_db_path(configured_path):
     """
     path = Path(configured_path or "billing.db").expanduser()
     if not path.is_absolute():
-        path = Path(_ROOT) / path
+        # Billing state is user data, not source code. This keeps a checkout
+        # clean and gives every supported OS the same writable location.
+        path = data_dir("billing") / path
     path.parent.mkdir(parents=True, exist_ok=True)
     return str(path)
 

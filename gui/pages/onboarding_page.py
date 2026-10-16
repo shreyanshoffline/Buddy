@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, QThread, Signal as QtSignal
 
 import core
-import billing_client
+from backend import client as billing_client
 from .card_page import CardPage
 from ..theme import (
     CARD_TEXT_COLOR, CARD_SUBTITLE_COLOR, PRIMARY_COLOR, PRIMARY_COLOR_DARK,

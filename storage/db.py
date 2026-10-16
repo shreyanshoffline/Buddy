@@ -1,6 +1,6 @@
 """
 Local persistence for Buddy — chat history + user profile/settings.
-SQLite, single file, lives next to the app (~/Library/Application Support/Buddy/buddy.db on macOS).
+SQLite, single file, lives in the OS-specific Buddy application-data directory.
 This is app-level memory: which conversations exist, what was said.
 It is NOT the same as message_history passed to the model each turn.
 """
@@ -17,6 +17,47 @@ from contextlib import contextmanager
 import re
 
 import models
+from tools.paths import app_root, data_dir
+
+
+# These are intentionally broad, human-readable buckets. Keeping the keys in
+# storage lets the UI and the memory retriever enforce the same privacy
+# choices instead of each inventing its own category names.
+MEMORY_CATEGORY_KEYS = (
+    "relationships",
+    "work_patterns",
+    "preferences",
+    "important",
+    "communication",
+)
+
+
+def normalize_memory_category(category):
+    value = str(category or "preferences").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "relationship": "relationships",
+        "family": "relationships",
+        "people": "relationships",
+        "work": "work_patterns",
+        "workflow": "work_patterns",
+        "routine": "work_patterns",
+        "productivity": "work_patterns",
+        "general": "preferences",
+        "choice": "preferences",
+        "choices": "preferences",
+        "observation": "preferences",
+        "fact": "important",
+        "facts": "important",
+        "goal": "important",
+        "goals": "important",
+        "value": "important",
+        "values": "important",
+        "style": "communication",
+        "writing": "communication",
+        "tone": "communication",
+    }
+    value = aliases.get(value, value)
+    return value if value in MEMORY_CATEGORY_KEYS else "important"
 
 
 def _cosine(a, b):
@@ -76,15 +117,9 @@ CHUNK_OVERLAP = 400        # more overlap = less chance of splitting mid-thought
 
 # --- Where the DB lives ---
 def _default_db_path():
-    if sys.platform == "darwin":
-        data_root = Path.home() / "Library" / "Application Support" / "Buddy"
-    elif sys.platform == "win32":
-        data_root = Path(os.environ.get("APPDATA", Path.home())) / "Buddy"
-    else:
-        data_root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "Buddy"
-    data_root.mkdir(parents=True, exist_ok=True)
+    data_root = data_dir("")
     db_file = data_root / "buddy.db"
-    legacy_file = Path(__file__).parent.parent / "buddy.db"
+    legacy_file = app_root() / "buddy.db"
     if legacy_file.exists() and not db_file.exists():
         legacy_file.replace(db_file)
     return str(db_file)
@@ -97,7 +132,7 @@ def get_db_path():
         configured_path = os.environ.get("BUDDY_DB_PATH")
         path = Path(configured_path).expanduser() if configured_path else Path(_default_db_path())
         if not path.is_absolute():
-            path = Path(__file__).parent.parent / path
+            path = data_dir("") / path
         path.parent.mkdir(parents=True, exist_ok=True)
         _DB_PATH = str(path)
     return _DB_PATH
@@ -282,10 +317,32 @@ def init_db(conn=None):
                 category TEXT NOT NULL DEFAULT 'general',
                 keywords TEXT,
                 embedding TEXT,
+                tier TEXT NOT NULL DEFAULT 'long',
+                recall_count INTEGER NOT NULL DEFAULT 0,
+                last_recalled REAL,
                 created_at REAL NOT NULL
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_facts_created ON memory_facts(created_at)")
+        fact_cols = [r["name"] for r in conn.execute("PRAGMA table_info(memory_facts)")]
+        if "tier" not in fact_cols:
+            conn.execute("ALTER TABLE memory_facts ADD COLUMN tier TEXT NOT NULL DEFAULT 'long'")
+        if "recall_count" not in fact_cols:
+            conn.execute("ALTER TABLE memory_facts ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0")
+        if "last_recalled" not in fact_cols:
+            conn.execute("ALTER TABLE memory_facts ADD COLUMN last_recalled REAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_preferences (
+                category TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                updated_at REAL NOT NULL
+            )
+        """)
+        now = time.time()
+        conn.executemany(
+            "INSERT OR IGNORE INTO memory_preferences (category, enabled, updated_at) VALUES (?, 1, ?)",
+            [(category, now) for category in MEMORY_CATEGORY_KEYS],
+        )
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS attachments (
@@ -1028,17 +1085,44 @@ def find_relevant_chunks(conversation_id, query, limit=8):
 
 # --- Durable memory facts (layered RAG: identity + facts + episodes + files) ---
 
+def get_memory_preferences():
+    """Return the on/off choice for every user-memory category."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT category, enabled FROM memory_preferences").fetchall()
+    values = {category: True for category in MEMORY_CATEGORY_KEYS}
+    values.update({normalize_memory_category(row["category"]): bool(row["enabled"]) for row in rows})
+    return values
+
+
+def set_memory_preference(category, enabled):
+    key = normalize_memory_category(category)
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO memory_preferences (category, enabled, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(category) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at",
+            (key, 1 if enabled else 0, time.time()),
+        )
+    return bool(enabled)
+
+
+def memory_category_enabled(category):
+    return get_memory_preferences().get(normalize_memory_category(category), True)
+
+
 def save_memory_fact(content, category="general"):
     text = (content or "").strip()
     if not text:
+        return None
+    category = normalize_memory_category(category)
+    if not memory_category_enabled(category):
         return None
     keywords = " ".join(_extract_keywords(text))
     embedding = _safe_embed([text])
     emb_json = json.dumps(embedding[0]) if embedding else None
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO memory_facts (content, category, keywords, embedding, created_at) VALUES (?, ?, ?, ?, ?)",
-            (text, (category or "general").strip() or "general", keywords, emb_json, time.time()),
+            "INSERT INTO memory_facts (content, category, keywords, embedding, tier, created_at) VALUES (?, ?, ?, ?, 'long', ?)",
+            (text, category, keywords, emb_json, time.time()),
         )
         return cur.lastrowid
 
@@ -1046,10 +1130,85 @@ def save_memory_fact(content, category="general"):
 def list_memory_facts(limit=40):
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, content, category, keywords, created_at FROM memory_facts ORDER BY created_at DESC LIMIT ?",
+            "SELECT id, content, category, keywords, tier, recall_count, created_at FROM memory_facts ORDER BY created_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def note_short_term_observation(content, category="observation"):
+    """Store a cautious observation that can earn permanence through recall."""
+    text = (content or "").strip()
+    key = normalize_memory_category(category)
+    if not text or not memory_category_enabled(key):
+        return None
+    keywords = " ".join(_extract_keywords(text))
+    with _connect() as conn:
+        existing = conn.execute(
+            "SELECT id FROM memory_facts WHERE content = ? AND tier = 'short'", (text,)
+        ).fetchone()
+        if existing:
+            return existing["id"]
+        cur = conn.execute(
+            "INSERT INTO memory_facts (content, category, keywords, tier, created_at) VALUES (?, ?, ?, 'short', ?)",
+            (text, key, keywords, time.time()),
+        )
+        return cur.lastrowid
+
+
+def register_fact_recall(fact_id):
+    """Reinforce a fact and promote repeated observations gradually."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT tier, recall_count FROM memory_facts WHERE id = ?", (int(fact_id),)
+        ).fetchone()
+        if not row:
+            return False
+        recalls = int(row["recall_count"] or 0) + 1
+        tier = row["tier"] or "long"
+        if tier == "short" and recalls >= 2:
+            tier = "medium"
+        elif tier == "medium" and recalls >= 4:
+            tier = "long"
+        conn.execute(
+            "UPDATE memory_facts SET recall_count = ?, tier = ?, last_recalled = ? WHERE id = ?",
+            (recalls, tier, time.time(), int(fact_id)),
+        )
+    return True
+
+
+def prune_stale_short_term_memories(max_age_days=30):
+    cutoff = time.time() - (max(1, int(max_age_days)) * 86400)
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM memory_facts WHERE tier = 'short' AND created_at < ?", (cutoff,)
+        )
+        return cur.rowcount
+
+
+def update_memory_fact(fact_id, content, category=None):
+    text = (content or "").strip()
+    if not text:
+        return False
+    with _connect() as conn:
+        row = conn.execute("SELECT category FROM memory_facts WHERE id = ?", (int(fact_id),)).fetchone()
+        if not row:
+            return False
+        key = normalize_memory_category(category or row["category"])
+        keywords = " ".join(_extract_keywords(text))
+        embedding = _safe_embed([text])
+        emb_json = json.dumps(embedding[0]) if embedding else None
+        conn.execute(
+            "UPDATE memory_facts SET content = ?, category = ?, keywords = ?, embedding = ? WHERE id = ?",
+            (text, key, keywords, emb_json, int(fact_id)),
+        )
+    return True
+
+
+def delete_memory_fact(fact_id):
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM memory_facts WHERE id = ?", (int(fact_id),))
+        return cur.rowcount > 0
 
 
 def delete_memory_facts(query):
@@ -1074,8 +1233,10 @@ def delete_memory_facts(query):
 def find_relevant_facts(query_text, limit=8):
     with _connect() as conn:
         rows = [dict(r) for r in conn.execute(
-            "SELECT id, content, category, keywords, embedding, created_at FROM memory_facts ORDER BY created_at DESC"
+            "SELECT id, content, category, keywords, embedding, tier, recall_count, created_at FROM memory_facts ORDER BY created_at DESC"
         ).fetchall()]
+    enabled = get_memory_preferences()
+    rows = [row for row in rows if enabled.get(normalize_memory_category(row.get("category")), True)]
     if not rows:
         return []
     has_all = all(r.get("embedding") for r in rows)

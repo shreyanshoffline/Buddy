@@ -41,12 +41,55 @@ def test_new_chat_shows_three_chips_and_opt_in_note(window):
     assert not w.suggestion_bar._note.isHidden()                      # not learning yet: offers to start, never assumes
 
 
+def test_narrow_chat_keeps_wrapped_greeting_and_chips_inside_page(window):
+    w, app = window
+    w.resize(380, 520)
+    w.show_chat_view()
+    w.greeting.setText("Hi, how can I help you Shreyansh Petra?")
+    items = list(w.suggestion_bar._items)
+    for _ in range(8):
+        w.suggestion_bar.set_suggestions(items, show_opt_in=True)
+    app.processEvents()
+
+    assert w.content_stack.graphicsEffect() is None
+    assert w.content_stack.rect().contains(w.chat_page.geometry())
+    assert w.chat_page.rect().contains(w.composer.geometry())
+    assert w.greeting.width() == w.chat_page.contentsRect().width() - 32
+    assert w.greeting.height() >= w.greeting.sizeHint().height()
+    assert w.suggestion_bar._note.geometry().bottom() <= w.suggestion_bar.height()
+    assert all(w.suggestion_bar.rect().contains(button.geometry()) for button in w.suggestion_bar._buttons)
+    assert all(
+        button in w.suggestion_bar._buttons or button is w.suggestion_bar._opt or not button.isVisible()
+        for button in w.suggestion_bar.findChildren(type(w.suggestion_bar._buttons[0]))
+    )
+    assert all(
+        w.suggestion_bar.rect().contains(button.geometry())
+        for button in w.suggestion_bar.findChildren(type(w.suggestion_bar._buttons[0]))
+        if button.isVisible()
+    )
+
+    # Hovering must not cause a chip to be reparented or left with its
+    # unlaid-out default geometry.
+    from PySide6.QtTest import QTest
+    from PySide6.QtCore import QPoint
+    for button in w.suggestion_bar._buttons:
+        QTest.mouseMove(button, QPoint(2, 2))
+        app.processEvents()
+        assert button.isVisible()
+        assert w.suggestion_bar.rect().contains(button.geometry())
+    w.resize(1000, 700)
+    app.processEvents()
+
+
 def test_clicking_a_chip_sends_its_prompt(window, monkeypatch):
     w, _ = window
     sent = []
     monkeypatch.setattr(w, "handle_send", lambda text=None: sent.append(text))
-    w.suggestion_bar._buttons[0].click()
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    QTest.mouseClick(w.suggestion_bar._buttons[0], Qt.LeftButton)
     assert sent and isinstance(sent[0], str) and len(sent[0]) > 5
+    assert w._screen_glow._interaction is not None
 
 
 def test_live_action_log_shows_full_call_and_result(window):
@@ -71,6 +114,9 @@ def test_live_action_log_shows_full_call_and_result(window):
 def test_glow_modes_and_finish(window):
     w, app = window
     g = w._screen_glow
+    g.pulse()
+    assert g._interaction is not None
+    g.stop()
     g.start()
     g.set_mode("working", "heavy")
     assert g._target == (168, 85, 247)
@@ -78,3 +124,33 @@ def test_glow_modes_and_finish(window):
     assert g._target == (20, 184, 166)
     g.finish(True)
     assert g._flash is not None and g._fading
+
+
+def test_memory_page_replaces_model_workflow(window):
+    w, app = window
+    assert hasattr(w.sidebar, "btn_memory")
+    assert not hasattr(w.sidebar, "btn_models")
+    w.show_memory_view()
+    app.processEvents()
+    assert w.content_stack.currentWidget() is w.memory_page
+    assert set(w.memory_page._category_widgets) >= {
+        "relationships", "work_patterns", "preferences", "important", "communication"
+    }
+    w.show_chat_view()
+
+
+def test_finished_work_log_is_open_and_keeps_long_results(window):
+    from gui.widgets.chat_bubble import DevChamber
+    from PySide6.QtWidgets import QLabel
+    w, app = window
+    long_result = "all details " * 120
+    chamber = DevChamber(
+        plan_text="1. Do the work",
+        tool_log=[{"name": "inspect", "args": {"path": "/tmp/example"}, "result": long_result, "duration": "0.4s"}],
+    )
+    w.chat_layout.insertWidget(w.chat_layout.count() - 1, chamber)
+    app.processEvents()
+    assert chamber.toggle_btn.isChecked()
+    result_labels = chamber.content_frame.findChildren(QLabel)
+    assert any("all details" in label.text() for label in result_labels)
+    chamber.deleteLater()

@@ -17,6 +17,7 @@ import os as _os
 import re as _re
 import shutil as _shutil
 import signal as _signal
+import shlex as _shlex
 import subprocess as _subprocess
 import sys as _sys
 import time as _time
@@ -342,11 +343,11 @@ def code_test(folder: str) -> str:
     has_tests = any(f.name.startswith("test_") or f.name.endswith("_test.py") for f in _walk(root))
     if not has_tests:
         return "No tests found. Write tests (test_*.py) first, then run code_test."
-    py = "python3"
-    if (root / ".venv" / "bin" / "python").exists():
-        py = ".venv/bin/python"
+    venv_python = root / ".venv" / ("Scripts/python.exe" if _sys.platform == "win32" else "bin/python")
+    py = str(venv_python) if venv_python.exists() else (_sys.executable if not getattr(_sys, "frozen", False) else "python3")
     probe = _subprocess.run([py, "-c", "import pytest"], cwd=str(root), capture_output=True)
-    cmd = "%s -m pytest -q -x --tb=short" % py if probe.returncode == 0 else "%s -m unittest discover -v" % py
+    quoted_py = _shlex.quote(py)
+    cmd = "%s -m pytest -q -x --tb=short" % quoted_py if probe.returncode == 0 else "%s -m unittest discover -v" % quoted_py
     return code_run(str(root), cmd, 180, headless=True)
 
 

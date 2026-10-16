@@ -2,6 +2,8 @@ PySide6
 pypdf
 python-dotenv
 msal
+google-api-python-client
+google-auth-oauthlib
 openrouter
 requests
 Flask

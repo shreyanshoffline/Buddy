@@ -1,5 +1,5 @@
 """
-core/paths.py
+    tools/paths.py
 
 One place that answers "where does Buddy's data actually live" — used
 by every module that needs to read/write a file, instead of each one
@@ -23,7 +23,7 @@ def app_root() -> Path:
 
     Handles three cases:
     - Normal `python main.py` run: walks up from this file to the
-      project root (core/paths.py -> core/ -> project root).
+      project root (tools/paths.py -> tools/ -> project root).
     - PyInstaller-style frozen build: sys.frozen is set, use the
       executable's own folder.
     - Nuitka standalone build: no sys.frozen, but the running module's
@@ -38,7 +38,10 @@ def app_root() -> Path:
 
 def data_dir(subfolder: str = "data") -> Path:
     """Return Buddy's writable per-user data directory."""
-    if sys.platform == "darwin":
+    override = os.environ.get("BUDDY_DATA_DIR")
+    if override:
+        d = Path(override).expanduser() / subfolder
+    elif sys.platform == "darwin":
         d = Path.home() / "Library" / "Application Support" / "Buddy" / subfolder
     elif sys.platform == "win32":
         d = Path(os.environ.get("APPDATA", Path.home())) / "Buddy" / subfolder

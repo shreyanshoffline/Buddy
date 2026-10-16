@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.model_config import DEFAULT_MODEL_CONFIG, load_model_config, save_model_config
-from core.model_workflow import (
+from .model_workflow import (
     DEFAULT_WORKFLOW_LAYOUT,
     WORKFLOW_CONNECTIONS,
     WORKFLOW_ZONES,
@@ -16,8 +16,8 @@ from core.model_workflow import (
     save_workflow_layout,
     workflow_snapshot,
 )
-from .card_page import CardPage
-from ..theme import (
+from gui.pages.card_page import CardPage
+from gui.theme import (
     BORDER_COLOR,
     CARD_SUBTITLE_COLOR,
     CARD_TEXT_COLOR,
@@ -27,7 +27,7 @@ from ..theme import (
     TEXT_COLOR_DARK,
     TEXT_COLOR_MUTED,
 )
-from ..widgets.workflow_canvas import WorkflowCanvas
+from .workflow_canvas import WorkflowCanvas
 
 
 class ModelConfigurationPage(CardPage):

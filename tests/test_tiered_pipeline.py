@@ -102,3 +102,32 @@ def test_long_form_writing_uses_heavy_model_and_room_to_finish(tmp_path, monkeyp
     captured.clear()
     agent.process_message_incognito("what is the capital of france", core.new_message_history())
     assert not captured or captured["max_tokens"] <= 1500
+
+
+def test_worker_can_append_conditional_follow_up_steps(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
+    plan = "PLAN:\n1. [easy_task] Inspect the incoming result.\n2. [medium_task] Finish the original task."
+    monkeypatch.setattr(agent, "route_first_pass", lambda *a, **k: ("action", "", None))
+    monkeypatch.setattr(agent, "get_manager_output", lambda *a, **k: (plan, None))
+    queues = {
+        "easy": [
+            _resp(_call(1, "append_plan", reason="The result needs a follow-up.", steps=[
+                {"tier": "heavy", "title": "Review the changed input", "instruction": "Review the new input before finishing."},
+            ])),
+            _resp(_call(2, "finish_task", summary="Inspection complete.")),
+        ],
+        "medium": [_resp(_call(3, "finish_task", summary="Original task complete."))],
+        "heavy": [_resp(_call(4, "finish_task", summary="Follow-up review complete."))],
+    }
+
+    monkeypatch.setattr(
+        agent,
+        "run_action_step",
+        lambda model, history, max_tokens, tools, cancel_check=None, timeout_ms=None: queues[_tier(history)].pop(0),
+    )
+    events = []
+    out = agent.process_message_incognito("inspect and finish this conditional task", core.new_message_history(), on_event=events.append)
+
+    assert "Follow-up review complete." in out["reply"]
+    assert "Review the changed input" in out["plan_text"]
+    assert any(event["type"] == "plan_extended" for event in events)

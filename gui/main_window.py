@@ -9,12 +9,12 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QScrollArea, QFrame,
     QSystemTrayIcon, QMenu, QGraphicsDropShadowEffect, QSizeGrip,
-    QDialog, QRadioButton, QButtonGroup, QSizePolicy, QGraphicsOpacityEffect,
-    QStackedWidget, QLineEdit, QInputDialog, QMessageBox, QComboBox, QBoxLayout
+    QDialog, QRadioButton, QButtonGroup, QSizePolicy,
+    QAbstractButton, QStackedWidget, QLineEdit, QInputDialog, QMessageBox, QComboBox,
+    QBoxLayout
 )
 from PySide6.QtCore import (
-    Qt, QEvent, QPoint, QVariantAnimation, QEasingCurve,
-    QPropertyAnimation, QTimer, QSize, QThread, Signal as QtSignal, QProcess
+    Qt, QEvent, QPoint, QTimer, QSize, QThread, Signal as QtSignal, QProcess
 )
 from PySide6.QtGui import (
     QFont, QIcon, QPixmap, QPainter, QKeyEvent,
@@ -49,7 +49,7 @@ from .theme import (
     CHAT_BUBBLE_AGENT, CHAT_BUBBLE_AGENT_TEXT, SIZE_GRIP_SIZE, TEXT_COLOR_SUBTITLE,
     TEXT_COLOR_MUTED, TEXT_COLOR_DARK, HOVER_BG_COLOR, PRESSED_BG_COLOR, ACTIVE_BG_COLOR,
     BORDER_COLOR, DANGER_COLOR, DANGER_SOFT_BG, DANGER_BORDER, INPUT_BG, CONTAINER_BG
-    , UI_CORNER_RADIUS, UI_CHAT_SIDE_MARGIN, UI_CHAT_TOP_MARGIN, UI_GREETING_MIN_HEIGHT,
+    , UI_CORNER_RADIUS, UI_CHAT_SIDE_MARGIN, UI_CHAT_TOP_MARGIN,
     UI_INPUT_FONT_SIZE, UI_ICON_BUTTON_FONT_SIZE, UI_ICON_BUTTON_PADDING,
     ATTACH_BUTTON_SIZE, ATTACH_ICON_SIZE, PREVIEW_CLOSE_BUTTON_SIZE,
     PREVIEW_PANEL_WIDTH_RATIO, PREVIEW_PANEL_HEIGHT_RATIO
@@ -59,7 +59,7 @@ from .widgets.screen_glow import ScreenEdgeGlow
 from .widgets.suggestion_bar import SuggestionBar
 from .pages import (
     SettingsPage, LibraryPage, BillingPage, ArtifactsPage, OnboardingPage,
-    TalkToBuddyPage, PluginsPage, ModelConfigurationPage,
+    TalkToBuddyPage, PluginsPage, MemoryPage,
 )
 
 
@@ -263,7 +263,6 @@ class BuddyWindow(QWidget):
             system_font = QFont("Helvetica Neue", greeting_size, QFont.Medium)
         self.greeting.setFont(system_font)
         self.greeting.setAlignment(Qt.AlignCenter)
-        self.main_layout.setAlignment(self.greeting, Qt.AlignCenter)
  
         self._position_preview_overlay()
         # The composer controls intentionally stay in one compact row.  On a
@@ -329,6 +328,9 @@ class BuddyWindow(QWidget):
                 self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
                 self.grabMouse()
                 return True
+        if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            if isinstance(obj, (QAbstractButton, QComboBox)) and obj.isEnabled() and self.isAncestorOf(obj):
+                self._screen_glow.pulse()
         return super().eventFilter(obj, event)
 
     def reset_window_size(self):
@@ -581,7 +583,6 @@ class BuddyWindow(QWidget):
             self.thinking_combo.addItems(["Low", "Medium", "High", "Extra", "MAX"])
             self.thinking_combo.setCurrentText("Medium")
             self._last_effort_key = "medium"
-        self.thinking_combo.addItem("Configure models…", "__configure_models__")
         self.header_layout.addWidget(self.incognito_btn)
         self.header_layout.addWidget(self.privacy_btn)
         self.header_layout.addWidget(self.home_btn)
@@ -635,13 +636,17 @@ class BuddyWindow(QWidget):
         self.greeting = QLabel(self._random_greeting())
         self.greeting.setAlignment(Qt.AlignCenter)
         self.greeting.setWordWrap(True)
-        self.greeting.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        self.greeting.setMinimumHeight(UI_GREETING_MIN_HEIGHT)
+        # A wrapped greeting needs a height-for-width layout hint.  A fixed
+        # minimum height clips the middle or bottom line on narrow windows.
+        self.greeting.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.greeting.setMinimumSize(0, 0)
         self.greeting.setStyleSheet(f"color: {GREETING_COLOR}; background: transparent; border: none;")
         self.greeting.setFont(QFont("Helvetica Neue", GREETING_FONT_SIZE, QFont.Medium))
  
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.scroll_area.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.scroll_area.setFrameShape(QFrame.NoFrame)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setStyleSheet("""
@@ -673,6 +678,8 @@ class BuddyWindow(QWidget):
  
         self.chat_container = QWidget()
         self.chat_container.setStyleSheet("background: transparent; border: none;")
+        self.chat_container.setMinimumWidth(0)
+        self.chat_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.chat_layout = QVBoxLayout(self.chat_container)
         self.chat_layout.setContentsMargins(0, 0, 0, 12)
         self.chat_layout.setSpacing(6)
@@ -784,7 +791,7 @@ class BuddyWindow(QWidget):
 
         self.thinking_combo.setFixedWidth(86)
         self.thinking_combo.setToolTip(
-            "Choose how much work Buddy uses. Configure models is in this menu."
+            "Choose how much work Buddy uses."
         )
         controls.addWidget(self.thinking_combo)
 
@@ -879,15 +886,16 @@ class BuddyWindow(QWidget):
  
         self.greeting_spacer = QWidget()
         self.greeting_spacer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.greeting_spacer.setStyleSheet("background: transparent; border: none;")
         self.main_layout.addWidget(self.greeting_spacer, stretch=1)
         self.main_layout.addWidget(self.greeting, stretch=0)
-        self.main_layout.setAlignment(self.greeting, Qt.AlignCenter)
         self.suggestion_bar = SuggestionBar()
         self.suggestion_bar.chosen.connect(self._on_suggestion_chosen)
         self.suggestion_bar.opt_in_requested.connect(self._on_learn_opt_in)
         self.main_layout.addWidget(self.suggestion_bar, stretch=0)
         self.greeting_spacer_bottom = QWidget()
         self.greeting_spacer_bottom.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.greeting_spacer_bottom.setStyleSheet("background: transparent; border: none;")
         self.main_layout.addWidget(self.greeting_spacer_bottom, stretch=1)
         self.subtitle_label = QLabel("")
         self.subtitle_label.setAlignment(Qt.AlignCenter)
@@ -915,10 +923,7 @@ class BuddyWindow(QWidget):
         self.artifacts_page = ArtifactsPage(close_callback=self.hide)
         self.talk_page = TalkToBuddyPage(close_callback=self.hide)
         self.plugins_page = PluginsPage(close_callback=self.hide)
-        self.model_configuration_page = ModelConfigurationPage(
-            close_callback=self.show_chat_view,
-            on_saved=self._refresh_model_controls,
-        )
+        self.memory_page = MemoryPage(close_callback=self.hide)
         self.onboarding_page = OnboardingPage(close_callback=self.hide, on_complete=self.show_chat_view)
         self.content_stack.addWidget(self.settings_page)
         self.content_stack.addWidget(self.library_page)
@@ -926,13 +931,13 @@ class BuddyWindow(QWidget):
         self.content_stack.addWidget(self.artifacts_page)
         self.content_stack.addWidget(self.talk_page)
         self.content_stack.addWidget(self.plugins_page)
-        self.content_stack.addWidget(self.model_configuration_page)
+        self.content_stack.addWidget(self.memory_page)
         self.content_stack.addWidget(self.onboarding_page)
  
         self.sidebar.btn_new.clicked.connect(self.show_chat_view)
         self.sidebar.btn_lib.clicked.connect(self.show_library_view)
         self.sidebar.btn_artifacts.clicked.connect(self.show_artifacts_view)
-        self.sidebar.btn_models.clicked.connect(self.show_model_configuration_view)
+        self.sidebar.btn_memory.clicked.connect(self.show_memory_view)
         self.sidebar.btn_talk.clicked.connect(self.show_talk_view)
         self.sidebar.btn_plugins.clicked.connect(self.show_plugins_view)
         self.sidebar.btn_billing.clicked.connect(self.show_billing_view)
@@ -1063,8 +1068,11 @@ class BuddyWindow(QWidget):
         self.message_history.append({"role": "assistant", "content": result["reply"]})
         return result
  
+    def _show_page(self, page):
+        self.content_stack.setCurrentWidget(page)
+
     def show_chat_view(self):
-        self.content_stack.setCurrentWidget(self.chat_page)
+        self._show_page(self.chat_page)
         self._set_active_nav(self.sidebar.btn_new)
  
     def apply_profile_changes(self):
@@ -1090,25 +1098,25 @@ class BuddyWindow(QWidget):
     def show_settings_view(self):
         if hasattr(self.settings_page, "reload_from_db"):
             self.settings_page.reload_from_db()
-        self.content_stack.setCurrentWidget(self.settings_page)
+        self._show_page(self.settings_page)
         self._set_active_nav(self.sidebar.btn_settings)
  
     def show_billing_view(self):
-        self.content_stack.setCurrentWidget(self.billing_page)
+        self._show_page(self.billing_page)
         self._set_active_nav(self.sidebar.btn_billing)
- 
+
     def show_library_view(self):
         self.library_page.refresh_chats()
-        self.content_stack.setCurrentWidget(self.library_page)
+        self._show_page(self.library_page)
         self._set_active_nav(self.sidebar.btn_lib)
 
     def show_artifacts_view(self):
         self.artifacts_page.refresh_artifacts()
-        self.content_stack.setCurrentWidget(self.artifacts_page)
+        self._show_page(self.artifacts_page)
         self._set_active_nav(self.sidebar.btn_artifacts)
 
     def show_onboarding_view(self):
-        self.content_stack.setCurrentWidget(self.onboarding_page)
+        self._show_page(self.onboarding_page)
         self._set_active_nav(None)
 
     def show_talk_view(self, conversation_id=None):
@@ -1118,29 +1126,16 @@ class BuddyWindow(QWidget):
             self.talk_page.load_conversation(conversation_id)
         else:
             self.talk_page.start_new_voice_chat()
-        self.content_stack.setCurrentWidget(self.talk_page)
+        self._show_page(self.talk_page)
         self._set_active_nav(self.sidebar.btn_talk)
 
     def _on_thinking_changed(self, _index=None):
         try:
-            if self.thinking_combo.currentData() == "__configure_models__":
-                self._restore_effort_combo()
-                self.show_model_configuration_view()
-                return
             from core.thinking import set_thinking_level
             set_thinking_level(self.thinking_combo.currentData(), manual=True)
             self._last_effort_key = self.thinking_combo.currentData()
         except Exception:
             pass
-
-    def _restore_effort_combo(self):
-        key = getattr(self, "_last_effort_key", "medium")
-        for index in range(self.thinking_combo.count()):
-            if self.thinking_combo.itemData(index) == key:
-                self.thinking_combo.blockSignals(True)
-                self.thinking_combo.setCurrentIndex(index)
-                self.thinking_combo.blockSignals(False)
-                return
 
     def _on_chat_model_changed(self, index):
         model_id = (self.chat_model_combo.itemData(index) or "").strip()
@@ -1152,34 +1147,21 @@ class BuddyWindow(QWidget):
         except Exception:
             pass
 
-    def _refresh_model_controls(self):
-        try:
-            from core.model_config import display_model_name, load_model_config
-            model_id = load_model_config()["chat"]
-            self.chat_model_combo.blockSignals(True)
-            if self.chat_model_combo.findText(model_id) < 0:
-                self.chat_model_combo.addItem(display_model_name(model_id), model_id)
-            self.chat_model_combo.setCurrentIndex(self.chat_model_combo.findData(model_id))
-            self.chat_model_combo.blockSignals(False)
-        except Exception:
-            pass
-
-    def show_model_configuration_view(self):
-        if hasattr(self.model_configuration_page, "reload_from_db"):
-            self.model_configuration_page.reload_from_db()
-        self.content_stack.setCurrentWidget(self.model_configuration_page)
-        self._set_active_nav(self.sidebar.btn_models)
+    def show_memory_view(self):
+        self.memory_page.reload_from_db()
+        self._show_page(self.memory_page)
+        self._set_active_nav(self.sidebar.btn_memory)
 
     def show_plugins_view(self):
         if hasattr(self.plugins_page, "reload_from_db"):
             self.plugins_page.reload_from_db()
-        self.content_stack.setCurrentWidget(self.plugins_page)
+        self._show_page(self.plugins_page)
         self._set_active_nav(self.sidebar.btn_plugins)
 
     def _set_active_nav(self, active_btn):
         for btn in (
             self.sidebar.btn_new, self.sidebar.btn_lib, self.sidebar.btn_artifacts,
-            self.sidebar.btn_models,
+            self.sidebar.btn_memory,
             self.sidebar.btn_talk, self.sidebar.btn_plugins,
             self.sidebar.btn_billing, self.sidebar.btn_settings,
         ):
@@ -1511,6 +1493,13 @@ class BuddyWindow(QWidget):
             bubble.add_progress_step("Refining the plan…")
         elif etype == "malformed_retry":
             bubble.add_progress_step("Retrying…")
+        elif etype == "status":
+            bubble.add_progress_step(str(event.get("text") or "Working…"))
+        elif etype == "step_done":
+            outcome = "Finished" if event.get("ok", True) else "Step needs attention"
+            bubble.add_progress_step(f"{outcome} · {event.get('label', 'step')}")
+        elif etype == "plan_extended":
+            bubble.add_progress_step("Added follow-up work after checking the result…")
 
     def _remove_thinking_bubble(self):
         if self._thinking_bubble:

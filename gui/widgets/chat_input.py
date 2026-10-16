@@ -97,9 +97,10 @@ class FlowLayout(QLayout):
         max_x = rect.right() - margins.right()
 
         for item in self._items:
-            widget = item.widget()
-            if widget is not None and not widget.isVisible():
-                continue
+            # Layout hidden-parent children too.  A widget is often added
+            # while its page is still hidden; skipping it here leaves the
+            # default 640x480 geometry in place until an unrelated hover or
+            # resize triggers another layout pass.
             item_width = item.sizeHint().width()
             item_height = item.sizeHint().height()
             next_x = x + item_width + self._h_spacing

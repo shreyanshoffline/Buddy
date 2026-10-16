@@ -4,7 +4,7 @@ Big jobs are split into steps; each step runs on the cheapest tier that can do i
   easy   - mechanical: create folders, install packages, run a command, open things
   medium - small writing/edits, running tests, fixing simple errors, glue work
   heavy  - writing the substantial content: real code, long essays
-Models come from the user's model configuration (Settings > Models: Easy/Medium/Hard).
+Models come from the user's saved tier configuration and the simple model controls in the active chat UI.
 """
 import re
 

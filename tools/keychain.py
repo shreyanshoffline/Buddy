@@ -12,13 +12,17 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tools.paths import data_file
+
 
 SERVICE_PREFIX = "com.hackclub.buddy"
 
 
 def _sidecar_path():
-    root = Path(os.environ.get("BUDDY_DB_PATH") or Path(__file__).resolve().parent.parent / "buddy.db")
-    return Path(str(root)).with_name("buddy.secrets.json")
+    configured = os.environ.get("BUDDY_DB_PATH")
+    if configured:
+        return Path(configured).expanduser().with_name("buddy.secrets.json")
+    return Path(data_file("buddy.secrets.json", subfolder=""))
 
 
 def _use_keychain():

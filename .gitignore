@@ -1,5 +1,6 @@
 .env
 .env.*
+!.env.example
 *.json
 __pycache__/
 *.pyc
@@ -10,3 +11,4 @@ data/
 .tmp/
 venv/
 .venv/
+trash/
