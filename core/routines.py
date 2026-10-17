@@ -143,6 +143,11 @@ def time_defaults(now, connected=(), has_location=False):
         out.append(("Help me plan tomorrow", "Plan tomorrow"))
     out += [("Help me get focused: what should I do first?", "Help me focus"),
             ("What can you do on my Mac?", "What can you do?")]
+    # Keep the new-chat surface useful and stable throughout the day.  The
+    # time/location branches above are optional, so add one neutral third chip
+    # when none of them applied.
+    if len(out) < 3:
+        out.append(("Help me plan my day", "Plan my day"))
     return [{"kind": "default", "label": label, "prompt": prompt, "reason": "", "score": 0} for prompt, label in out]
 
 

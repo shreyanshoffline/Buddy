@@ -72,6 +72,7 @@ The free build is ad-hoc signed. Developer ID signing and notarization are optio
 - Memory controls: the Memory tab exposes five local categories, category switches, learned work rules, fact editing, and confirmation-protected deletion.
 - Routine learning (`core/activity.py`, `core/routines.py`): when the user has opted in (existing Settings switch, off by default) Buddy records app names, website host names and times only, then shows 3 chips on a new chat (e.g. "Start my school setup") once a routine has repeated on 3+ days. Deterministic, no model cost. Skips idle time, password managers, banking/health/login sites. "Forget my activity data" wipes it. A one-line routine summary is also given to the model.
 - Coding mode (`core/coding_agent.py`, `tools/code_agent.py`, `knowledge/coding.md`): build, test, fix, and upgrade software autonomously (60 steps, 8000 tokens/step, 20 min, real execution feedback, undo without git). Needs Files & Folders and Terminal enabled in Plugins. Reference output: `examples/space_invaders/`.
+- Provider boundary (`models.py`): OpenRouter remains the default, while `BUDDY_AI_PROVIDER=self_hosted` can route the same chat, manager, tool, and coding pipelines to an OpenAI-compatible model server. Image generation remains separately configurable, and memory falls back to local keyword retrieval when no self-hosted embedding model exists.
 
 ## Known gaps
 
@@ -84,6 +85,7 @@ The free build is ad-hoc signed. Developer ID signing and notarization are optio
 - Non-macOS native automation is intentionally limited to shared desktop operations until dedicated OS adapters are tested.
 
 - Coding mode has been verified with a scripted model and the real tools (21 tests), not yet with a live model run on a Mac. Try: "build me a space invaders game" and "go into ~/path/to/project and add type hints and error handling".
+- Self-hosted provider evaluation is still required before changing the public default: benchmark response quality, tool-call reliability, coding completion, CPU speed, memory use, rate limiting, and recovery on the target Nest VM.
 
 ## Useful commands
 

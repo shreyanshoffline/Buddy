@@ -125,6 +125,9 @@ class SuggestionBar(QWidget):
         self._fit_note()
 
     def labels(self):
-        # The pool can be larger than the current set after a refresh.  Only
-        # buttons currently shown in the row are part of the public state.
-        return [b.text() for b in self._buttons if b.isVisible()]
+        # Report the logical current set, not Qt's transient visibility while
+        # a chip is fading in.  The reusable pool can contain hidden extras.
+        return [
+            "%s  %s" % (_ICONS.get(item.get("kind"), "✦"), item["label"])
+            for item in self._items
+        ]

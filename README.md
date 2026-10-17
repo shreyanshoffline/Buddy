@@ -215,6 +215,35 @@ Provider-specific setup guides live in `knowledge/`:
 - `knowledge/browser.md`
 - `knowledge/macos.md`
 
+### Switching between hosted and self-hosted AI
+
+Buddy keeps the model provider behind one small compatibility boundary. The
+default is the existing OpenRouter path. To point the same desktop app at a
+remote OpenAI-compatible server, copy `.env.example` to `.env` and set:
+
+```env
+BUDDY_AI_PROVIDER=self_hosted
+BUDDY_SELF_HOSTED_URL=https://your-server.example/v1
+BUDDY_SELF_HOSTED_MODEL=Qwen3-1.7B-Instruct
+BUDDY_SELF_HOSTED_API_KEY=
+```
+
+This works with a server such as `llama-server`, vLLM, Ollama, or a Buddy API
+that exposes `/chat/completions`. Manager calls, normal chat, tool calls,
+coding mode, retries, and the existing UI use the same code in either mode.
+Leave `BUDDY_AI_PROVIDER=openrouter` to preserve the current hosted setup.
+
+Self-hosted mode does not require an embedding service: memory falls back to
+Buddy's local keyword retrieval unless `BUDDY_SELF_HOSTED_EMBEDDING_MODEL` is
+configured. Image generation remains on OpenRouter by default because a
+text-only self-hosted model cannot generate images. Set `BUDDY_IMAGE_PROVIDER`
+only when the selected self-hosted server supports the required image API.
+
+For a small CPU-only server, start with one worker and a short context window.
+The provider switch is an infrastructure choice, not a promise that every
+model has the same coding ability; run the coding evaluation before making a
+self-hosted model the default for users.
+
 ## Plugins and Permissions
 
 Plugins have two layers:

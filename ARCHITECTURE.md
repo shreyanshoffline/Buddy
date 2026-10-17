@@ -44,3 +44,22 @@ python3 main.py
 
 `BUDDY_START_BACKEND=0` disables the local service. `BUDDY_BACKEND_HOST` and
 `BUDDY_BACKEND_PORT` customize its bind address for local testing.
+
+## Model provider boundary
+
+All model requests pass through `models.py`. The default provider is the
+existing OpenRouter client, so the current hosted architecture is unchanged.
+Set `BUDDY_AI_PROVIDER=self_hosted` to use the OpenAI-compatible adapter for a
+remote `llama-server`, vLLM, Ollama, or Buddy model service:
+
+```text
+desktop app -> core agent -> models.py -> /v1/chat/completions
+                                      -> self-hosted model server
+```
+
+The manager, worker, coding loop, tool schemas, retry behavior, cancellation,
+memory, and UI are provider-independent. `BUDDY_SELF_HOSTED_MODEL` replaces
+the requested cloud model route at the adapter boundary. Embeddings are
+optional; without a configured self-hosted embedding model, local keyword
+retrieval remains active. Image generation stays on OpenRouter by default and
+can be changed separately with `BUDDY_IMAGE_PROVIDER`.

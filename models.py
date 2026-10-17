@@ -4,16 +4,162 @@ import os
 import time
 import base64
 import mimetypes
+from urllib.parse import urljoin
+
+import requests
 
 load_dotenv()
 
 _client_cache = {"key": None, "client": None}
 
 
+class ProviderConfigurationError(RuntimeError):
+    """A provider is unavailable or missing the configuration it needs."""
+
+
+class _AttrDict(dict):
+    """Dict that also supports the attribute access used by OpenRouter's SDK."""
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
+def _as_response(value):
+    if isinstance(value, dict):
+        return _AttrDict({key: _as_response(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return [_as_response(item) for item in value]
+    return value
+
+
+def provider_mode():
+    """Return the active text provider without requiring an app restart in tests.
+
+    ``openrouter`` is deliberately the default so existing installs behave
+    exactly as before. ``self_hosted`` speaks to any OpenAI-compatible server,
+    including llama.cpp, vLLM, Ollama, or a Buddy server in front of them.
+    """
+    value = (os.getenv("BUDDY_AI_PROVIDER") or os.getenv("BUDDY_PROVIDER") or "openrouter").strip().lower()
+    if value in {"self_hosted", "self-hosted", "selfhosted", "local", "free", "llama.cpp", "llamacpp"}:
+        return "self_hosted"
+    return "openrouter"
+
+
+def using_self_hosted_provider():
+    return provider_mode() == "self_hosted"
+
+
+def provider_info():
+    """Small, UI/log-safe description of the active provider."""
+    if using_self_hosted_provider():
+        return {
+            "id": "self_hosted",
+            "label": "Self-hosted model",
+            "url": (os.getenv("BUDDY_SELF_HOSTED_URL") or "").rstrip("/"),
+            "model": os.getenv("BUDDY_SELF_HOSTED_MODEL") or "configured server model",
+        }
+    return {"id": "openrouter", "label": "OpenRouter", "url": os.getenv("SERVER_URL") or "", "model": "per-route"}
+
+
+class _LocalChat:
+    def __init__(self, client):
+        self._client = client
+
+    def send(self, *, model=None, messages=None, max_tokens=None, tools=None, timeout_ms=None, modalities=None, **_kwargs):
+        if modalities and "image" in modalities:
+            raise ProviderConfigurationError(
+                "The self-hosted provider is text-only. Set BUDDY_IMAGE_PROVIDER=openrouter for image generation."
+            )
+        payload = {
+            "model": self._client.model(model),
+            "messages": messages or [],
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        if tools:
+            payload["tools"] = tools
+        return self._client.post("/chat/completions", payload, timeout_ms=timeout_ms)
+
+
+class _LocalEmbeddings:
+    def __init__(self, client):
+        self._client = client
+
+    def create(self, *, model=None, input=None, timeout_ms=None, **_kwargs):
+        if not self._client.embedding_model:
+            raise ProviderConfigurationError(
+                "No self-hosted embedding model is configured; Buddy will use keyword memory retrieval."
+            )
+        return self._client.post(
+            "/embeddings",
+            {"model": self._client.embedding_model, "input": input or []},
+            timeout_ms=timeout_ms,
+        )
+
+
+class _OpenAICompatibleClient:
+    """Tiny adapter for llama.cpp/vLLM/Ollama-compatible chat endpoints.
+
+    The rest of Buddy only sees the same response shape as the OpenRouter SDK,
+    keeping provider selection out of the agent, coding, and UI layers.
+    """
+
+    def __init__(self):
+        self.base_url = (os.getenv("BUDDY_SELF_HOSTED_URL") or "").strip().rstrip("/")
+        self.api_key = (os.getenv("BUDDY_SELF_HOSTED_API_KEY") or "").strip()
+        self.embedding_model = (os.getenv("BUDDY_SELF_HOSTED_EMBEDDING_MODEL") or "").strip()
+        if not self.base_url:
+            raise ProviderConfigurationError(
+                "Self-hosted mode is enabled, but BUDDY_SELF_HOSTED_URL is empty."
+            )
+        self.chat = _LocalChat(self)
+        self.embeddings = _LocalEmbeddings(self)
+
+    def model(self, requested):
+        return (os.getenv("BUDDY_SELF_HOSTED_MODEL") or requested or "buddy").strip()
+
+    def post(self, path, payload, timeout_ms=None):
+        url = self.base_url if self.base_url.endswith(path) else urljoin(self.base_url + "/", path.lstrip("/"))
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = "Bearer " + self.api_key
+        timeout = max(1.0, (timeout_ms or REQUEST_TIMEOUT_MS) / 1000.0)
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        except requests.RequestException as exc:
+            raise RuntimeError("Self-hosted model request failed: %s" % exc) from exc
+        if not response.ok:
+            detail = response.text[:500].replace("\n", " ")
+            raise RuntimeError("Self-hosted model returned HTTP %s: %s" % (response.status_code, detail))
+        try:
+            return _as_response(response.json())
+        except ValueError as exc:
+            raise RuntimeError("Self-hosted model returned invalid JSON.") from exc
+
+
 def _get_client():
-    """Returns a client using the user's own API key (set in Settings) if
-    they've provided one, otherwise falls back to the app's default key.
-    Rebuilds the client only when the key actually changes."""
+    """Return the configured text client, keeping provider details in one place."""
+    if using_self_hosted_provider():
+        cache_key = (
+            "self_hosted",
+            os.getenv("BUDDY_SELF_HOSTED_URL", ""),
+            os.getenv("BUDDY_SELF_HOSTED_MODEL", ""),
+            os.getenv("BUDDY_SELF_HOSTED_API_KEY", ""),
+            os.getenv("BUDDY_SELF_HOSTED_EMBEDDING_MODEL", ""),
+        )
+        if _client_cache["key"] != cache_key:
+            _client_cache["client"] = _OpenAICompatibleClient()
+            _client_cache["key"] = cache_key
+        return _client_cache["client"]
+
+    return _get_openrouter_client()
+
+
+def _get_openrouter_client():
+    """Return OpenRouter's client using the user's key when available."""
     api_key = os.getenv("API_KEY")
     try:
         # Lazy import: storage.db imports this module for embeddings, so a
@@ -27,9 +173,10 @@ def _get_client():
     except Exception:
         pass  # storage not ready yet (e.g. very first import) — use the env default
 
-    if _client_cache["key"] != api_key:
+    cache_key = ("openrouter", api_key, os.getenv("SERVER_URL", ""))
+    if _client_cache["key"] != cache_key:
         _client_cache["client"] = OpenRouter(api_key=api_key, server_url=os.getenv("SERVER_URL"))
-        _client_cache["key"] = api_key
+        _client_cache["key"] = cache_key
     return _client_cache["client"]
 
 
@@ -115,21 +262,33 @@ def embed_texts(texts, cancel_check=None):
     only function that needs to change — nothing else depends on the shape."""
     if not texts:
         return []
+    if using_self_hosted_provider() and not os.getenv("BUDDY_SELF_HOSTED_EMBEDDING_MODEL"):
+        # Memory retrieval remains available through its existing keyword
+        # fallback. Do not make a free text-only deployment depend on a paid
+        # embedding API or turn a missing optional service into a crash.
+        raise ProviderConfigurationError(
+            "No self-hosted embedding model configured; use keyword retrieval."
+        )
+    embedding_model = (
+        os.getenv("BUDDY_SELF_HOSTED_EMBEDDING_MODEL", "")
+        if using_self_hosted_provider()
+        else EMBED_MODEL
+    ) or EMBED_MODEL
     try:
         from storage import db
-        cached = db.get_cached_embeddings(texts, model=EMBED_MODEL)
+        cached = db.get_cached_embeddings(texts, model=embedding_model)
     except Exception:
         cached = {}
     missing = [text for text in texts if text not in cached]
     if missing:
         response = _with_retry(
-            lambda: _get_client().embeddings.create(model=EMBED_MODEL, input=missing, timeout_ms=REQUEST_TIMEOUT_MS),
+            lambda: _get_client().embeddings.create(model=embedding_model, input=missing, timeout_ms=REQUEST_TIMEOUT_MS),
             cancel_check=cancel_check,
         )
         fresh = [item.embedding for item in response.data]
         try:
             from storage import db
-            db.save_cached_embeddings(missing, fresh, model=EMBED_MODEL)
+            db.save_cached_embeddings(missing, fresh, model=embedding_model)
         except Exception:
             pass
         cached.update(dict(zip(missing, fresh)))
@@ -209,8 +368,10 @@ def run_image_generation(model, prompt, source_images=None, cancel_check=None):
     for url in (source_images or []):
         content.append({"type": "image_url", "image_url": {"url": url}})
 
+    image_provider = (os.getenv("BUDDY_IMAGE_PROVIDER") or "openrouter").strip().lower()
+    client = _get_client() if image_provider in {"self_hosted", "self-hosted", "local"} else _get_openrouter_client()
     response = _with_retry(
-        lambda: _get_client().chat.send(
+        lambda: client.chat.send(
             model=model,
             messages=[{"role": "user", "content": content}],
             modalities=["image", "text"],
