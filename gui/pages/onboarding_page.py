@@ -11,8 +11,9 @@ from .card_page import CardPage
 from ..theme import (
     CARD_TEXT_COLOR, CARD_SUBTITLE_COLOR, PRIMARY_COLOR, PRIMARY_COLOR_DARK,
     ON_PRIMARY_TEXT, BORDER_COLOR, INPUT_BG, HOVER_BG_COLOR, TEXT_COLOR_DARK,
-    THEME_OPTIONS,
+    THEME_OPTIONS, combo_box_style,
 )
+from ..widgets import ModernComboBox
 
 
 class _GoogleSignInWorker(QThread):
@@ -156,13 +157,17 @@ class OnboardingPage(CardPage):
         self.pages.addWidget(page)
 
         page, layout = self._step("🎨 Make it yours", "Optional. You can always change these choices later in Settings.")
-        self.color = QComboBox()
+        self.color = ModernComboBox()
+        self.color.setCursor(Qt.PointingHandCursor)
+        self.color.setStyleSheet(combo_box_style(font_size=11, padding="7px 10px"))
         self.color.addItems([label for _, label, _ in THEME_OPTIONS])
         current = self.profile.get("theme_color", "blue")
         for index, (key, _, _) in enumerate(THEME_OPTIONS):
             if key == current:
                 self.color.setCurrentIndex(index)
-        self.dark = QComboBox()
+        self.dark = ModernComboBox()
+        self.dark.setCursor(Qt.PointingHandCursor)
+        self.dark.setStyleSheet(combo_box_style(font_size=11, padding="7px 10px"))
         self.dark.addItems(["Light mode", "Dark mode"])
         self.dark.setCurrentIndex(1 if self.profile.get("dark_mode") else 0)
         layout.addWidget(self._label("Accent color"))

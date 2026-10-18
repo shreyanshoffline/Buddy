@@ -9,16 +9,16 @@ from .theme import (
     UI_LAYOUT_MARGIN, UI_LAYOUT_SPACING
 )
 
-from .icons import get_svg_icon, ICONS
+from .icons import get_svg_icon, get_asset_icon, MEMORY_BRAIN_ICON_PATH, ICONS
 
 class NavButton(QPushButton):
-    def __init__(self, label, icon_path, small=False):
+    def __init__(self, label, icon_path, small=False, icon_factory=get_svg_icon):
         super().__init__()
         self.label_text = label
         self.icon_path = icon_path
         self.small = small
         self.is_active = False
-        self.setIcon(get_svg_icon(icon_path, size=ICON_SIZE if not small else 14))
+        self.setIcon(icon_factory(icon_path, size=ICON_SIZE if not small else 14))
         self.setIconSize(self.iconSize())
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(UI_NAV_BUTTON_HEIGHT)
@@ -110,7 +110,7 @@ class Sidebar(QFrame):
         self.btn_new = NavButton("New chat", ICONS["plus"])
         self.btn_lib = NavButton("Library", ICONS["library"])
         self.btn_artifacts = NavButton("Artifacts", ICONS["artifacts"])
-        self.btn_memory = NavButton("Memory", ICONS["memory"])
+        self.btn_memory = NavButton("Memory", MEMORY_BRAIN_ICON_PATH, icon_factory=get_asset_icon)
         self.btn_talk = NavButton("Talk", ICONS["mic"])
         self.btn_plugins = NavButton("Plugins", ICONS["plugins"])
         self.btn_billing = NavButton("Pricing", ICONS["pricing"])

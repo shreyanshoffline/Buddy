@@ -6,11 +6,31 @@ separately swappable."""
 import math
 
 from PySide6.QtCore import Qt, QTimer, Signal, QRectF
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen, QPalette
 from PySide6.QtWidgets import (
     QVBoxLayout, QPushButton, QFrame, QLabel,
-    QHBoxLayout, QDialog, QButtonGroup, QRadioButton, QWidget,
+    QHBoxLayout, QDialog, QButtonGroup, QRadioButton, QWidget, QComboBox,
 )
+
+
+class ModernComboBox(QComboBox):
+    """A compact, platform-neutral combo box with a crisp chevron."""
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        color = (
+            self.palette().color(QPalette.ButtonText)
+            if self.isEnabled()
+            else self.palette().color(QPalette.Disabled, QPalette.Text)
+        )
+        painter.setPen(QPen(color, 1.7, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        center_x = self.width() - 13
+        center_y = self.height() / 2 - 1
+        painter.drawLine(center_x - 4, center_y - 2, center_x, center_y + 2)
+        painter.drawLine(center_x, center_y + 2, center_x + 4, center_y - 2)
 
 
 class FeedbackDialog(QDialog):

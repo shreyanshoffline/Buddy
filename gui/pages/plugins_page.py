@@ -54,8 +54,9 @@ from ..theme import (
     SECTION_CARD_BG,
     TEXT_COLOR_DARK,
     TEXT_COLOR_MUTED,
+    combo_box_style,
 )
-from ..widgets import ToggleSwitch
+from ..widgets import ModernComboBox, ToggleSwitch
 from tools import macos_permissions
 
 MAC_APPS = [
@@ -250,18 +251,11 @@ class PluginsPage(CardPage):
         self.main_layout.addWidget(heading)
 
     def _combo(self):
-        combo = QComboBox()
+        combo = ModernComboBox()
         combo.setMinimumWidth(0)
         combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         combo.setCursor(Qt.PointingHandCursor)
-        combo.setStyleSheet(
-            f"QComboBox {{ background: {INPUT_BG}; color: {TEXT_COLOR_DARK}; "
-            f"border: 1px solid {BORDER_COLOR}; border-radius: 8px; "
-            "padding: 6px 10px; font-size: 11px; }"
-            f"QComboBox:hover {{ border: 1px solid {PRIMARY_COLOR}; }}"
-            f"QComboBox QAbstractItemView {{ background: {INPUT_BG}; color: {TEXT_COLOR_DARK}; "
-            f"selection-background-color: {ACTIVE_BG_COLOR}; }}"
-        )
+        combo.setStyleSheet(combo_box_style(font_size=11, padding="6px 10px"))
         return combo
 
     def _small_button(self, text):

@@ -60,6 +60,15 @@ MODEL_LABELS = {
     "google/gemini-3.8-flash": "Gemini 3.8 Flash",
 }
 
+MODEL_COMPACT_LABELS = {
+    "anthropic/claude-haiku-5.5": "Haiku 5.5",
+    "anthropic/claude-sonnet-5.5": "Sonnet 5.5",
+    "google/gemini-2.5-flash-lite": "Gemini Flash Lite",
+    "google/gemini-3.1-flash-lite-image": "Gemini Image",
+    "google/gemini-3.5-flash-lite": "Gemini Flash Lite",
+    "google/gemini-3.8-flash": "Gemini Flash",
+}
+
 _LEGACY_DEFAULTS = {
     "chat": "google/gemini-2.5-flash-lite",
     "manager": "google/gemini-3.5-flash-lite",
@@ -91,8 +100,10 @@ def load_model_config():
     return config
 
 
-def display_model_name(model_id):
-    return MODEL_LABELS.get(model_id, model_id)
+def display_model_name(model_id, compact=False):
+    """Return a friendly label, with a shorter variant for narrow controls."""
+    labels = MODEL_COMPACT_LABELS if compact else MODEL_LABELS
+    return labels.get(model_id, model_id)
 
 
 def save_model_config(config):

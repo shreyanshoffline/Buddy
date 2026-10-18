@@ -9,6 +9,10 @@ __pycache__/
 data/
 .DS_Store
 .tmp/
+build/
+dist/
+*.spec
+.pytest_cache/
 venv/
 .venv/
 trash/

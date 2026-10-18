@@ -29,9 +29,9 @@ from ..theme import (
     ON_PRIMARY_TEXT, BORDER_COLOR, SECTION_CARD_BG,
     TEXT_COLOR_DARK, INPUT_BG, ACTIVE_BG_COLOR,
     DANGER_COLOR,
-    UI_CHAT_FONT_SIZE,
+    UI_CHAT_FONT_SIZE, combo_box_style,
 )
-from ..widgets import VoiceAnimation
+from ..widgets import ModernComboBox, VoiceAnimation
 
 SAMPLE_RATE = 16000
 MAX_RECORDING_SECONDS = 60
@@ -301,16 +301,10 @@ class TalkToBuddyPage(CardPage):
         self._refresh_voice_hint()
 
     def _voice_combo(self):
-        combo = QComboBox()
+        combo = ModernComboBox()
         combo.setCursor(Qt.PointingHandCursor)
         combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        combo.setStyleSheet(f"""
-            QComboBox {{ background: {INPUT_BG}; color: {TEXT_COLOR_DARK}; border: 1px solid {BORDER_COLOR};
-                border-radius: 8px; padding: 6px 8px; font-size: 10px; }}
-            QComboBox:hover {{ border: 1px solid {PRIMARY_COLOR}; }}
-            QComboBox QAbstractItemView {{ background: {INPUT_BG}; color: {TEXT_COLOR_DARK};
-                selection-background-color: {ACTIVE_BG_COLOR}; }}
-        """)
+        combo.setStyleSheet(combo_box_style(font_size=10, padding="6px 8px"))
         return combo
 
     def _voice_field(self, label_text, combo):

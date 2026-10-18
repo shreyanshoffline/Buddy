@@ -1,0 +1,4 @@
+# Build-only dependencies. Runtime installs should use ../requirements.txt.
+Nuitka>=2.7
+zstandard>=0.23
+pytest

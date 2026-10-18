@@ -7,6 +7,7 @@ from PySide6.QtGui import QPixmap, QPainter, QIcon, QPainterPath
 
 BUDDY_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "Buddy_Logo_Beta.png"
 MENUBAR_ICON_PATH = Path(__file__).resolve().parent / "assets" / "Buddy_menubar.png"
+MEMORY_BRAIN_ICON_PATH = Path(__file__).resolve().parent / "assets" / "memory_brain.svg"
 
 def create_buddy_icon(image_path=None):
     if image_path:
@@ -67,6 +68,21 @@ def create_image_icon(image_path):
     painter.end()
 
     return QIcon(pixmap)
+
+
+def get_asset_icon(svg_path, color="#888888", size=20):
+    """Render a bundled SVG asset while keeping the icon platform-neutral."""
+    try:
+        svg = Path(svg_path).read_text(encoding="utf-8").replace("#009FEA", color).replace("#6D63FF", color)
+        renderer = QSvgRenderer(svg.encode("utf-8"))
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        renderer.render(painter)
+        painter.end()
+        return QIcon(pixmap)
+    except (OSError, TypeError):
+        return QIcon()
 
 
 def get_svg_icon(svg_path, color="#888888", size=20):

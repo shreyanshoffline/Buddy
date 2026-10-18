@@ -320,6 +320,74 @@ CARD_SUBTITLE_COLOR = _T["text_secondary"]
 INPUT_BG = _T["input_bg"]
 INPUT_BORDER = _T["input_border"]
 
+
+def combo_box_style(font_size=11, padding="6px 10px"):
+    """Shared futuristic styling for every selectable dropdown.
+
+    Keep the popup explicit instead of relying on the platform's stock list
+    styling, which looks noticeably dated beside Buddy's rounded surfaces.
+    """
+    return f"""
+        QComboBox {{
+            background: {INPUT_BG};
+            color: {TEXT_COLOR_DARK};
+            border: 1px solid {BORDER_COLOR};
+            border-radius: 10px;
+            padding: {padding};
+            padding-right: 22px;
+            font-size: {font_size}px;
+            font-weight: 600;
+            selection-background-color: {ACTIVE_BG_COLOR};
+        }}
+        QComboBox:hover {{
+            border: 1px solid {PRIMARY_COLOR};
+            background: {HOVER_BG_COLOR};
+        }}
+        QComboBox:focus {{
+            border: 1px solid {PRIMARY_COLOR};
+            background: {ACTIVE_BG_COLOR};
+        }}
+        QComboBox:pressed {{
+            background: {ACTIVE_BG_COLOR};
+        }}
+        QComboBox::drop-down {{
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 20px;
+            border: none;
+            border-left: 1px solid {BORDER_COLOR};
+            background: {ACTIVE_BG_COLOR};
+            margin: 3px 2px 3px 0;
+            border-radius: 7px;
+        }}
+        QComboBox::drop-down:hover {{
+            background: {ACTIVE_BG_COLOR};
+        }}
+        QComboBox::down-arrow {{
+            image: none;
+            width: 0px;
+            height: 0px;
+        }}
+        QComboBox QAbstractItemView {{
+            background: {CONTAINER_BG};
+            color: {TEXT_COLOR_DARK};
+            border: 1px solid {BORDER_COLOR};
+            border-radius: 12px;
+            padding: 6px;
+            outline: none;
+            selection-background-color: {ACTIVE_BG_COLOR};
+            selection-color: {TEXT_COLOR_DARK};
+        }}
+        QComboBox QAbstractItemView::item {{
+            padding: 7px 10px;
+            min-height: 20px;
+            border-radius: 8px;
+        }}
+        QComboBox QAbstractItemView::item:hover {{
+            background: {HOVER_BG_COLOR};
+        }}
+    """
+
 CHAT_BUBBLE_USER = _T["chat_bubble_user"]
 CHAT_BUBBLE_USER_TEXT = _T["chat_bubble_user_text"]
 CHAT_BUBBLE_AGENT = _T["chat_bubble_agent"]

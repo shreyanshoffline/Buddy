@@ -11,7 +11,8 @@ python3 -m tools.release_manager publish --notes "Describe this release"
 ```
 
 The publish command requires the free GitHub CLI (`gh`) authenticated to the
-Buddy repository. GitHub Actions builds macOS, Windows, and Linux ZIPs and
+Buddy repository. GitHub Actions builds macOS, Windows, and Linux Nuitka
+standalone ZIPs and
 attaches them to the release. ChromeOS uses the Linux build inside its Linux
 environment. Buddy checks the latest release after startup and when Settings
 opens.
@@ -23,12 +24,34 @@ does not erase chats, memories, or preferences:
 - Windows: `%APPDATA%/Buddy/`
 - Linux/ChromeOS: `$XDG_DATA_HOME/Buddy/` or `~/.local/share/Buddy/`
 
-Build the portable non-macOS bundles with:
+Build the portable bundles with Nuitka:
 
 ```bash
-python -m pip install -r requirements.txt pyinstaller pytest
-python packaging/build.py
+python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+python packaging/build_nuitka.py
 ```
+
+The supported release path is Nuitka `--standalone` plus the PySide6 plugin.
+Nuitka `--onefile` is intentionally not used: standalone folders start faster
+and can be updated by replacing the folder. The PyInstaller scripts remain
+available as a fallback.
+
+### Publishing from GitHub
+
+1. Update `APP_VERSION` in `version.py`.
+2. Commit and push the change.
+3. Run **Actions → Buddy release → Run workflow** to build all targets without
+   publishing a release.
+4. When ready, push a matching tag, for example:
+
+   ```bash
+   git tag v0.9.8
+   git push origin v0.9.8
+   ```
+
+5. GitHub creates the release and attaches the three ZIPs and their SHA-256
+   files. Extract the entire ZIP on the target computer; standalone builds are
+   folders, not single files.
 
 Apple signing and notarization remain optional for this zero-cost flow. An
 unsigned macOS build may show a Gatekeeper warning on first launch.

@@ -280,17 +280,44 @@ python3 -m tools.release_manager publish --notes "Describe the release"
 Build locally on macOS:
 
 ```bash
-bash packaging/build_mac.sh
+python3 -m pip install -r requirements.txt -r packaging/requirements-build.txt
+python3 packaging/build_nuitka.py
 ```
 
 Build locally on Windows or Linux:
 
 ```bash
-python -m pip install -r requirements.txt pyinstaller pytest
-python packaging/build.py
+python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+python packaging/build_nuitka.py
 ```
 
-GitHub Actions builds macOS, Windows, and Linux ZIPs plus checksums when a `v*` tag is pushed. A ChromeOS user can run the Linux build in the ChromeOS Linux environment. The macOS build is ad-hoc signed by default; Developer ID signing and Apple notarization are optional and require Apple Developer credentials.
+The release build uses Nuitka `--standalone` with the PySide6 plugin. It does
+not use `--onefile`: standalone bundles launch faster and are easier to update
+because the app files remain together in a normal folder. The existing
+`packaging/build.py` and `packaging/build_mac.sh` PyInstaller scripts remain
+available as fallbacks.
+
+GitHub Actions builds macOS, Windows, and Linux Nuitka standalone ZIPs plus
+checksums when a `v*` tag is pushed. ChromeOS users run the Linux ZIP inside
+the ChromeOS Linux environment. macOS signing and notarization are optional.
+
+### GitHub release steps
+
+1. Set the next version in `version.py`, such as `0.9.8`.
+2. Commit and push the change to GitHub.
+3. Open **Actions**, select **Buddy release**, and choose **Run workflow** for
+   a pre-release build of all three targets.
+4. When the artifacts look correct, create and push a matching tag:
+
+   ```bash
+   git tag v0.9.8
+   git push origin v0.9.8
+   ```
+
+5. GitHub attaches `Buddy-macos-0.9.8.zip`, `Buddy-windows-0.9.8.zip`,
+   `Buddy-linux-0.9.8.zip`, and their SHA-256 files to the release.
+6. Extract the whole ZIP and launch the executable inside it. Do not move only
+   the executable out of the standalone folder.
 
 Updates preserve memory because the database lives outside the app bundle:
 

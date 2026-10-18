@@ -20,7 +20,7 @@ Before publishing a macOS release:
 
 - Run `python3 -m pytest -q tests`.
 - Run `python3 -m tools.release_manager check`.
-- Run `bash packaging/build_mac.sh` on macOS.
+- Run `python3 packaging/build_nuitka.py` on macOS, Windows, or Linux.
 - Open `dist/Buddy.app` and test chat, Plugins, Talk, Settings, updates, and memory preservation.
 - Verify microphone, Files & Folders, and Full Disk Access behavior in the packaged app.
 - Test Google, Microsoft, Slack, GitHub, and Gmail with real credentials where configured.
@@ -46,8 +46,7 @@ The free build is ad-hoc signed. Developer ID signing and notarization are optio
 
 3. Build each release target:
 
-   - macOS: `bash packaging/build_mac.sh`
-   - Windows/Linux: `python packaging/build.py`
+   - macOS/Windows/Linux: `python packaging/build_nuitka.py`
    - ChromeOS: run the Linux build inside the Linux development environment.
 
 4. Test one real workflow per capability family: chat, attachment preview, image creation, browser navigation, a Google or Microsoft action, Slack read/post with confirmation, local file action, and software update discovery.
@@ -86,14 +85,14 @@ The free build is ad-hoc signed. Developer ID signing and notarization are optio
 
 - Coding mode has been verified with a scripted model and the real tools (21 tests), not yet with a live model run on a Mac. Try: "build me a space invaders game" and "go into ~/path/to/project and add type hints and error handling".
 - Self-hosted provider evaluation is still required before changing the public default: benchmark response quality, tool-call reliability, coding completion, CPU speed, memory use, rate limiting, and recovery on the target Nest VM.
+- Nuitka release packaging is wired into `.github/workflows/release.yml` with `--standalone` and the PySide6 plugin. PyInstaller remains the local fallback.
 
 ## Useful commands
 
 ```bash
 python3 -m pytest -q tests
 python3 -m tools.release_manager check
-bash packaging/build_mac.sh
-python3 packaging/build.py
+python3 packaging/build_nuitka.py
 python3 main.py
 ```
 

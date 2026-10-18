@@ -25,7 +25,7 @@ from PySide6.QtSvg import QSvgRenderer
 import core
 from version import APP_VERSION
 
-from .widgets import ChatBubble, ChatInput, FeedbackDialog, AttachmentTray
+from .widgets import ChatBubble, ChatInput, FeedbackDialog, AttachmentTray, ModernComboBox
 from .widgets.window_chrome import EdgeResizeController
 from .icons import (
     BUDDY_LOGO_PATH,
@@ -51,7 +51,7 @@ from .theme import (
     BORDER_COLOR, DANGER_COLOR, DANGER_SOFT_BG, DANGER_BORDER, INPUT_BG, CONTAINER_BG
     , UI_CORNER_RADIUS, UI_CHAT_SIDE_MARGIN, UI_CHAT_TOP_MARGIN,
     UI_INPUT_FONT_SIZE, UI_ICON_BUTTON_FONT_SIZE, UI_ICON_BUTTON_PADDING,
-    ATTACH_BUTTON_SIZE, ATTACH_ICON_SIZE, PREVIEW_CLOSE_BUTTON_SIZE,
+    ATTACH_BUTTON_SIZE, ATTACH_ICON_SIZE, PREVIEW_CLOSE_BUTTON_SIZE, combo_box_style,
     PREVIEW_PANEL_WIDTH_RATIO, PREVIEW_PANEL_HEIGHT_RATIO
 )
 from .sidebar import Sidebar
@@ -549,29 +549,13 @@ class BuddyWindow(QWidget):
         self.header_layout.addWidget(self.title_label)
         self.header_layout.addStretch()
 
-        self.thinking_combo = QComboBox()
+        self.thinking_combo = ModernComboBox()
         self.thinking_combo.setToolTip(
             "Thinking level. Medium is the default. Free may drop to Low when credits are low."
         )
         self.thinking_combo.setCursor(Qt.PointingHandCursor)
-        self.thinking_combo.setFixedWidth(92)
-        self.thinking_combo.setStyleSheet(f"""
-            QComboBox {{
-                background: {INPUT_BG};
-                color: {TEXT_COLOR_DARK};
-                border: 1px solid {BORDER_COLOR};
-                border-radius: 8px;
-                padding: 4px 8px;
-                font-size: 10px;
-                font-weight: 600;
-            }}
-            QComboBox:hover {{ border: 1px solid {PRIMARY_COLOR}; }}
-            QComboBox QAbstractItemView {{
-                background: {INPUT_BG};
-                color: {TEXT_COLOR_DARK};
-                selection-background-color: {ACTIVE_BG_COLOR};
-            }}
-        """)
+        self.thinking_combo.setFixedWidth(104)
+        self.thinking_combo.setStyleSheet(combo_box_style(font_size=10, padding="4px 8px"))
         try:
             from core.thinking import LEVELS, LEVEL_LABELS, stored_thinking_level, set_thinking_level
             for key in LEVELS:
@@ -757,42 +741,38 @@ class BuddyWindow(QWidget):
 
         controls.addWidget(self.attach_button, 0, Qt.AlignVCenter)
 
-        self.chat_model_combo = QComboBox()
+        self.chat_model_combo = ModernComboBox()
         self.chat_model_combo.setEditable(False)
         self.chat_model_combo.setMinimumWidth(0)
         self.chat_model_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.chat_model_combo.setCursor(Qt.PointingHandCursor)
         self.chat_model_combo.setToolTip("Choose the model used for regular chat")
-        self.chat_model_combo.setStyleSheet(f"""
-            QComboBox {{
-                background: {INPUT_BG}; color: {TEXT_COLOR_DARK};
-                border: 1px solid {BORDER_COLOR}; border-radius: 8px;
-                padding: 4px 7px; font-size: 10px;
-            }}
-            QComboBox:hover {{ border: 1px solid {PRIMARY_COLOR}; }}
-            QComboBox QAbstractItemView {{
-                background: {INPUT_BG}; color: {TEXT_COLOR_DARK};
-                selection-background-color: {ACTIVE_BG_COLOR};
-            }}
-        """)
+        self.chat_model_combo.setStyleSheet(combo_box_style(font_size=10, padding="4px 7px"))
         try:
             from core.model_config import MODEL_OPTIONS, display_model_name, load_model_config
             saved_models = load_model_config()
             options = list(dict.fromkeys(list(MODEL_OPTIONS) + [saved_models["chat"]]))
             for model_id in options:
-                self.chat_model_combo.addItem(display_model_name(model_id), model_id)
+                self.chat_model_combo.addItem(display_model_name(model_id, compact=True), model_id)
+                self.chat_model_combo.setItemData(
+                    self.chat_model_combo.count() - 1,
+                    display_model_name(model_id),
+                    Qt.ToolTipRole,
+                )
             self.chat_model_combo.setCurrentIndex(
                 self.chat_model_combo.findData(saved_models["chat"])
             )
+            self.chat_model_combo.view().setMinimumWidth(210)
         except Exception:
             self.chat_model_combo.addItem("google/gemini-2.5-flash-lite")
         self.chat_model_combo.currentIndexChanged.connect(self._on_chat_model_changed)
         controls.addWidget(self.chat_model_combo, 1)
 
-        self.thinking_combo.setFixedWidth(86)
+        self.thinking_combo.setFixedWidth(104)
         self.thinking_combo.setToolTip(
             "Choose how much work Buddy uses."
         )
+        self.thinking_combo.view().setMinimumWidth(110)
         controls.addWidget(self.thinking_combo)
 
         self.voice_button = QPushButton()
