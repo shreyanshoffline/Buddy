@@ -24,6 +24,7 @@ import time as _time
 from pathlib import Path as _Path
 
 from tools.paths import data_dir as _data_dir
+from tools.paths import python_executable as _python_executable
 
 _IGNORE_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "env", "dist", "build",
                 ".idea", ".vscode", ".pytest_cache", ".mypy_cache", ".DS_Store", "Pods", "DerivedData"}
@@ -298,7 +299,7 @@ def code_setup_env(folder: str, packages: str = "") -> str:
     root.mkdir(parents=True, exist_ok=True)
     venv = root / ".venv"
     if not venv.exists():
-        r = _subprocess.run([_sys.executable if not getattr(_sys, "frozen", False) else "python3", "-m", "venv", str(venv)],
+        r = _subprocess.run([_python_executable(), "-m", "venv", str(venv)],
                             capture_output=True, text=True, timeout=180)
         if r.returncode:
             return "venv creation failed: " + _tail(r.stderr, 1500)
@@ -344,7 +345,7 @@ def code_test(folder: str) -> str:
     if not has_tests:
         return "No tests found. Write tests (test_*.py) first, then run code_test."
     venv_python = root / ".venv" / ("Scripts/python.exe" if _sys.platform == "win32" else "bin/python")
-    py = str(venv_python) if venv_python.exists() else (_sys.executable if not getattr(_sys, "frozen", False) else "python3")
+    py = str(venv_python) if venv_python.exists() else _python_executable()
     probe = _subprocess.run([py, "-c", "import pytest"], cwd=str(root), capture_output=True)
     quoted_py = _shlex.quote(py)
     cmd = "%s -m pytest -q -x --tb=short" % quoted_py if probe.returncode == 0 else "%s -m unittest discover -v" % quoted_py

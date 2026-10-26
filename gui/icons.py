@@ -73,7 +73,7 @@ def create_image_icon(image_path):
 def get_asset_icon(svg_path, color="#888888", size=20):
     """Render a bundled SVG asset while keeping the icon platform-neutral."""
     try:
-        svg = Path(svg_path).read_text(encoding="utf-8").replace("#009FEA", color).replace("#6D63FF", color)
+        svg = Path(svg_path).read_text(encoding="utf-8").replace("#009FEA", color)
         renderer = QSvgRenderer(svg.encode("utf-8"))
         pixmap = QPixmap(size, size)
         pixmap.fill(Qt.transparent)

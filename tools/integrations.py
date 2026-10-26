@@ -1,5 +1,5 @@
 """Linking outside accounts to Buddy — separate from the local-Mac-app
-catalog in app_catalog.py. These are real network calls, not stubs:
+catalog of installed apps. These are real network calls, not stubs:
 
 - GitHub uses OAuth's Device Flow, which is built for exactly this case
   (a desktop app with no safe place to hold a client secret). It only

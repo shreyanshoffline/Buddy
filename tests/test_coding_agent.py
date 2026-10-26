@@ -13,7 +13,7 @@ from core.tiers import CostTracker, parse_tiered_plan, looks_like_long_form  # n
 from core.call_format import format_call  # noqa: E402
 from tools.tools_schema import tools_schema  # noqa: E402
 
-EX = Path(__file__).resolve().parent.parent / "examples" / "space_invaders"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 MODELS = {"easy": "anthropic/claude-haiku-5.5", "medium": "anthropic/claude-haiku-5.5", "heavy": "anthropic/claude-sonnet-5.5"}
 E, M, H = "easy", "medium", "heavy"
 
@@ -66,7 +66,8 @@ def test_tiered_build_routes_by_tier_and_isolates_context(tmp_path, monkeypatch)
     _enable_files(monkeypatch, tmp_path)
     from core.agent import execute_tool
     project = tmp_path / "BuddyProjects" / "space-invaders"
-    game, tests = (EX / "game.py").read_text(), (EX / "tests" / "test_game.py").read_text()
+    game = (FIXTURES / "space_invaders_game.py.txt").read_text()
+    tests = (FIXTURES / "space_invaders_test.py.txt").read_text()
     fm = FakeModels({
         E: [_resp(_call(1, "code_new_project", name="space invaders")), _resp(_call(2, "finish_task", summary="Created folder."))],
         H: [_resp(_call(3, "code_write", path=str(project / "game.py"), content=game, ),
@@ -239,7 +240,7 @@ def _perm(fn, *a):
         return str(e)
 
 
-def test_file_tools_blocked_until_user_enables_access(tmp_path, monkeypatch):
+def test_file_tools_blocked_until_user_enables_access_default_models(tmp_path, monkeypatch):
     """Truthful permissions: with Files & Folders off, coding mode stops and says what to enable."""
     from core.agent import execute_tool
     import core.plugins as plugins

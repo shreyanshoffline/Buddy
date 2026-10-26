@@ -40,7 +40,8 @@ def is_macos():
 
 
 def is_packaged():
-    return bool(getattr(sys, "frozen", False))
+    from tools.paths import is_packaged as _is_packaged
+    return _is_packaged()
 
 
 BUNDLE_ID = "com.hackclub.buddy"
@@ -139,32 +140,53 @@ def open_privacy_panel(key):
     return bool(QDesktopServices.openUrl(QUrl(legacy_url)))
 
 
+def microphone_status():
+    """'granted', 'denied', 'undetermined' or 'unknown'. Never opens the device."""
+    try:
+        from PySide6.QtCore import QCoreApplication, QMicrophonePermission, Qt
+
+        app = QCoreApplication.instance()
+        if app is None:
+            return "unknown"
+        status = app.checkPermission(QMicrophonePermission())
+        if status == Qt.PermissionStatus.Granted:
+            return "granted"
+        if status == Qt.PermissionStatus.Denied:
+            return "denied"
+        return "undetermined"
+    except Exception:
+        return "unknown"
+
+
+def request_microphone():
+    """Ask macOS for microphone access (shows the system prompt once)."""
+    try:
+        from PySide6.QtCore import QCoreApplication, QMicrophonePermission
+
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.requestPermission(QMicrophonePermission(), app, lambda _permission: None)
+    except Exception:
+        pass
+
+
 def probe_microphone():
-    """True only if this process can open the default input device."""
+    """True if an input device exists and this process may use it.
+
+    Checks the permission status instead of opening the device: starting a
+    capture just to probe triggers the macOS prompt on every refresh and can
+    crash a bundle that lacks a microphone usage string.
+    """
     try:
-        from PySide6.QtMultimedia import QAudioFormat, QAudioSource, QMediaDevices
-    except Exception:
-        return False
-    try:
-        device = QMediaDevices.defaultAudioInput()
-        if device is None or device.isNull():
+        from PySide6.QtMultimedia import QMediaDevices
+
+        if not QMediaDevices.audioInputs():
             return False
-        fmt = QAudioFormat()
-        fmt.setSampleRate(16000)
-        fmt.setChannelCount(1)
-        fmt.setSampleFormat(QAudioFormat.Int16)
-        if not device.isFormatSupported(fmt):
-            fmt = device.preferredFormat()
-        source = QAudioSource(device, fmt)
-        io_device = source.start()
-        ok = io_device is not None
-        try:
-            source.stop()
-        except Exception:
-            pass
-        return bool(ok)
     except Exception:
         return False
+    if not is_macos():
+        return True
+    return microphone_status() == "granted"
 
 
 def probe_camera():
@@ -217,6 +239,8 @@ def probe_folder_access():
 
 
 def probe(key):
+    if key in ("microphone", "camera") and not is_macos():
+        return False  # status_label reports "Unavailable off macOS"; don't touch QtMultimedia
     if key == "microphone":
         return probe_microphone()
     if key == "camera":

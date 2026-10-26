@@ -44,6 +44,8 @@ try:
 except ImportError:
     pass
 
+from tools.paths import python_executable as _python_executable
+
 # Optional imports with graceful fallback
 try:
     import pyautogui
@@ -1605,7 +1607,7 @@ def list_voices() -> str:
 # =============================================================================
 
 def run_code(file_path: str) -> str:
-    """Runs a Python file and returns stdout and stderr (10s timeout)."""
+    """Runs a Python file and returns stdout and stderr (15s timeout)."""
     expanded = _expand(file_path)
     try:
         result = subprocess.run(
@@ -1622,9 +1624,9 @@ def manage_package(action: str, package_name: str) -> str:
     """Installs, updates, or uninstalls a package in Buddy's Python environment."""
     import sys
     cmd_map = {
-        "install": [sys.executable, "-m", "pip", "install", package_name],
-        "update": [sys.executable, "-m", "pip", "install", "--upgrade", package_name],
-        "uninstall": [sys.executable, "-m", "pip", "uninstall", "-y", package_name],
+        "install": [_python_executable(), "-m", "pip", "install", package_name],
+        "update": [_python_executable(), "-m", "pip", "install", "--upgrade", package_name],
+        "uninstall": [_python_executable(), "-m", "pip", "uninstall", "-y", package_name],
     }
     if action not in cmd_map:
         return f"Unknown package action: {action}. Use install/update/uninstall."

@@ -4,6 +4,23 @@ Buddy is a local-first desktop AI assistant for macOS, Windows, Linux, and Chrom
 
 Buddy is designed to be useful without hiding what happened. When a tool works, Buddy reports the result. When a provider, permission, or network request fails, Buddy shows the actual error and the next action instead of silently improvising.
 
+<p align="center">
+  <img src="gui/assets/Buddy_Logo_Beta.png" alt="Buddy logo" width="140">
+</p>
+
+## Screenshots
+
+<!-- Add the images to docs/images/ using the filenames listed in docs/images/README.md -->
+
+| | |
+| --- | --- |
+| ![Chat with suggestion chips](docs/images/chat.png) | ![Live work log](docs/images/work-log.png) |
+| **Chat** — greeting, suggestions, history | **Work log** — every plan step, tool call, and timing |
+| ![Memory tab](docs/images/memory.png) | ![Plugins page](docs/images/plugins.png) |
+| **Memory** — five categories you control | **Plugins** — connections and permissions |
+| ![Talk page](docs/images/talk.png) | ![Coding mode](docs/images/coding-mode.png) |
+| **Talk** — voice conversation | **Coding mode** — builds and tests software |
+
 ## Current State
 
 Buddy is an active cross-platform beta at version `0.9.7`.
@@ -32,12 +49,22 @@ The shared app, chat pipeline, browser tools, files, web actions, provider clien
 
 | Platform | Build | Native capabilities |
 | --- | --- | --- |
-| macOS 13+ | `packaging/build_mac.sh` | Full Apple app automation and macOS permissions |
-| Windows 10+ | `python packaging/build.py` | Desktop, browser, files, web, Microsoft, Google, Slack, and GitHub workflows |
-| Linux | `python packaging/build.py` | Desktop, browser, files, web, Microsoft, Google, Slack, and GitHub workflows |
+| macOS 13+ | `python3 packaging/build_nuitka.py` | Full Apple app automation and macOS permissions |
+| Windows 10+ | `python packaging/build_nuitka.py` | Desktop, browser, files, web, Microsoft, Google, Slack, and GitHub workflows |
+| Linux | `python packaging/build_nuitka.py` | Desktop, browser, files, web, Microsoft, Google, Slack, and GitHub workflows |
 | ChromeOS | Linux environment build | Same Linux capabilities when Linux apps are enabled |
 
 Apple-only tools are disabled with a clear explanation on other systems. Buddy does not pretend that AppleScript features exist on Windows or Linux.
+
+## What Buddy Can Do
+
+Not sure what to ask? Say **"What can you do?"** and Buddy answers from its built-in capability guide (`knowledge/capabilities.md`) with examples tailored to you. A few to start with:
+
+- "What's unread from my professor, and draft a reply asking for an extension."
+- "Organize my Downloads folder by file type."
+- "Build me a Snake game in Python." (coding mode)
+- "Remember that my sister's birthday is June 3."
+- "Start my school setup." (opens your usual apps and sites)
 
 ## Features
 
@@ -79,6 +106,14 @@ With the relevant plugin enabled, Buddy can work with common desktop actions on 
 - Terminal and code execution when explicitly enabled, with confirmation for dangerous commands.
 
 Destructive operations remain protected by confirmation dialogs. This is intentional: “do everything” does not mean silently delete data or change the system without approval.
+
+### Coding Mode
+
+Ask Buddy to build, fix, or upgrade software. It plans with a cheap model, writes files with the strong model only where real code is needed, runs and tests the project, fixes failures on its own, and can undo its changes. It needs **Files & Folders** and **Terminal** enabled in Plugins.
+
+### Routine Suggestions
+
+Opt in under Settings (off by default) and Buddy records app names, website hostnames, and times only. Once a routine repeats on three or more days, it offers one-click suggestions on a new chat. Password managers, banking, health, and login sites are skipped, and "Forget my activity data" wipes everything.
 
 ### Nearby Search and Location
 
@@ -194,6 +229,14 @@ python3 main.py
 
 For local development, activate `venv` using the normal command for your shell. On Windows, use `python` instead of `python3` if that is the installed command. `main.py` starts the local backend automatically. Set `BUDDY_START_BACKEND=0` for a frontend-only run, or set `BUDDY_BACKEND_PORT` when port 5000 is unavailable.
 
+### Configuration
+
+Copy `.env.example` to `.env` and fill in what you need (at minimum `API_KEY`). From source, keep `.env` in the project folder. For the packaged app, put it in Buddy's data folder, which is also where the database lives:
+
+- macOS: `~/Library/Application Support/Buddy/.env`
+- Windows: `%APPDATA%\Buddy\.env`
+- Linux and ChromeOS: `~/.local/share/Buddy/.env`
+
 ### Hack Club Search
 
 Buddy uses the Brave-compatible Hack Club Search API:
@@ -293,9 +336,9 @@ python packaging/build_nuitka.py
 
 The release build uses Nuitka `--standalone` with the PySide6 plugin. It does
 not use `--onefile`: standalone bundles launch faster and are easier to update
-because the app files remain together in a normal folder. The existing
-`packaging/build.py` and `packaging/build_mac.sh` PyInstaller scripts remain
-available as fallbacks.
+because the app files remain together in a normal folder. On macOS the build
+also adds the microphone, camera, and Automation permission strings to the app
+and re-signs it.
 
 GitHub Actions builds macOS, Windows, and Linux Nuitka standalone ZIPs plus
 checksums when a `v*` tag is pushed. ChromeOS users run the Linux ZIP inside
@@ -333,7 +376,7 @@ Run the active suite with the project environment:
 python -m pytest -q tests
 ```
 
-The tests cover database migrations, profile persistence, location memory, action status, provider configuration, and core behavior that can run offline.
+The suite runs offline (no accounts or network) and covers database migrations, memory controls, location memory, the tiered agent pipeline, coding mode, provider configuration, the Slack and platform layers, and a headless GUI smoke test.
 
 ## Project Layout
 
@@ -341,17 +384,23 @@ The tests cover database migrations, profile persistence, location memory, actio
 main.py                 Application entry point
 backend/                Local Flask service and single-process runtime
 core/                   Agent pipeline, prompts, plugins, updates
-gui/                    Active PySide6 interface
+gui/                    PySide6 interface and bundled assets
 storage/                SQLite database and migrations
 tools/                  Shared OS adapter, provider integrations, and tools
-knowledge/              Focused provider and system guides
-packaging/              Cross-platform build and release files
-future/model_workflow/  Archived experimental model workflow for a future release
+knowledge/              Guides Buddy reads, including its capability list
+packaging/              Nuitka build, Info.plist, entitlements, release notes
+future/model_workflow/  Experimental workflow editor kept for a future release
+docs/images/            Screenshots used by this README
 tests/                  Offline regression tests
-trash/                  Ignored local quarantine for disposable artifacts
-PROJECT_STATUS.md       Consolidated project status and release checklist
 ARCHITECTURE.md         Short codebase map
 ```
+
+## Known Limitations
+
+- The voice pipeline is record, transcribe, generate, speak rather than fully streaming.
+- The free macOS build is ad-hoc signed, so macOS warns on first launch (right-click, Open). Developer ID signing and notarization are optional.
+- Apple-app automation is macOS only; other systems get shared desktop, browser, file, and web actions.
+- Packaged-app permissions and live provider accounts need a real run on each OS.
 
 ## Future Updates
 
@@ -369,6 +418,10 @@ ARCHITECTURE.md         Short codebase map
 - Release notes displayed directly inside the update banner.
 - Dedicated Windows and Linux native adapters for screenshots, notifications, clipboard, power, and accessibility.
 - ChromeOS PWA or packaged-web shell once the shared web client exists.
+
+## Credits
+
+The Memory icon is based on the Lucide "brain" icon (ISC License).
 
 ## License
 

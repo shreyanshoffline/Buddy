@@ -446,7 +446,12 @@ class TalkToBuddyPage(CardPage):
                 self._style_error("Microphone is turned off in Plugins.")
                 return False
             if not probe_microphone():
-                self._style_error("macOS has not granted the microphone to this Buddy process yet.")
+                from tools.macos_permissions import microphone_status, request_microphone
+                if microphone_status() == "undetermined":
+                    request_microphone()
+                    self._style_error("Approve the macOS microphone prompt, then press the mic again.")
+                else:
+                    self._style_error("The microphone is unavailable or not allowed for Buddy. Check System Settings > Privacy & Security > Microphone.")
                 return False
         except Exception:
             pass

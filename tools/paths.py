@@ -13,9 +13,22 @@ relative to where the actual running code lives means it works no
 matter where the folder sits.
 """
 
+import shutil
 import sys
 import os
 from pathlib import Path
+
+
+def is_packaged() -> bool:
+    """True inside a PyInstaller or Nuitka build (Nuitka never sets sys.frozen)."""
+    return bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
+
+
+def python_executable() -> str:
+    """A real Python interpreter. Packaged, sys.executable is Buddy itself."""
+    if not is_packaged():
+        return sys.executable
+    return shutil.which("python3") or shutil.which("python") or "python3"
 
 
 def app_root() -> Path:
@@ -31,7 +44,7 @@ def app_root() -> Path:
       app folder (not a temp extraction, as long as it's built
       --standalone rather than --onefile) — same walk-up logic works.
     """
-    if getattr(sys, "frozen", False):
+    if is_packaged() and getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
 

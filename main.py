@@ -1,5 +1,16 @@
 """Buddy's single cross-platform entry point."""
 import sys
+
+# A packaged app has no project folder, so also read settings from the per-user
+# data folder (e.g. ~/Library/Application Support/Buddy/.env). Loaded before the
+# other imports because several modules read environment variables on import.
+try:
+    from dotenv import load_dotenv
+    from tools.paths import data_dir
+    load_dotenv(data_dir("") / ".env")
+except Exception:
+    pass
+
 from PySide6.QtWidgets import QApplication
 
 try:

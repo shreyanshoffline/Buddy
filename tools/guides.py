@@ -31,7 +31,7 @@ def _sections(text):
 
 
 def list_guides() -> str:
-    """Lists the instruction guides available (macos, browser, web_search, google_workspace, microsoft, slack, computer_control)."""
+    """Lists the instruction guides available (capabilities, coding, macos, browser, web_search, google_workspace, microsoft, slack, computer_control)."""
     files = _files()
     if not files:
         return "No guides found."

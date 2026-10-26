@@ -1,7 +1,7 @@
 """
 core/patterns.py — lightweight local usage-pattern tracker for Buddy.
 
-Everything lives at ~/.buddy/patterns.db, on disk, on this machine only.
+Everything lives at Buddy's per-user data folder (patterns.db), on disk, on this machine only.
 Nothing here is uploaded anywhere — matches the roadmap's own rule
 ("Friend builds log spend locally; nothing uploads chats"). This is
 what lets Buddy say "you usually check email around now" instead of

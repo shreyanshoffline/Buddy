@@ -170,7 +170,8 @@ class BuddyWindow(QWidget):
     def restart_app(self):
         """Start a replacement process, then close this process cleanly."""
         self._shutdown_workers()
-        if getattr(sys, "frozen", False):
+        from tools.paths import is_packaged
+        if is_packaged():
             executable = Path(sys.executable).resolve()
             app_bundle = next(
                 (str(parent) for parent in executable.parents if parent.suffix == ".app"),

@@ -5,6 +5,7 @@ This is app-level memory: which conversations exist, what was said.
 It is NOT the same as message_history passed to the model each turn.
 """
 
+import shutil
 import sqlite3
 import os
 import sys
@@ -121,7 +122,10 @@ def _default_db_path():
     db_file = data_root / "buddy.db"
     legacy_file = app_root() / "buddy.db"
     if legacy_file.exists() and not db_file.exists():
-        legacy_file.replace(db_file)
+        try:
+            shutil.move(str(legacy_file), str(db_file))
+        except OSError:
+            pass  # read-only bundle or cross-device: start fresh rather than crash
     return str(db_file)
 
 _DB_PATH = None
@@ -922,58 +926,61 @@ def chunk_text(text, chunk_size=CHUNK_CHARS, overlap=CHUNK_OVERLAP):
 
 def save_conversation_attachments(conversation_id, message_id, files):
     """files = [{name, extension, contents, path}, ...]"""
-    conn = sqlite3.connect(get_db_path())
-    saved_ids = []
-    now = time.time()
+    # Embedding calls hit the network, so do them before opening the write
+    # transaction; holding the DB lock during a slow API call blocks other writes.
+    prepared = []
     for item in files or []:
         text = (item.get("contents") or "")[:MAX_FILE_CHARS]
-        cur = conn.execute(
-            """
-            INSERT INTO attachments
-                (conversation_id, message_id, name, extension, path, extracted_text, char_count, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                conversation_id,
-                message_id,
-                item.get("name") or "untitled",
-                item.get("extension") or "",
-                item.get("path") or "",
-                text,
-                len(text),
-                now,
-            ),
-        )
-        attachment_id = cur.lastrowid
         chunk_list = chunk_text(text)
-        chunk_embeddings = _safe_embed(chunk_list) if chunk_list else None
-        for i, chunk in enumerate(chunk_list):
-            emb = chunk_embeddings[i] if chunk_embeddings else None
-            conn.execute(
+        embeddings = _safe_embed(chunk_list) if chunk_list else None
+        prepared.append((item, text, chunk_list, embeddings))
+
+    saved_ids = []
+    now = time.time()
+    with _connect() as conn:
+        for item, text, chunk_list, embeddings in prepared:
+            cur = conn.execute(
                 """
-                INSERT INTO attachment_chunks
-                    (attachment_id, conversation_id, chunk_index, content, embedding)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO attachments
+                    (conversation_id, message_id, name, extension, path, extracted_text, char_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (attachment_id, conversation_id, i, chunk, json.dumps(emb) if emb else None),
+                (
+                    conversation_id,
+                    message_id,
+                    item.get("name") or "untitled",
+                    item.get("extension") or "",
+                    item.get("path") or "",
+                    text,
+                    len(text),
+                    now,
+                ),
             )
-        saved_ids.append(attachment_id)
-    conn.commit()
-    conn.close()
+            attachment_id = cur.lastrowid
+            for i, chunk in enumerate(chunk_list):
+                emb = embeddings[i] if embeddings else None
+                conn.execute(
+                    """
+                    INSERT INTO attachment_chunks
+                        (attachment_id, conversation_id, chunk_index, content, embedding)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (attachment_id, conversation_id, i, chunk, json.dumps(emb) if emb else None),
+                )
+            saved_ids.append(attachment_id)
     return saved_ids
 
 
 def latest_user_message_id(conversation_id):
-    conn = sqlite3.connect(get_db_path())
-    row = conn.execute(
-        """
-        SELECT id FROM messages
-        WHERE conversation_id = ? AND role = 'user'
-        ORDER BY id DESC LIMIT 1
-        """,
-        (conversation_id,),
-    ).fetchone()
-    conn.close()
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id FROM messages
+            WHERE conversation_id = ? AND role = 'user'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (conversation_id,),
+        ).fetchone()
     return row[0] if row else None
 
 
@@ -984,19 +991,17 @@ def find_relevant_chunks(conversation_id, query, limit=8):
     TF-IDF-style scorer below if embeddings are missing or the embed call
     fails — so a flaky/unavailable embeddings endpoint never breaks RAG.
     """
-    conn = sqlite3.connect(get_db_path())
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        """
-        SELECT c.id, c.attachment_id, c.chunk_index, c.content, c.embedding, a.name
-        FROM attachment_chunks c
-        JOIN attachments a ON a.id = c.attachment_id
-        WHERE c.conversation_id = ?
-        ORDER BY a.id DESC, c.chunk_index ASC
-        """,
-        (conversation_id,),
-    ).fetchall()
-    conn.close()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.id, c.attachment_id, c.chunk_index, c.content, c.embedding, a.name
+            FROM attachment_chunks c
+            JOIN attachments a ON a.id = c.attachment_id
+            WHERE c.conversation_id = ?
+            ORDER BY a.id DESC, c.chunk_index ASC
+            """,
+            (conversation_id,),
+        ).fetchall()
 
     chunks = [dict(r) for r in rows]
     if not chunks:

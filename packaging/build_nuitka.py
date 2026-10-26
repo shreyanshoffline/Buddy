@@ -2,15 +2,20 @@
 
 The release build intentionally uses ``--standalone`` instead of ``--onefile``:
 the app starts faster, updates are easier to replace, and the bundle remains a
-normal folder that users can inspect and back up. PyInstaller scripts remain
-available as the fallback path.
+normal folder that users can inspect and back up.
+
+On macOS this also merges the permission strings from ``packaging/Info.plist``
+into the bundle and re-signs it (ad-hoc unless SIGN_IDENTITY is set), because
+macOS terminates an app that touches the microphone without a usage string.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import platform
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -62,6 +67,54 @@ def _checksum(path: Path) -> None:
     )
 
 
+def make_icns(png: Path, out_dir: Path) -> Path | None:
+    """Build Buddy.icns from the PNG logo with the tools every Mac ships."""
+    try:
+        iconset = out_dir / "Buddy.iconset"
+        iconset.mkdir(parents=True, exist_ok=True)
+        for size in (16, 32, 64, 128, 256, 512):
+            for scale in (1, 2):
+                px = size * scale
+                name = f"icon_{size}x{size}{'@2x' if scale == 2 else ''}.png"
+                subprocess.run(["sips", "-z", str(px), str(px), str(png), "--out", str(iconset / name)],
+                               check=True, capture_output=True)
+        icns = out_dir / "Buddy.icns"
+        subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(icns)], check=True, capture_output=True)
+        return icns
+    except (OSError, subprocess.CalledProcessError):
+        print("==> Could not build an .icns icon; continuing without one")
+        return None
+
+
+def finish_macos_bundle(bundle: Path) -> None:
+    """Add permission strings + version to Info.plist, then re-sign the bundle."""
+    plist_path = bundle / "Contents" / "Info.plist"
+    with plist_path.open("rb") as handle:
+        info = plistlib.load(handle)
+    with (ROOT / "packaging" / "Info.plist").open("rb") as handle:
+        ours = plistlib.load(handle)
+    info.update({key: value for key, value in ours.items() if key != "CFBundleExecutable"})
+    info["CFBundleVersion"] = info["CFBundleShortVersionString"] = APP_VERSION
+    with plist_path.open("wb") as handle:
+        plistlib.dump(info, handle)
+
+    identity = os.environ.get("SIGN_IDENTITY", "-")
+    sign = ["codesign", "--force", "--deep", "--entitlements", str(ROOT / "packaging" / "Buddy.entitlements"),
+            "--sign", identity]
+    if identity != "-":
+        sign += ["--options", "runtime"]
+    run(sign + [str(bundle)])
+    run(["codesign", "--verify", "--deep", "--strict", str(bundle)])
+
+
+def make_archive(bundle: Path, archive_base: Path, macos: bool) -> Path:
+    if macos:  # ditto keeps symlinks, permissions and signatures intact
+        archive = archive_base.with_suffix(".zip")
+        run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(bundle), str(archive)])
+        return archive
+    return Path(shutil.make_archive(str(archive_base), "zip", root_dir=bundle.parent, base_dir=bundle.name))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build Buddy as a Nuitka standalone bundle.")
     parser.add_argument("--skip-tests", action="store_true", help="Skip the offline test suite.")
@@ -96,6 +149,10 @@ def main() -> int:
         "--include-package=gui",
         "--include-package=storage",
         "--include-package=tools",
+        # Packages that load data files at runtime and fail silently when missing.
+        "--include-package-data=googleapiclient",  # Google API discovery documents
+        "--include-package-data=certifi",          # HTTPS certificates for requests
+        "--include-package-data=playwright",       # browser driver for Buddy's own browser
         "--include-data-dir=" + str(ROOT / "knowledge") + "=knowledge",
         "--include-data-dir=" + str(ROOT / "gui" / "assets") + "=gui/assets",
     ]
@@ -104,13 +161,19 @@ def main() -> int:
             "--macos-create-app-bundle",
             "--macos-app-name=Buddy",
             f"--macos-app-version={APP_VERSION}",
+            "--macos-signed-app-name=com.hackclub.buddy",
         ]
+        icns = make_icns(ROOT / "gui" / "assets" / "Buddy_Logo_Beta.png", BUILD_ROOT.parent)
+        if icns:
+            command.append(f"--macos-app-icon={icns}")
     command.append(str(ROOT / "main.py"))
     run(command)
 
     bundle = _find_bundle(BUILD_ROOT, macos)
+    if macos:
+        finish_macos_bundle(bundle)
     archive_base = DIST / f"Buddy-{target_name()}-{APP_VERSION}"
-    archive = Path(shutil.make_archive(str(archive_base), "zip", root_dir=bundle.parent, base_dir=bundle.name))
+    archive = make_archive(bundle, archive_base, macos)
     _checksum(archive)
     print(f"==> Created {archive.relative_to(ROOT)}")
     print(f"==> Created {archive.with_suffix(archive.suffix + '.sha256').relative_to(ROOT)}")

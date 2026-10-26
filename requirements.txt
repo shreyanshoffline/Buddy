@@ -10,3 +10,4 @@ Flask
 stripe
 gunicorn
 playwright
+pyautogui

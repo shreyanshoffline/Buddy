@@ -12,6 +12,7 @@ import tools.tools as tools
 import tools.gmail_tools as gmail_tools
 import tools.apple_tools as apple_tools
 import tools.github_ops as github_ops
+import tools.slack_tools as slack_tools
 try:
     import tools.google_workspace_tools as google_workspace_tools
 except ImportError:
@@ -330,7 +331,7 @@ def run_image_creation_task(plan_text, source_images=None, cancel_check=None):
 
 
 TOOL_MODULES = tuple(m for m in (
-    tools, gmail_tools, apple_tools, google_workspace_tools, msgraph_tools, github_ops,
+    tools, gmail_tools, apple_tools, google_workspace_tools, msgraph_tools, github_ops, slack_tools,
     browser_control, lessons, guides, code_agent, google_extras, microsoft_extras,
 ) if m is not None)
 
