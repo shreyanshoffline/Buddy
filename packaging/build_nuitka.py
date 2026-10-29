@@ -19,6 +19,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -101,6 +102,7 @@ def make_archive(bundle: Path, archive_base: Path, macos: bool) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build Buddy as a Nuitka standalone bundle.")
     parser.add_argument("--skip-tests", action="store_true", help="Skip the offline test suite.")
+    parser.add_argument("--smoke-test", action="store_true", help="Launch the built app in isolated smoke-test mode.")
     parser.add_argument("--jobs", type=int, default=None, help="Parallel Nuitka C compiler jobs (default: Nuitka's CPU count).")
     args = parser.parse_args()
     if args.jobs is not None and args.jobs < 1:
@@ -127,6 +129,8 @@ def main() -> int:
         "--include-package=backend",
         "--include-package=core",
         "--include-package=gui",
+        # OpenRouter SDK resolves utility modules lazily by name at runtime.
+        "--include-package=openrouter",
         "--include-package=storage",
         "--include-package=tools",
         # Packages that load data files at runtime and fail silently when missing.
@@ -163,6 +167,24 @@ def main() -> int:
             bundle.rename(expected_bundle)
             bundle = expected_bundle
         finish_macos_bundle(bundle)
+    if args.smoke_test:
+        if macos:
+            executable = bundle / "Contents" / "MacOS" / "Buddy"
+        else:
+            executable = bundle / ("Buddy.exe" if platform.system() == "Windows" else "Buddy")
+        if not executable.is_file():
+            raise SystemExit(f"Smoke-test executable not found: {executable}")
+        with tempfile.TemporaryDirectory(prefix="buddy-smoke-") as data_dir:
+            env = os.environ.copy()
+            env["BUDDY_DATA_DIR"] = data_dir
+            env.setdefault("QT_QPA_PLATFORM", "offscreen")
+            subprocess.run(
+                [str(executable), "--smoke-test"],
+                cwd=ROOT,
+                env=env,
+                check=True,
+                timeout=90,
+            )
     archive_base = DIST / f"Buddy-{target_name()}-{APP_VERSION}"
     archive = make_archive(bundle, archive_base, macos)
     _checksum(archive)

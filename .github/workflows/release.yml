@@ -10,7 +10,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Ensure the release tag matches version.py
+        run: |
+          VERSION=$(python -c "from version import APP_VERSION; print(APP_VERSION)")
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match version.py (v$VERSION)."
+            exit 1
+          fi
+
   macos-arm64:
+    needs: check-version
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +38,7 @@ jobs:
       - name: Build arm64 app
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python packaging/build_nuitka.py --jobs 4
+        run: python packaging/build_nuitka.py --smoke-test --jobs 4
       - name: Stage app bundle
         run: |
           mkdir -p dist
@@ -36,6 +52,7 @@ jobs:
           if-no-files-found: error
 
   macos-x86_64:
+    needs: check-version
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
@@ -47,7 +64,7 @@ jobs:
       - name: Build x86_64 app
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python packaging/build_nuitka.py --jobs 4
+        run: python packaging/build_nuitka.py --smoke-test --jobs 4
       - name: Stage app bundle
         run: |
           mkdir -p dist
@@ -61,7 +78,7 @@ jobs:
           if-no-files-found: error
 
   macos-universal:
-    needs: [macos-arm64, macos-x86_64]
+    needs: [check-version, macos-arm64, macos-x86_64]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,6 +101,7 @@ jobs:
           python packaging/macos/merge_universal.py --arm64 artifacts/arm64/Buddy.app --x86-64 artifacts/x86_64/Buddy.app --output build/Buddy.app
           codesign --force --deep --entitlements packaging/Buddy.entitlements --sign - build/Buddy.app
           codesign --verify --deep --strict build/Buddy.app
+          BUDDY_DATA_DIR="$RUNNER_TEMP/buddy-smoke" QT_QPA_PLATFORM=offscreen build/Buddy.app/Contents/MacOS/Buddy --smoke-test
           mkdir -p dist
           python packaging/macos/make_dmg_background.py --output build/dmg_background@2x.png
           python packaging/macos/make_dmg.py --app build/Buddy.app --background build/dmg_background@2x.png --output "dist/Buddy-${BUDDY_VERSION}-macos-universal.dmg"
@@ -96,6 +114,7 @@ jobs:
           if-no-files-found: error
 
   windows:
+    needs: check-version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -109,7 +128,7 @@ jobs:
       - name: Build Windows standalone bundle
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python packaging/build_nuitka.py --jobs 4
+        run: python packaging/build_nuitka.py --smoke-test --jobs 4
       - name: Make installer and checksum
         shell: pwsh
         run: |
@@ -125,6 +144,7 @@ jobs:
           if-no-files-found: error
 
   linux:
+    needs: check-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -136,7 +156,7 @@ jobs:
       - name: Build Linux standalone bundle
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python packaging/build_nuitka.py --jobs 4
+        run: python packaging/build_nuitka.py --smoke-test --jobs 4
       - name: Build AppImage and Debian package
         run: |
           python packaging/make_icons.py --out build/icons

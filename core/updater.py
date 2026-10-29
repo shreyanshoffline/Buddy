@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import webbrowser
 import zipfile
 import shlex
 from pathlib import Path
@@ -91,10 +92,7 @@ def check_for_update() -> dict:
         result["url"] = data.get("html_url", result["url"])
         result["notes"] = (data.get("body") or "")[:500]
         assets = data.get("assets") or []
-        preferred = next(
-            (asset for asset in assets if asset.get("name", "").lower().endswith(".zip")),
-            None,
-        )
+        preferred = pick_asset(assets)
         if preferred:
             result["download_url"] = preferred.get("browser_download_url", "")
             result["asset_name"] = preferred.get("name", "")
@@ -105,6 +103,23 @@ def check_for_update() -> dict:
     except Exception as e:
         result["notes"] = f"Couldn't check for updates: {e}"
     return result
+
+
+def _platform_tag() -> str:
+    return {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux")
+
+
+def pick_asset(assets, platform_tag=None):
+    """Only the macOS ZIP supports automatic in-place updates; other platforms
+    should open the release page so users get their correct installer."""
+    tag = platform_tag or _platform_tag()
+    if tag != "macos":
+        return None
+    for asset in assets or []:
+        name = asset.get("name", "").lower()
+        if name.endswith(".zip") and "macos" in name:
+            return asset
+    return None
 
 
 def is_git_checkout() -> bool:
@@ -132,8 +147,8 @@ def update_now() -> str:
     else:
         info = check_for_update()
         if not info.get("download_url"):
-            subprocess.run(["open", info["url"]])
-            return f"No downloadable build was attached, so Buddy opened {info['url']}."
+            webbrowser.open(info["url"])
+            return f"Buddy opened {info['url']} so you can download the installer for your computer."
         try:
             archive = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
             with requests.get(info["download_url"], stream=True, timeout=30) as response:

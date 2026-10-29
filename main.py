@@ -1,4 +1,5 @@
 """Buddy's single cross-platform entry point."""
+import os
 import sys
 
 # A packaged app has no project folder, so also read settings from the per-user
@@ -20,6 +21,8 @@ except ImportError:
 
 
 def main():
+    if "--smoke-test" in sys.argv:
+        sys.exit(smoke_test())
     # The local backend is a daemon thread, so users only need this command:
     # `python3 main.py`. Account setup and billing remain optional features.
     backend = None
@@ -55,6 +58,40 @@ def main():
     except Exception:
         pass
     sys.exit(app.exec())
+
+
+def smoke_test() -> int:
+    """Construct the bundled UI, verify assets/imports, then exit cleanly for CI."""
+    import importlib
+    import time
+
+    for name in ("PySide6.QtMultimedia", "PySide6.QtSvg", "requests", "openrouter",
+                 "openrouter.utils.url", "googleapiclient", "certifi"):
+        try:
+            importlib.import_module(name)
+        except Exception as exc:
+            print(f"SMOKE FAIL: could not import {name}: {exc}", file=sys.stderr)
+            return 1
+
+    from gui.icons import BUDDY_LOGO_PATH, MEMORY_BRAIN_ICON_PATH
+    from tools.paths import app_root
+    for asset in (BUDDY_LOGO_PATH, MEMORY_BRAIN_ICON_PATH):
+        if not asset.exists():
+            print(f"SMOKE FAIL: missing asset {asset}", file=sys.stderr)
+            return 1
+    if not (app_root() / "knowledge").exists():
+        print("SMOKE FAIL: knowledge folder is missing from the bundle", file=sys.stderr)
+        return 1
+
+    app = QApplication(sys.argv[:1])
+    window = BuddyWindow()
+    window.show()  # avoid first-run modal dialogs and exercise only the bundled UI
+    for _ in range(6):
+        app.processEvents()
+        time.sleep(0.05)
+    print("SMOKE OK", flush=True)
+    # Avoid Qt teardown aborting while daemon workers are still winding down.
+    os._exit(0)
 
 
 if __name__ == "__main__":
