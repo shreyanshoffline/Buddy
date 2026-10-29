@@ -92,7 +92,8 @@ def test_tiered_build_routes_by_tier_and_isolates_context(tmp_path, monkeypatch)
     assert not heavy_tools & {"code_run", "code_test", "code_new_project", "code_setup_env"}   # heavy only writes
     first_heavy = next(c for c in fm.calls if c["tier"] == "heavy")
     assert not any(isinstance(m, dict) and m.get("role") == "tool" for m in first_heavy["history"])  # no earlier transcript carried
-    assert str(project) in first_heavy["history"][0]["content"]                    # but it knows the project folder
+    normalized_project = str(project).replace("\\", "/")
+    assert normalized_project in first_heavy["history"][0]["content"].replace("\\", "/")  # but it knows the project folder
     assert "Project folder" in out["summary"] and "python3 main.py" in out["summary"]
     assert out["plan_text"].splitlines()[1].startswith("2. [Heavy]")
     stats = out["extra_stats"]

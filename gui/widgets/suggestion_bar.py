@@ -1,6 +1,7 @@
 """Stable prompt suggestions for the new-chat screen."""
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from .chat_input import FlowLayout
@@ -66,7 +67,9 @@ class SuggestionBar(QWidget):
         for item in self._items:
             button = self._new_chip()
             button._suggestion_item = item
-            button.setText(f"{_ICONS.get(item.get('kind'), '✦')}  {item['label']}")
+            button._full_text = f"{_ICONS.get(item.get('kind'), '✦')}  {item['label']}"
+            button.setText(button._full_text)
+            button._natural_width = button.sizeHint().width()
             reason = item.get("reason") or ""
             button.setToolTip(f"{reason}\n\n{item['prompt']}" if reason else item["prompt"])
             self._buttons.append(button)
@@ -74,7 +77,27 @@ class SuggestionBar(QWidget):
         self._note.setVisible(bool(show_opt_in))
         self._opt.setVisible(bool(show_opt_in))
         self._row.invalidate()
+        self._fit_chips()
         self.updateGeometry()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_chips()
+
+    def _fit_chips(self):
+        """Keep long suggestion labels inside the available width on narrow windows."""
+        available = self.contentsRect().width()
+        if available <= 0:
+            return
+        for button in self._buttons:
+            width = min(button._natural_width, available)
+            button.setFixedWidth(width)
+            if width < button._natural_width:
+                button.setText(QFontMetrics(button.font()).elidedText(
+                    button._full_text, Qt.ElideRight, max(1, width - 36)))
+            else:
+                button.setText(button._full_text)
+        self._row.invalidate()
 
     def labels(self):
         return [f"{_ICONS.get(item.get('kind'), '✦')}  {item['label']}" for item in self._items]

@@ -161,7 +161,8 @@ class InstallerFileTests(unittest.TestCase):
     @unittest.skipUnless(__import__("shutil").which("bash"), "bash not available")
     def test_shell_scripts_parse(self):
         for script in ("make_deb.sh", "make_appimage.sh", "buddy-launcher.sh"):
-            result = subprocess.run(["bash", "-n", str(ROOT / "packaging/linux" / script)], capture_output=True, text=True)
+            result = subprocess.run(["bash", "-n", f"packaging/linux/{script}"], cwd=ROOT,
+                                    capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_deb_depends_on_qt_runtime_libs(self):
@@ -325,7 +326,7 @@ class DmgVerifyScriptTests(unittest.TestCase):
 
     @unittest.skipUnless(__import__("shutil").which("bash"), "bash not available")
     def test_script_parses(self):
-        self.assertEqual(subprocess.run(["bash", "-n", str(ROOT / "packaging/macos/verify_dmg.sh")]).returncode, 0)
+        self.assertEqual(subprocess.run(["bash", "-n", "packaging/macos/verify_dmg.sh"], cwd=ROOT).returncode, 0)
 
 
 class SmokeTestFlagTests(unittest.TestCase):
