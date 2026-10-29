@@ -113,6 +113,38 @@ class BuddyPawLoader(QWidget):
             self._draw_paw(painter, x_pos, y_pos, scale, opacity, is_right)
 
 
+class _Fold(QWidget):
+    """One collapsible row: a small arrow + title, and a body that stays hidden until clicked."""
+    def __init__(self, title, body, on_change=None):
+        super().__init__()
+        self._title = title
+        self._on_change = on_change
+        self.body = body
+        self.body.setVisible(False)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        self.btn = QPushButton()
+        self.btn.setCheckable(True)
+        self.btn.setCursor(Qt.PointingHandCursor)
+        self.btn.setStyleSheet(
+            "QPushButton { text-align: left; background: transparent; border: none; color: #666;"
+            " font-size: 11px; padding: 2px 0px; } QPushButton:hover { color: #222; }")
+        self.btn.toggled.connect(self._toggle)
+        self._sync()
+        layout.addWidget(self.btn)
+        layout.addWidget(self.body)
+
+    def _sync(self):
+        self.btn.setText(("▾ " if self.btn.isChecked() else "▸ ") + self._title)
+
+    def _toggle(self, checked):
+        self.body.setVisible(checked)
+        self._sync()
+        if self._on_change:
+            QTimer.singleShot(0, self._on_change)
+
+
 class DevChamber(QWidget):
     def __init__(self, plan_text="", tools_used=None, stats=None, tool_log=None):
         super().__init__()
@@ -120,10 +152,10 @@ class DevChamber(QWidget):
         self.layout.setContentsMargins(0, 4, 0, 0)
         self.layout.setSpacing(0)
 
-        self.toggle_btn = QPushButton("▼ Hide work log")
+        self.toggle_btn = QPushButton("▶ Show work log")
         self.toggle_btn.setCursor(Qt.PointingHandCursor)
         self.toggle_btn.setCheckable(True)
-        self.toggle_btn.setChecked(True)
+        self.toggle_btn.setChecked(False)
         self.toggle_btn.setStyleSheet(f"""
             QPushButton {{
                 text-align: left;
@@ -140,10 +172,9 @@ class DevChamber(QWidget):
         self.toggle_btn.toggled.connect(self.on_toggle)
 
         self.content_frame = QFrame()
-        # The observable plan, tool calls, results, and timings are useful
-        # after a task finishes too. Keep the full work log open by default;
-        # the user can collapse it without losing the record.
-        self.content_frame.setVisible(True)
+        # Closed by default: most people only want the result. Every plan and tool
+        # call is its own dropdown inside, so details are one click away.
+        self.content_frame.setVisible(False)
         self.content_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.content_frame.setMinimumWidth(0)
         self.content_frame.setStyleSheet("""
@@ -162,49 +193,22 @@ class DevChamber(QWidget):
         if plan_text:
             plan_doc = QTextDocument()
             plan_doc.setMarkdown(plan_text)
-            plan_label = QLabel(plan_doc.toHtml())
-            plan_label.setWordWrap(True)
-            plan_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-            plan_label.setMinimumWidth(0)
-            plan_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            plan_label.setStyleSheet("color: #555; font-size: 11px; background: transparent; border: none;")
-            content_layout.addWidget(plan_label)
+            content_layout.addWidget(_Fold("Plan", self._detail(plan_doc.toHtml(), mono=False), self._refresh_parent_layout))
 
         if tool_log:
-            # Detailed per-call breakdown: name, args, result, timing.
-            log_header = QLabel("<b>Tool Log:</b>")
-            log_header.setStyleSheet("color: #777; font-size: 10px; background: transparent; border: none;")
-            content_layout.addWidget(log_header)
-
             for i, entry in enumerate(tool_log, start=1):
+                result_text = str(entry.get("result", "") or "")
+                failed = result_text.lower().startswith(("error", "failed", "blocked", "permission_denied", "couldn"))
                 args_str = ", ".join(f"{k}={v!r}" for k, v in (entry.get("args") or {}).items())
-                call_line = f"{i}. <b>{_esc(entry.get('name', 'tool'))}</b>({_esc(args_str)}) — {_esc(entry.get('duration', '?'))}"
-                call_label = QLabel(call_line)
-                call_label.setWordWrap(True)
-                call_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-                call_label.setMinimumWidth(0)
-                call_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                call_label.setStyleSheet("color: #666; font-size: 10px; background: transparent; border: none;")
-                content_layout.addWidget(call_label)
-
-                result_text = entry.get("result", "")
+                title = f"{entry.get('name', 'tool')}  {'✗' if failed else '✓'}  {entry.get('duration', '')}"
+                detail = f"<b>Call</b>: {_esc(entry.get('name', 'tool'))}({_esc(args_str[:1500])})"
                 if result_text:
-                    result_label = QLabel(f"↳ {_esc(result_text)}")
-                    result_label.setWordWrap(True)
-                    result_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-                    result_label.setMinimumWidth(0)
-                    result_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                    result_label.setStyleSheet("color: #999; font-size: 10px; font-family: monospace; background: transparent; border: none; padding-left: 8px;")
-                    content_layout.addWidget(result_label)
+                    clipped = result_text if len(result_text) <= 2500 else result_text[:2500] + " …"
+                    detail += f"<br><b>Result</b>: {_esc(clipped)}"
+                content_layout.addWidget(_Fold(title, self._detail(detail), self._refresh_parent_layout))
         elif tools_used:
             # Fallback for older saved messages that only have the flat name list.
-            tools_str = f"<b>Tools Executed:</b> {', '.join(tools_used)}"
-            tools_label = QLabel(tools_str)
-            tools_label.setWordWrap(True)
-            tools_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-            tools_label.setMinimumWidth(0)
-            tools_label.setStyleSheet("color: #999; font-size: 10px; font-style: italic; background: transparent; border: none;")
-            content_layout.addWidget(tools_label)
+            content_layout.addWidget(_Fold("Tools used", self._detail(_esc(", ".join(tools_used))), self._refresh_parent_layout))
 
         if stats:
             stats_str = " • ".join([f"{k}: {v}" for k, v in stats.items()])
@@ -218,6 +222,17 @@ class DevChamber(QWidget):
 
         self.layout.addWidget(self.toggle_btn)
         self.layout.addWidget(self.content_frame)
+
+    @staticmethod
+    def _detail(html_text, mono=True):
+        label = QLabel(html_text)
+        label.setWordWrap(True)
+        label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        label.setMinimumWidth(0)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        family = " font-family: monospace;" if mono else ""
+        label.setStyleSheet(f"color: #777; font-size: 10px;{family} background: transparent; border: none; padding-left: 14px;")
+        return label
 
     def on_toggle(self, checked):
         self.toggle_btn.setText("▼ Hide work log" if checked else "▶ Show work log")

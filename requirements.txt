@@ -1,4 +1,5 @@
-PySide6
+# Qt 6.12 wheels require macOS 14; keep the declared macOS 13 support.
+PySide6>=6.7,<6.12
 pypdf
 python-dotenv
 msal

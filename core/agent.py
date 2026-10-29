@@ -44,6 +44,7 @@ from core.call_format import format_call, format_result
 from core.tiers import CostTracker, TIER_ORDER, looks_like_long_form, parse_tiered_plan, tier_model
 from core.model_config import image_model, load_model_config
 from core.plugins import active_tools_schema, blocked_reason
+from core import budget, report
 
 GREETER_MODEL = "anthropic/claude-haiku-5.5"
 MANAGER_MODEL = "anthropic/claude-haiku-5.5"
@@ -367,7 +368,8 @@ def execute_tool(tool_name, tool_args):
     return f"Error: Tool '{tool_name}' not found."
  
  
-def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadline=None, max_steps=None, max_tokens=None):
+def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadline=None, max_steps=None, max_tokens=None,
+               user_input=None, token_budget=None):
     action_history = [
         {"role": "system", "content": build_action_instruction(db.get_profile())},
         {"role": "user", "content": f"Execute this plan:\n{plan_text}"}
@@ -375,8 +377,13 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
     step_count = 0
     step_limit = max_steps or MAX_WORKER_STEPS
     token_limit = max_tokens or WORKER_MAX_TOKENS
-    schema = active_tools_schema()
- 
+    # Only offer the tools this request needs (~1k tokens instead of ~16k). The worker can
+    # pull in more with find_tools; execute_tool still knows every tool.
+    full_schema = active_tools_schema()
+    schema = budget.with_find_tools(budget.select_tools(full_schema, user_input or "", plan_text))
+    token_budget = budget.TURN_TOKEN_CAP if token_budget is None else token_budget
+    readouts = []  # (tool_name, readable text) for read-only tools, shown in the final reply
+
     # Track stats for the Dev Chamber
     stats = {"tools": [], "tool_log": [], "tokens_in": 0, "tokens_out": 0, "requests": 0}
  
@@ -386,6 +393,18 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
         if deadline and time.time() > deadline:
             return {"status": "timeout", "message": "This is taking longer than expected, so I stopped. Want me to try again?", "step_count": step_count, **stats}
         step_count += 1
+        budget.shrink_old_results(action_history)
+        if not budget.fits_budget(action_history, schema, stats["tokens_in"], token_budget):
+            last = stats["tool_log"][-1]["result"] if stats["tool_log"] else "nothing yet"
+            return {
+                "status": "incomplete",
+                "message": (
+                    "I stopped to stay inside this task's token budget (%d tokens).\n\n"
+                    "Last result: %s\n\nAsk me to continue, or give me a smaller request."
+                    % (budget.TURN_TOKEN_CAP, budget.trim_result(last, 300))
+                ),
+                "step_count": step_count, **stats,
+            }
         try:
             action_response = run_action_step(worker_model, action_history, token_limit, schema, cancel_check=cancel_check)
         except BuddyCancelled:
@@ -413,11 +432,11 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
             else:
                 message = _strip_protocol_labels(message_text(action_msg))
                 if message:
-                    return {"status": "success", "summary": message, "step_count": step_count, **stats}
+                    return {"status": "success", "summary": report.compose(message, readouts), "step_count": step_count, **stats}
                 attempted = ", ".join(stats["tools"]) or "the requested tools"
                 return {
                     "status": "success",
-                    "summary": "Completed the requested work using %s." % attempted,
+                    "summary": report.compose("Completed the requested work using %s." % attempted, readouts),
                     "step_count": step_count,
                     **stats,
                 }
@@ -428,11 +447,23 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
             tool_name = tool_call.function.name
             tool_args = json.loads(tool_call.function.arguments)
  
+            if tool_name == "find_tools":
+                have = {t["function"]["name"] for t in schema}
+                found = [t for t in budget.select_tools(full_schema, tool_args.get("query", ""),
+                                                        limit=budget.FIND_TOOLS_LIMIT, always=())
+                         if t["function"]["name"] not in have]
+                schema = schema + found
+                note = ("Loaded tools: " + ", ".join(t["function"]["name"] for t in found)) if found else \
+                       "No new matching tools. If you cannot proceed, call finish_task and say what is missing."
+                action_history.append({"role": "tool", "tool_call_id": tool_call.id, "content": note})
+                continue
+
             # Record tool for the UI
             stats["tools"].append(tool_name)
  
             if tool_name == "finish_task" or tool_name.endswith("finish_task"):
                 summary = _strip_protocol_labels(tool_args.get("summary", "Task successfully completed."))
+                summary = report.compose(summary, readouts)  # never a bare "Task completed" after a read
                 result = {"status": "success", "summary": summary, "step_count": step_count, **stats}
                 if generated_images:
                     result["images"] = generated_images
@@ -478,10 +509,13 @@ def run_worker(plan_text, worker_model, on_event=None, cancel_check=None, deadli
                     **stats,
                 }
 
+            shown = report.format_for_user(tool_name.split(".")[-1], result)
+            if shown:
+                readouts.append((tool_name, shown))
             action_history.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
-                "content": result_str
+                "content": budget.trim_result(result_str)  # full text stays in the work log
             })
  
     attempted = ", ".join(stats["tools"]) or "no tools"
@@ -509,6 +543,16 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
     try:
         from core.conversations import refresh_history_profile
         refresh_history_profile(message_history)
+    except Exception:
+        pass
+
+    # Long chat? Summarize the old part once (cached per conversation) instead of resending it.
+    try:
+        compacted, compact_note = budget.compact_history(message_history, conversation_id=None if incognito else conversation_id)
+        if compact_note:
+            message_history[:] = compacted
+            if on_event:
+                on_event({"type": "status", "text": compact_note})
     except Exception:
         pass
 
@@ -618,6 +662,14 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
         except Exception:
             pass
 
+    try:
+        tools_hint = budget.tools_note(budget.select_tools(active_tools_schema(), user_input))
+        if tools_hint:
+            message_history.append({"role": "system", "content": tools_hint})
+    except Exception:
+        pass
+
+    last_complaint = None
     attempt = 0
     while attempt <= MAX_PLAN_RETRIES:
         attempt += 1
@@ -668,9 +720,13 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
             if on_event:
                 on_event({"type": "malformed_retry"})
             if route == "invalid" and attempt <= MAX_PLAN_RETRIES:
+                message_history.append({"role": "system", "content": "Your last reply had no PLAN: or RESPONSE: label. Reply again, starting with exactly one of them."})
                 continue
             if route == "invalid":
-                reply = "I couldn't turn that request into an executable plan."
+                reply = (
+                    ("I ran into a problem: %s" % last_complaint) if last_complaint
+                    else _strip_protocol_labels(content) or "I couldn't turn that request into an executable plan."
+                )
                 message_history.append({"role": "assistant", "content": reply})
                 return format_response(reply, metrics, start_time)
         else:
@@ -709,6 +765,8 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
                 deadline=deadline,
                 max_steps=cfg["max_steps"],
                 max_tokens=cfg["max_tokens"],
+                user_input=user_input,
+                token_budget=max(4000, budget.TURN_TOKEN_CAP - metrics["tokens_in"]),
             )
         )
  
@@ -749,13 +807,15 @@ def process_message(user_input, message_history, on_event=None, file_context=Non
  
         else:  # rejected
             complaint = outcome["complaint"]
+            last_complaint = complaint
             if attempt <= MAX_PLAN_RETRIES:
                 if on_event:
                     on_event({"type": "refining"})
                 refinement_prompt = (
                     f"Your previous plan was rejected by the execution agent with this message: "
                     f"'{complaint}'. The original request was: '{user_input}'. "
-                    "Write a corrected Plan or Response from scratch — do not repeat the old plan."
+                    "Write a corrected Plan or Response from scratch — do not repeat the old plan. "
+                    "Name an exact tool from the relevant-tools list in every step; never plan osascript or terminal commands for native apps."
                 )
                 message_history.append({"role": "user", "content": refinement_prompt})
             else:
@@ -796,7 +856,7 @@ def _run_tiered_plan(steps, user_input, on_event, cancel_check, deadline, metric
     deadline = time.time() + TIERED_PLAN_TIMEOUT_SECONDS  # staged jobs legitimately outlast the quick-action deadline
     result = run_steps(
         steps, goal=user_input, step_fn=_step_fn(cancel_check), execute=execute_tool,
-        schema=active_tools_schema(), models=models, tracker=tracker, kind="general",
+        schema=budget.select_tools(active_tools_schema(), user_input, limit=24), models=models, tracker=tracker, kind="general",
         user_name=(profile.get("name") or "").strip() or "the user",
         on_event=on_event, cancel_check=cancel_check, deadline=deadline,
     )

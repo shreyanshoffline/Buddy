@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Buddy
+Comment=Local-first desktop AI assistant
+Exec=buddy
+Icon=buddy
+Terminal=false
+Categories=Utility;Office;
+StartupWMClass=Buddy

@@ -164,11 +164,22 @@ def notes_append(title_query: str, text: str) -> str:
     return f'Appended to note "{title_query}".'
 
 
+def _notes_html(title: str, body: str) -> str:
+    """Notes stores HTML and uses the first line as the note's title."""
+    import html
+    out = f"<h1>{html.escape(title)}</h1>"
+    if body:
+        out += "<div>" + "<br>".join(html.escape(line) for line in body.split("\n")) + "</div>"
+    return out
+
+
 def notes_create(title: str, body: str = "", folder: str = None) -> str:
-    folder_clause = f'folder "{_escape(folder)}"' if folder else "default folder"
+    # No "at default folder": that is not valid AppleScript on iCloud/Gmail accounts
+    # (error -1728). Omitting "at" lets Notes use the default account's default folder.
+    target = f'at (first folder whose name is "{_escape(folder)}") ' if folder else ""
     script = f'''
     tell application "Notes"
-        make new note at {folder_clause} with properties {{name:"{_escape(title)}", body:"{_escape(body)}"}}
+        make new note {target}with properties {{body:"{_escape(_notes_html(title, body))}"}}
     end tell
     '''
     out = _run_applescript(script)
@@ -204,23 +215,54 @@ def apple_calendar_today(calendar_name: str = None) -> str:
     return out if out else "Nothing on the calendar today."
 
 
-def apple_calendar_create_event(title: str, start_iso: str, end_iso: str,
-                           calendar_name: str = None, location: str = None) -> str:
-    cal_clause = f'calendar "{_escape(calendar_name)}"' if calendar_name else "calendar 1"
-    start_dt = datetime.fromisoformat(start_iso)
-    end_dt = datetime.fromisoformat(end_iso)
+def _date_block(var: str, dt: datetime) -> str:
+    """Build an AppleScript date from numbers. Parsing a date STRING breaks on non-US locales."""
+    return (f"set {var} to current date\n"
+            f"set day of {var} to 1\n"
+            f"set year of {var} to {dt.year}\n"
+            f"set month of {var} to {dt.month}\n"
+            f"set day of {var} to {dt.day}\n"
+            f"set hours of {var} to {dt.hour}\n"
+            f"set minutes of {var} to {dt.minute}\n"
+            f"set seconds of {var} to 0\n")
+
+
+def apple_calendar_create_event(title: str, start_iso: str, end_iso: str = None,
+                                calendar_name: str = None, location: str = None) -> str:
+    try:
+        start_dt = datetime.fromisoformat(str(start_iso).strip().replace("Z", "")).replace(tzinfo=None)
+        end_dt = (datetime.fromisoformat(str(end_iso).strip().replace("Z", "")).replace(tzinfo=None)
+                  if end_iso else start_dt + timedelta(hours=1))
+    except ValueError:
+        return "ERROR: start_iso and end_iso must look like 2026-11-14T07:00:00"
+    if end_dt <= start_dt:
+        return "ERROR: the event must end after it starts."
     loc_prop = f', location:"{_escape(location)}"' if location else ""
+    pick = ""
+    if calendar_name:
+        pick = f'''
+        try
+            set targetCal to calendar "{_escape(calendar_name)}"
+        end try'''
     script = f'''
     tell application "Calendar"
-        tell {cal_clause}
-            make new event with properties {{summary:"{_escape(title)}", start date:(date "{start_dt.strftime('%B %d, %Y %I:%M:%S %p')}"), end date:(date "{end_dt.strftime('%B %d, %Y %I:%M:%S %p')}"){loc_prop}}}
+        {_date_block("startDate", start_dt)}
+        {_date_block("endDate", end_dt)}
+        set targetCal to missing value{pick}
+        if targetCal is missing value then
+            set targetCal to first calendar whose writable is true
+        end if
+        tell targetCal
+            make new event with properties {{summary:"{_escape(title)}", start date:startDate, end date:endDate{loc_prop}}}
         end tell
+        return name of targetCal
     end tell
     '''
     out = _run_applescript(script)
     if _is_permission_error(out):
         return out
-    return f'Created "{title}" from {start_dt.strftime("%-I:%M %p")} to {end_dt.strftime("%-I:%M %p")}.'
+    when = f"{start_dt.strftime('%a %b %-d')}, {start_dt.strftime('%-I:%M %p')} to {end_dt.strftime('%-I:%M %p')}"
+    return f'Created "{title}" on {when}' + (f' in calendar "{out}".' if out else ".")
 
 
 def apple_calendar_move_event(title: str, hours_delta: float, calendar_name: str = None) -> str:

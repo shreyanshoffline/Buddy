@@ -18,6 +18,7 @@ per-user data directory when OAuth completes.
 
 import os
 import re
+import time
 import base64
 import json
 import sqlite3
@@ -51,7 +52,10 @@ try:
     import pyautogui
     pyautogui.FAILSAFE = True
     HAS_PYAUTOGUI = True
-except ImportError:
+except Exception:
+    # PyAutoGUI can raise platform/display errors (for example KeyError when
+    # DISPLAY is unset on Linux) during import, even when installed.
+    pyautogui = None
     HAS_PYAUTOGUI = False
 
 try:
@@ -820,6 +824,11 @@ def run_terminal_command(command: str, timeout: int = 30) -> str:
     Executes a raw bash command and returns stdout + stderr.
     Dangerous-looking commands require user confirmation first.
     """
+    if re.search(r"osascript[\s\S]*\b(Notes|Calendar|Reminders|Messages|Mail)\b", command, re.I):
+        return ("BLOCKED: do not script Notes, Calendar, Reminders, Messages or Mail with osascript. "
+                "Use the dedicated tools: notes_create/notes_find/notes_append, apple_calendar_create_event/"
+                "apple_calendar_today/apple_calendar_move_event, reminders_add/reminders_list, "
+                "send_imessage/get_unread_messages, mail_create_draft. If they are not loaded, call find_tools.")
     if _is_dangerous_command(command):
         if not _confirm(
             "⚠️ Potentially Dangerous Command",
@@ -1323,10 +1332,10 @@ def send_imessage(recipient: str, message: str) -> Dict:
     }
 
 
-def get_unread_messages(limit: int = 20) -> List[Dict]:
+def get_unread_messages(limit: int = 20, days: int = 14) -> List[Dict]:
     """
-    Reads unread incoming iMessages/SMS from the local Messages database.
-    Requires Full Disk Access for the terminal/Python process.
+    Reads unread incoming iMessages/SMS from the local Messages database (last `days` days,
+    no tapbacks). Requires Full Disk Access for the terminal/Python process.
     """
     db_path = os.path.expanduser("~/Library/Messages/chat.db")
     if not os.path.exists(db_path):
@@ -1348,10 +1357,13 @@ def get_unread_messages(limit: int = 20) -> List[Dict]:
         JOIN chat ON chat_message_join.chat_id = chat.ROWID
         LEFT JOIN handle ON message.handle_id = handle.ROWID
         WHERE message.is_from_me = 0 AND message.is_read = 0
+          AND message.item_type = 0 AND message.associated_message_type = 0
+          AND message.date > ?
         ORDER BY message.date DESC
         LIMIT ?
         """
-        rows = conn.execute(query, (limit,)).fetchall()
+        cutoff = int((time.time() - days * 86400 - 978307200) * 1_000_000_000)
+        rows = conn.execute(query, (cutoff, limit)).fetchall()
         conn.close()
         epoch = datetime(2001, 1, 1)
         results = []
@@ -1370,13 +1382,31 @@ def get_unread_messages(limit: int = 20) -> List[Dict]:
 
 
 def _message_text_from_attributed_body(value):
-    """Recover readable text from modern macOS Messages attributed bodies."""
+    """Recover readable text from modern macOS Messages attributed bodies.
+
+    On current macOS the `text` column is often NULL and the body lives in a typedstream
+    blob: ... NSString <5 header bytes> <length> <utf-8 text>."""
     if not value:
         return ""
     if isinstance(value, str):
         return value
+    raw = bytes(value)
     try:
-        raw = bytes(value)
+        parts = raw.split(b"NSString")
+        if len(parts) > 1:
+            chunk = parts[1][5:]
+            if chunk:
+                if chunk[0] == 0x81:
+                    size = int.from_bytes(chunk[1:3], "little")
+                    chunk = chunk[3:3 + size]
+                else:
+                    size = chunk[0]
+                    chunk = chunk[1:1 + size]
+                text = chunk.decode("utf-8", "replace").replace("\ufffc", "").strip()
+                return text or "[attachment]"
+    except Exception:
+        pass
+    try:  # last resort: longest readable run
         candidates = re.findall(rb"[\x20-\x7e]{2,}", raw)
         ignored = {b"NSString", b"NSDictionary", b"NSAttributedString"}
         readable = [item.decode("utf-8", "ignore") for item in candidates if item not in ignored]
@@ -1459,44 +1489,19 @@ def create_reminder(title: str, body: str = "", list_name: str = "Reminders") ->
 
 def create_note(title: str, body: str = "") -> str:
     """Creates a new note in the Notes app."""
-    # body can contain basic HTML-ish, but plain is safer
-    script = f'''
-    tell application "Notes"
-        make new note at folder "Notes" with properties {{name:"{_escape_applescript(title)}", body:"{_escape_applescript(body)}"}}
-    end tell
-    '''
-    result = _run_applescript(script)
-    return f"Note created: {title}" if result.returncode == 0 else f"Failed: {result.stderr.strip()}"
+    from tools import apple_tools
+    return apple_tools.notes_create(title, body)
 
 
-def create_calendar_event(title: str, start_datetime: str, end_datetime: str = None, calendar_name: str = "Home") -> str:
-    """
-    Creates a basic calendar event.
-    start_datetime / end_datetime format: "YYYY-MM-DD HH:MM" (local time).
-    If end is omitted, defaults to +1 hour.
-    """
+def create_calendar_event(title: str, start_datetime: str, end_datetime: str = None, calendar_name: str = None) -> str:
+    """Creates a calendar event. Times: "YYYY-MM-DD HH:MM" (local). End defaults to +1 hour."""
+    from tools import apple_tools
     try:
-        start = datetime.strptime(start_datetime, "%Y-%m-%d %H:%M")
-        if end_datetime:
-            end = datetime.strptime(end_datetime, "%Y-%m-%d %H:%M")
-        else:
-            end = start + timedelta(hours=1)
+        start = datetime.fromisoformat(start_datetime.strip().replace(" ", "T"))
+        end = datetime.fromisoformat(end_datetime.strip().replace(" ", "T")) if end_datetime else start + timedelta(hours=1)
     except ValueError:
         return "Invalid datetime format. Use YYYY-MM-DD HH:MM"
-    # AppleScript date construction is verbose; use a simpler approach via shell + Calendar URL or AppleScript
-    start_str = start.strftime("%A, %B %d, %Y at %I:%M %p")
-    end_str = end.strftime("%A, %B %d, %Y at %I:%M %p")
-    script = f'''
-    set startDate to date "{start_str}"
-    set endDate to date "{end_str}"
-    tell application "Calendar"
-        tell calendar "{_escape_applescript(calendar_name)}"
-            make new event with properties {{summary:"{_escape_applescript(title)}", start date:startDate, end date:endDate}}
-        end tell
-    end tell
-    '''
-    result = _run_applescript(script, timeout=15)
-    return f"Event created: {title}" if result.returncode == 0 else f"Failed (check calendar name & date parsing): {result.stderr.strip()}"
+    return apple_tools.apple_calendar_create_event(title, start.isoformat(), end.isoformat(), calendar_name)
 
 
 # =============================================================================
@@ -1506,7 +1511,7 @@ def create_calendar_event(title: str, start_datetime: str, end_datetime: str = N
 def type_text(text: str, interval: float = 0.02) -> str:
     """Types the given text using simulated keyboard (pyautogui)."""
     if not HAS_PYAUTOGUI:
-        return "pyautogui not installed. Use manage_package to install it."
+        return "Desktop automation is unavailable in this environment (PyAutoGUI could not initialize)."
     try:
         pyautogui.write(text, interval=interval)
         return f"Typed {len(text)} characters."
@@ -1520,7 +1525,7 @@ def press_hotkey(*keys: str) -> str:
     Common keys: command, option, control, shift, enter, tab, escape, up, down...
     """
     if not HAS_PYAUTOGUI:
-        return "pyautogui not installed."
+        return "Desktop automation is unavailable in this environment (PyAutoGUI could not initialize)."
     try:
         pyautogui.hotkey(*keys)
         return f"Pressed hotkey: {'+'.join(keys)}"
@@ -1531,7 +1536,7 @@ def press_hotkey(*keys: str) -> str:
 def mouse_click(x: int = None, y: int = None, button: str = "left", clicks: int = 1) -> str:
     """Clicks the mouse at (x,y) or current position. Coordinates are absolute screen pixels."""
     if not HAS_PYAUTOGUI:
-        return "pyautogui not installed."
+        return "Desktop automation is unavailable in this environment (PyAutoGUI could not initialize)."
     try:
         if x is not None and y is not None:
             pyautogui.click(x, y, button=button, clicks=clicks)
@@ -1546,7 +1551,7 @@ def mouse_click(x: int = None, y: int = None, button: str = "left", clicks: int 
 def mouse_move(x: int, y: int, duration: float = 0.3) -> str:
     """Moves the mouse cursor to absolute screen coordinates."""
     if not HAS_PYAUTOGUI:
-        return "pyautogui not installed."
+        return "Desktop automation is unavailable in this environment (PyAutoGUI could not initialize)."
     try:
         pyautogui.moveTo(x, y, duration=duration)
         return f"Moved mouse to ({x},{y})"
@@ -1557,7 +1562,7 @@ def mouse_move(x: int, y: int, duration: float = 0.3) -> str:
 def get_mouse_position() -> Dict[str, int]:
     """Returns current mouse (x, y) coordinates."""
     if not HAS_PYAUTOGUI:
-        return {"error": "pyautogui not installed"}
+        return {"error": "Desktop automation is unavailable in this environment (PyAutoGUI could not initialize)."}
     pos = pyautogui.position()
     return {"x": pos.x, "y": pos.y}
 

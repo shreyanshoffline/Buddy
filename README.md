@@ -23,7 +23,7 @@ Buddy is designed to be useful without hiding what happened. When a tool works, 
 
 ## Current State
 
-Buddy is an active cross-platform beta at version `0.9.7`.
+Buddy is an active cross-platform beta at version `0.9.8`.
 
 Implemented and tested:
 
@@ -49,10 +49,10 @@ The shared app, chat pipeline, browser tools, files, web actions, provider clien
 
 | Platform | Build | Native capabilities |
 | --- | --- | --- |
-| macOS 13+ | `python3 packaging/build_nuitka.py` | Full Apple app automation and macOS permissions |
-| Windows 10+ | `python packaging/build_nuitka.py` | Desktop, browser, files, web, Microsoft, Google, Slack, and GitHub workflows |
-| Linux | `python packaging/build_nuitka.py` | Desktop, browser, files, web, Microsoft, Google, Slack, and GitHub workflows |
-| ChromeOS | Linux environment build | Same Linux capabilities when Linux apps are enabled |
+| macOS 13+ | Universal `.dmg` and `.zip` from GitHub Releases | Full Apple app automation and macOS permissions |
+| Windows 10+ | x64 `.exe` installer from GitHub Releases | Desktop, browser, files, web, Microsoft, Google, Slack, and GitHub workflows |
+| Linux | x86_64 `.AppImage` or `.deb` from GitHub Releases | Desktop, browser, files, web, Microsoft, Google, Slack, and GitHub workflows |
+| ChromeOS | Install the x86_64 Linux `.deb` in the Linux environment | Same Linux capabilities on supported x86_64 Chromebooks |
 
 Apple-only tools are disabled with a clear explanation on other systems. Buddy does not pretend that AppleScript features exist on Windows or Linux.
 

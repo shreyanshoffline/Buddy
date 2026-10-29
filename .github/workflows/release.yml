@@ -10,18 +10,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            target: macos
-          - os: windows-latest
-            target: windows
-          - os: ubuntu-latest
-            target: linux
-    runs-on: ${{ matrix.os }}
+  macos-arm64:
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,20 +19,142 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt -r packaging/requirements-build.txt
-      - name: Build Nuitka standalone bundle
+      - name: Build arm64 app
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python packaging/build_nuitka.py
-      - name: Upload build
-        uses: actions/upload-artifact@v4
+        run: python packaging/build_nuitka.py --jobs 4
+      - name: Stage app bundle
+        run: |
+          mkdir -p dist
+          APP=build/nuitka/Buddy.app
+          if [ ! -d "$APP" ]; then APP=build/nuitka/main.app; fi
+          ditto "$APP" dist/Buddy.app
+      - uses: actions/upload-artifact@v4
         with:
-          name: buddy-${{ matrix.target }}
-          path: |
-            dist/*.zip
-            dist/*.sha256
+          name: buddy-macos-arm64
+          path: dist/Buddy.app
+          if-no-files-found: error
+
+  macos-x86_64:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+      - name: Build x86_64 app
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python packaging/build_nuitka.py --jobs 4
+      - name: Stage app bundle
+        run: |
+          mkdir -p dist
+          APP=build/nuitka/Buddy.app
+          if [ ! -d "$APP" ]; then APP=build/nuitka/main.app; fi
+          ditto "$APP" dist/Buddy.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: buddy-macos-x86_64
+          path: dist/Buddy.app
+          if-no-files-found: error
+
+  macos-universal:
+    needs: [macos-arm64, macos-x86_64]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install image dependency
+        run: python -m pip install Pillow
+      - uses: actions/download-artifact@v4
+        with:
+          name: buddy-macos-arm64
+          path: artifacts/arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: buddy-macos-x86_64
+          path: artifacts/x86_64
+      - name: Merge universal app and make DMG
+        run: |
+          BUDDY_VERSION=$(python -c "from version import APP_VERSION; print(APP_VERSION)")
+          python packaging/macos/merge_universal.py --arm64 artifacts/arm64/Buddy.app --x86-64 artifacts/x86_64/Buddy.app --output build/Buddy.app
+          codesign --force --deep --entitlements packaging/Buddy.entitlements --sign - build/Buddy.app
+          codesign --verify --deep --strict build/Buddy.app
+          mkdir -p dist
+          python packaging/macos/make_dmg_background.py --output build/dmg_background@2x.png
+          python packaging/macos/make_dmg.py --app build/Buddy.app --background build/dmg_background@2x.png --output "dist/Buddy-${BUDDY_VERSION}-macos-universal.dmg"
+          ditto -c -k --sequesterRsrc --keepParent build/Buddy.app "dist/Buddy-${BUDDY_VERSION}-macos-universal.zip"
+          python packaging/write_checksums.py dist/Buddy-${BUDDY_VERSION}-macos-universal.dmg dist/Buddy-${BUDDY_VERSION}-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: buddy-macos-universal
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip; python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+      - name: Build Windows standalone bundle
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python packaging/build_nuitka.py --jobs 4
+      - name: Make installer and checksum
+        shell: pwsh
+        run: |
+          python packaging/make_icons.py --out build/icons
+          if (-not (Test-Path build/nuitka/Buddy.dist) -and (Test-Path build/nuitka/main.dist)) { Move-Item build/nuitka/main.dist build/nuitka/Buddy.dist }
+          $version = python -c "from version import APP_VERSION; print(APP_VERSION)"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" packaging/windows/Buddy.iss
+          python packaging/write_checksums.py "dist/Buddy-Setup-$version-x64.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: buddy-windows-x64
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+      - name: Build Linux standalone bundle
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python packaging/build_nuitka.py --jobs 4
+      - name: Build AppImage and Debian package
+        run: |
+          python packaging/make_icons.py --out build/icons
+          if [ ! -d build/nuitka/Buddy.dist ]; then mv build/nuitka/main.dist build/nuitka/Buddy.dist; fi
+          VERSION=$(python -c "from version import APP_VERSION; print(APP_VERSION)")
+          curl -fsSL -o /tmp/appimagetool "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x /tmp/appimagetool
+          APPIMAGE_EXTRACT_AND_RUN=1 python packaging/linux/package_linux.py --bundle build/nuitka/Buddy.dist --icons build/icons --version "$VERSION" --appimagetool /tmp/appimagetool
+          python packaging/write_checksums.py dist/Buddy-"$VERSION"-linux-*.AppImage dist/Buddy-"$VERSION"-linux-*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: buddy-linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [macos-universal, windows, linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -52,6 +164,10 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: |
+            dist/*.dmg
             dist/*.zip
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.deb
             dist/*.sha256
           generate_release_notes: true

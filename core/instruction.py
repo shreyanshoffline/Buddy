@@ -148,6 +148,7 @@ MESSAGES (iMESSAGE):
 - get_unread_messages(limit): reads unread incoming messages (read-only), including group chats,
   with sender and chat name attached.
 - When get_unread_messages returns message objects, report their `text` values directly. Do not say you cannot read message content unless the tool returned an explicit error or an explicit unavailable-text marker.
+- get_unread_messages only looks at the last 14 days. If it returns the unavailable-text marker, the database opened fine (so Full Disk Access is NOT the problem); say that specific messages could not be decoded. Only mention Full Disk Access if the tool returned an explicit error.
 - NEVER construct or generate raw AppleScript for messaging — always use these tools.
 - For group chats: call list_group_chats first to find the correct chat_id (many groups
   have no custom display name, so match by chat_id when display_name is missing).
@@ -160,8 +161,13 @@ Avoid using direct AppleScript execution for iMessages, as this can lead to erro
 
 TEXT EDITING / TYPING (non-email):
 - Prefer the high-level tools: set_clipboard + type_text / press_hotkey, or write_file_content / append_to_file.
-- For native apps that have no dedicated tool (Calendar, Notes, Finder extras, etc.) you may still plan an osascript via run_terminal_command.
-- Messaging and email remain strict exceptions — always use the dedicated tools.
+- NEVER write AppleScript or osascript, and never use run_terminal_command, for Notes, Calendar, Reminders, Messages, or Mail. These apps have dedicated tools; name the exact tool in each plan step:
+  Notes: notes_create(title, body), notes_find(title_query), notes_append(title_query, text)
+  Calendar: apple_calendar_create_event(title, start_iso, end_iso), apple_calendar_today(), apple_calendar_move_event(title, hours_delta)
+  Reminders: reminders_add, reminders_list, reminders_complete
+  iMessage: the tools in the MESSAGES section
+- Calendar needs a full date and time. start_iso/end_iso look like 2026-11-14T07:00:00. Use today's date (see CURRENT DATE) to resolve "tomorrow", "the 14th", or a month with no year. If a request covers several days or events, plan one step per event.
+- If a task has no dedicated tool, say so honestly. Do not improvise AppleScript.
 
 
 WEB SEARCH:
@@ -355,6 +361,12 @@ def _build_location_section(profile):
     )
 
 
+def _current_date_line():
+    from datetime import datetime
+    now = datetime.now().astimezone()
+    return "CURRENT DATE: %s (local time, %s)\n" % (now.strftime("%A, %B %d, %Y %I:%M %p"), now.strftime("%Z") or "local")
+
+
 def build_manager_instruction(profile=None):
     """Builds the Manager system prompt personalized to the current user.
     profile: dict from core.get_profile() (or {} for a fresh install with
@@ -386,7 +398,7 @@ def build_manager_instruction(profile=None):
     text = text.replace("__USER_NAME__", user_label)
     text = text.replace("__user_name__", user_label if not name else user_label.lower())
     text = text.replace("__PLATFORM_CONTEXT__", platform_context)
-    return text
+    return text + "\n" + _current_date_line()
 
 
 def build_action_instruction(profile=None):
@@ -398,7 +410,7 @@ def build_action_instruction(profile=None):
     from tools.platform_support import capability_summary
     platform_info = capability_summary()
     platform_context = "- Current platform: %s. %s\n" % (platform_info["platform"], platform_info["notes"])
-    return _ACTION_TEMPLATE.replace("Environment Context:\n", "Environment Context:\n" + platform_context + location)
+    return _ACTION_TEMPLATE.replace("Environment Context:\n", "Environment Context:\n" + _current_date_line() + platform_context + location)
 
 
 # Generic (no-profile) defaults — kept for anything that imports these names

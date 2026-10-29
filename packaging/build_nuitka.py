@@ -67,25 +67,6 @@ def _checksum(path: Path) -> None:
     )
 
 
-def make_icns(png: Path, out_dir: Path) -> Path | None:
-    """Build Buddy.icns from the PNG logo with the tools every Mac ships."""
-    try:
-        iconset = out_dir / "Buddy.iconset"
-        iconset.mkdir(parents=True, exist_ok=True)
-        for size in (16, 32, 64, 128, 256, 512):
-            for scale in (1, 2):
-                px = size * scale
-                name = f"icon_{size}x{size}{'@2x' if scale == 2 else ''}.png"
-                subprocess.run(["sips", "-z", str(px), str(px), str(png), "--out", str(iconset / name)],
-                               check=True, capture_output=True)
-        icns = out_dir / "Buddy.icns"
-        subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(icns)], check=True, capture_output=True)
-        return icns
-    except (OSError, subprocess.CalledProcessError):
-        print("==> Could not build an .icns icon; continuing without one")
-        return None
-
-
 def finish_macos_bundle(bundle: Path) -> None:
     """Add permission strings + version to Info.plist, then re-sign the bundle."""
     plist_path = bundle / "Contents" / "Info.plist"
@@ -109,16 +90,21 @@ def finish_macos_bundle(bundle: Path) -> None:
 
 def make_archive(bundle: Path, archive_base: Path, macos: bool) -> Path:
     if macos:  # ditto keeps symlinks, permissions and signatures intact
-        archive = archive_base.with_suffix(".zip")
+        archive = Path(str(archive_base) + ".zip")
+        archive.unlink(missing_ok=True)
         run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(bundle), str(archive)])
         return archive
+    Path(str(archive_base) + ".zip").unlink(missing_ok=True)
     return Path(shutil.make_archive(str(archive_base), "zip", root_dir=bundle.parent, base_dir=bundle.name))
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build Buddy as a Nuitka standalone bundle.")
     parser.add_argument("--skip-tests", action="store_true", help="Skip the offline test suite.")
+    parser.add_argument("--jobs", type=int, default=None, help="Parallel Nuitka C compiler jobs (default: Nuitka's CPU count).")
     args = parser.parse_args()
+    if args.jobs is not None and args.jobs < 1:
+        parser.error("--jobs must be a positive integer")
 
     if platform.system() not in {"Darwin", "Windows", "Linux"}:
         raise SystemExit("Nuitka packaging is supported on macOS, Windows, and Linux hosts.")
@@ -128,12 +114,6 @@ def main() -> int:
     macos = platform.system() == "Darwin"
     shutil.rmtree(BUILD_ROOT, ignore_errors=True)
     DIST.mkdir(exist_ok=True)
-    for old in DIST.glob("Buddy-*"):
-        if old.is_file():
-            old.unlink()
-        elif old.is_dir():
-            shutil.rmtree(old)
-
     command = [
         sys.executable,
         "-m",
@@ -152,10 +132,11 @@ def main() -> int:
         # Packages that load data files at runtime and fail silently when missing.
         "--include-package-data=googleapiclient",  # Google API discovery documents
         "--include-package-data=certifi",          # HTTPS certificates for requests
-        "--include-package-data=playwright",       # browser driver for Buddy's own browser
         "--include-data-dir=" + str(ROOT / "knowledge") + "=knowledge",
         "--include-data-dir=" + str(ROOT / "gui" / "assets") + "=gui/assets",
     ]
+    if args.jobs is not None:
+        command.append(f"--jobs={args.jobs}")
     if macos:
         command += [
             "--macos-create-app-bundle",
@@ -163,14 +144,24 @@ def main() -> int:
             f"--macos-app-version={APP_VERSION}",
             "--macos-signed-app-name=com.hackclub.buddy",
         ]
-        icns = make_icns(ROOT / "gui" / "assets" / "Buddy_Logo_Beta.png", BUILD_ROOT.parent)
+        icons_dir = BUILD_ROOT.parent / "icons"
+        run([sys.executable, str(ROOT / "packaging" / "make_icons.py"), "--out", str(icons_dir)])
+        icns = icons_dir / "Buddy.icns"
         if icns:
             command.append(f"--macos-app-icon={icns}")
     command.append(str(ROOT / "main.py"))
     run(command)
 
     bundle = _find_bundle(BUILD_ROOT, macos)
+    if not bundle.exists():
+        raise SystemExit(f"Nuitka output bundle does not exist: {bundle}")
     if macos:
+        expected_bundle = BUILD_ROOT / "Buddy.app"
+        if bundle != expected_bundle:
+            if expected_bundle.exists():
+                shutil.rmtree(expected_bundle)
+            bundle.rename(expected_bundle)
+            bundle = expected_bundle
         finish_macos_bundle(bundle)
     archive_base = DIST / f"Buddy-{target_name()}-{APP_VERSION}"
     archive = make_archive(bundle, archive_base, macos)

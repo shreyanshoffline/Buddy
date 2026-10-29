@@ -139,8 +139,8 @@ def test_memory_page_replaces_model_workflow(window):
     w.show_chat_view()
 
 
-def test_finished_work_log_is_open_and_keeps_long_results(window):
-    from gui.widgets.chat_bubble import DevChamber
+def test_finished_work_log_is_closed_with_a_dropdown_per_tool_call(window):
+    from gui.widgets.chat_bubble import DevChamber, _Fold
     from PySide6.QtWidgets import QLabel
     w, app = window
     long_result = "all details " * 120
@@ -150,7 +150,13 @@ def test_finished_work_log_is_open_and_keeps_long_results(window):
     )
     w.chat_layout.insertWidget(w.chat_layout.count() - 1, chamber)
     app.processEvents()
-    assert chamber.toggle_btn.isChecked()
-    result_labels = chamber.content_frame.findChildren(QLabel)
-    assert any("all details" in label.text() for label in result_labels)
+    assert not chamber.toggle_btn.isChecked()            # closed by default
+    folds = chamber.findChildren(_Fold)
+    assert len(folds) == 2                               # one for the plan, one per tool call
+    call = folds[1]
+    assert not call.body.isVisible()
+    assert "inspect" in call.btn.text() and call.btn.text().startswith("▸")
+    call.btn.click()                                     # opening it reveals call + result
+    assert call.btn.text().startswith("▾")
+    assert any("all details" in label.text() for label in call.body.findChildren(QLabel)) or "all details" in call.body.text()
     chamber.deleteLater()

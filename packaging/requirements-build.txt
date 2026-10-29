@@ -2,3 +2,4 @@
 Nuitka>=2.7
 zstandard>=0.23
 pytest
+Pillow>=11.0
