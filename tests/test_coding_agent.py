@@ -29,6 +29,8 @@ def _resp(*calls, text="", t_in=100, t_out=50):
 
 def _enable_files(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Windows' expanduser() uses USERPROFILE instead of HOME.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
     import core.plugins as plugins
     enabled = plugins.default_plugins()

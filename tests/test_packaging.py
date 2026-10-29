@@ -158,7 +158,7 @@ class InstallerFileTests(unittest.TestCase):
             self.assertIn(key, desktop)
         self.assertIn("QT_QPA_PLATFORM=xcb", (ROOT / "packaging/linux/buddy-launcher.sh").read_text(encoding="utf-8"))
 
-    @unittest.skipUnless(__import__("shutil").which("bash"), "bash not available")
+    @unittest.skipIf(os.name == "nt" or not __import__("shutil").which("bash"), "Unix shell unavailable")
     def test_shell_scripts_parse(self):
         for script in ("make_deb.sh", "make_appimage.sh", "buddy-launcher.sh"):
             result = subprocess.run(["bash", "-n", f"packaging/linux/{script}"], cwd=ROOT,
@@ -324,7 +324,7 @@ class DmgVerifyScriptTests(unittest.TestCase):
                        "--smoke-out", "ditto", ".background"):
             self.assertIn(needle, text)
 
-    @unittest.skipUnless(__import__("shutil").which("bash"), "bash not available")
+    @unittest.skipIf(os.name == "nt" or not __import__("shutil").which("bash"), "Unix shell unavailable")
     def test_script_parses(self):
         self.assertEqual(subprocess.run(["bash", "-n", "packaging/macos/verify_dmg.sh"], cwd=ROOT).returncode, 0)
 
