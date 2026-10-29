@@ -16,7 +16,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
-      BUDDY_DATA_DIR: ${{ runner.temp }}/buddy-test-data
       QT_QPA_PLATFORM: offscreen
       PYTHONUTF8: "1"
     steps:
@@ -31,7 +30,11 @@ jobs:
       - run: python -m pip install -r requirements.txt pytest Pillow pyyaml
       - name: Offline test suite (Linux, under a virtual display)
         if: runner.os == 'Linux'
+        env:
+          BUDDY_DATA_DIR: ${{ runner.temp }}/buddy-test-data
         run: xvfb-run -a python -m pytest -q tests
       - name: Offline test suite (Windows)
         if: runner.os == 'Windows'
+        env:
+          BUDDY_DATA_DIR: ${{ runner.temp }}/buddy-test-data
         run: python -m pytest -q tests
