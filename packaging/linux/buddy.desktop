@@ -1,9 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=Buddy
-Comment=Local-first desktop AI assistant
+GenericName=AI Assistant
+Comment=Your personal AI assistant
 Exec=buddy
 Icon=buddy
 Terminal=false
 Categories=Utility;Office;
+Keywords=AI;assistant;chat;productivity;
 StartupWMClass=Buddy

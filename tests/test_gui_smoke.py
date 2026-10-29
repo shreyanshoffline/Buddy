@@ -54,8 +54,8 @@ def test_narrow_chat_keeps_wrapped_greeting_and_chips_inside_page(window):
     assert w.content_stack.graphicsEffect() is None
     assert w.content_stack.rect().contains(w.chat_page.geometry())
     assert w.chat_page.rect().contains(w.composer.geometry())
-    assert w.greeting.width() == w.chat_page.contentsRect().width() - 32
-    assert w.greeting.height() >= w.greeting.sizeHint().height()
+    assert abs(w.greeting.width() - (w.chat_page.contentsRect().width() - 32)) <= 2    # font metrics differ per OS
+    assert w.greeting.height() + 2 >= w.greeting.heightForWidth(w.greeting.width())  # tall enough for the wrapped text
     assert w.suggestion_bar._note.geometry().bottom() <= w.suggestion_bar.height()
     assert all(w.suggestion_bar.rect().contains(button.geometry()) for button in w.suggestion_bar._buttons)
     assert all(

@@ -1,5 +1,15 @@
 name: Buddy release
 
+# Builds a finished installer for every platform. Nothing here publishes a raw app folder.
+#   macOS Apple Silicon  Buddy-<ver>-macos-apple-silicon.dmg   (light-blue drag-to-Applications)
+#   macOS Intel          Buddy-<ver>-macos-intel.dmg
+#   Windows 10/11 x64    Buddy-Setup-<ver>-x64.exe
+#   Linux x86_64         Buddy-<ver>-linux-x86_64.AppImage + Buddy-<ver>-linux-amd64.deb  (.deb = ChromeOS too)
+#   Linux arm64 (optional, best effort)
+# Pushing a tag v<version> builds AND publishes a GitHub Release.
+# Run workflow by hand (Actions > Buddy release > Run workflow): builds only; files are in the run's Artifacts.
+# The full test suite runs in ci.yml; every job here still launches the finished app (--smoke-test).
+
 permissions:
   contents: write
 
@@ -9,185 +19,284 @@ on:
       - "v*"
   workflow_dispatch:
 
+env:
+  PYTHON_VERSION: "3.12"        # Nuitka treats 3.14 as experimental; 3.12 is the tested build Python
+
 jobs:
-  check-version:
-    runs-on: ubuntu-latest
+  check:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
-      - name: Ensure the release tag matches version.py
+          python-version: ${{ env.PYTHON_VERSION }}
+      - id: v
         run: |
           VERSION=$(python -c "from version import APP_VERSION; print(APP_VERSION)")
-          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match version.py (v$VERSION)."
-            exit 1
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v$VERSION" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match version.py ($VERSION). Fix one of them."; exit 1
           fi
 
-  macos-arm64:
-    needs: check-version
-    runs-on: macos-latest
+  # ------------------------------------------------------------------ macOS: one finished DMG per CPU
+  mac:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15,       cpu: arm64,  label: apple-silicon }
+          - { runner: macos-15-intel, cpu: x86_64, label: intel }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      HAS_APPLE_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt -r packaging/requirements-build.txt
-      - name: Build arm64 app
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+      - name: Import Developer ID certificate (only if secrets exist)
+        if: env.HAS_APPLE_CERT == 'true'
         env:
-          QT_QPA_PLATFORM: offscreen
-        run: python packaging/build_nuitka.py --smoke-test --jobs 4
-      - name: Stage app bundle
+          CERT_P12: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
-          mkdir -p dist
-          APP=build/nuitka/Buddy.app
-          if [ ! -d "$APP" ]; then APP=build/nuitka/main.app; fi
-          ditto "$APP" dist/Buddy.app
-      - uses: actions/upload-artifact@v4
-        with:
-          name: buddy-macos-arm64
-          path: dist/Buddy.app
-          if-no-files-found: error
-
-  macos-x86_64:
-    needs: check-version
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt -r packaging/requirements-build.txt
-      - name: Build x86_64 app
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"; PASS="$(uuidgen)"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$PASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$PASS" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+      - name: Build Buddy.app (Nuitka) + smoke test
         env:
-          QT_QPA_PLATFORM: offscreen
-        run: python packaging/build_nuitka.py --smoke-test --jobs 4
-      - name: Stage app bundle
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY || '-' }}
+        run: python packaging/build_nuitka.py --skip-tests --smoke-test --zip
+      - name: Make the DMG
         run: |
           mkdir -p dist
-          APP=build/nuitka/Buddy.app
-          if [ ! -d "$APP" ]; then APP=build/nuitka/main.app; fi
-          ditto "$APP" dist/Buddy.app
-      - uses: actions/upload-artifact@v4
-        with:
-          name: buddy-macos-x86_64
-          path: dist/Buddy.app
-          if-no-files-found: error
-
-  macos-universal:
-    needs: [check-version, macos-arm64, macos-x86_64]
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install image dependency
-        run: python -m pip install Pillow
-      - uses: actions/download-artifact@v4
-        with:
-          name: buddy-macos-arm64
-          path: artifacts/arm64
-      - uses: actions/download-artifact@v4
-        with:
-          name: buddy-macos-x86_64
-          path: artifacts/x86_64
-      - name: Merge universal app and make DMG
+          python packaging/macos/make_dmg.py --app build/bundle/Buddy.app --icon build/icons/Buddy.icns \
+            --out "dist/Buddy-${VERSION}-macos-${{ matrix.label }}.dmg"
+      - name: Verify the DMG (mount, copy the app out, check it, launch the copy)
+        run: packaging/macos/verify_dmg.sh "dist/Buddy-${VERSION}-macos-${{ matrix.label }}.dmg" "${{ matrix.cpu }}" "$VERSION"
+      - name: Sign + notarize the DMG (only with Apple credentials)
+        if: env.HAS_APPLE_CERT == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: |
-          BUDDY_VERSION=$(python -c "from version import APP_VERSION; print(APP_VERSION)")
-          python packaging/macos/merge_universal.py --arm64 artifacts/arm64/Buddy.app --x86-64 artifacts/x86_64/Buddy.app --output build/Buddy.app
-          codesign --force --deep --entitlements packaging/Buddy.entitlements --sign - build/Buddy.app
-          codesign --verify --deep --strict build/Buddy.app
-          BUDDY_DATA_DIR="$RUNNER_TEMP/buddy-smoke" QT_QPA_PLATFORM=offscreen build/Buddy.app/Contents/MacOS/Buddy --smoke-test
-          mkdir -p dist
-          python packaging/macos/make_dmg_background.py --output build/dmg_background@2x.png
-          python packaging/macos/make_dmg.py --app build/Buddy.app --background build/dmg_background@2x.png --output "dist/Buddy-${BUDDY_VERSION}-macos-universal.dmg"
-          ditto -c -k --sequesterRsrc --keepParent build/Buddy.app "dist/Buddy-${BUDDY_VERSION}-macos-universal.zip"
-          python packaging/write_checksums.py dist/Buddy-${BUDDY_VERSION}-macos-universal.dmg dist/Buddy-${BUDDY_VERSION}-macos-universal.zip
-      - uses: actions/upload-artifact@v4
+          DMG="dist/Buddy-${VERSION}-macos-${{ matrix.label }}.dmg"
+          codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$DMG"
+      - name: Collect final files
+        run: |
+          # the .zip is only for Buddy's in-app updater (it needs the .app); people download the DMG
+          cp "dist/parts/Buddy-macos-${{ matrix.cpu }}-${VERSION}.zip" dist/
+          ls -la dist
+      - uses: actions/upload-artifact@v7
         with:
-          name: buddy-macos-universal
-          path: dist/*
+          name: release-macos-${{ matrix.label }}
+          path: |
+            dist/*.dmg
+            dist/Buddy-macos-*.zip
           if-no-files-found: error
 
+  # ------------------------------------------------------------------ Windows
   windows:
-    needs: check-version
-    runs-on: windows-latest
+    needs: check
+    runs-on: windows-2022
+    timeout-minutes: 150
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
-      - name: Install Inno Setup
-        run: choco install innosetup --yes --no-progress
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip; python -m pip install -r requirements.txt -r packaging/requirements-build.txt
-      - name: Build Windows standalone bundle
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: python packaging/build_nuitka.py --smoke-test --jobs 4
-      - name: Make installer and checksum
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+          choco install innosetup -y --no-progress
+      - name: Build Buddy (Nuitka) + smoke test
+        run: python packaging/build_nuitka.py --skip-tests --smoke-test
+      - name: Build the installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" packaging\windows\Buddy.iss
+          Get-ChildItem dist
+      - name: Test install, Start Menu entry, launch, uninstall
         shell: pwsh
         run: |
-          python packaging/make_icons.py --out build/icons
-          if (-not (Test-Path build/nuitka/Buddy.dist) -and (Test-Path build/nuitka/main.dist)) { Move-Item build/nuitka/main.dist build/nuitka/Buddy.dist }
-          $version = python -c "from version import APP_VERSION; print(APP_VERSION)"
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" packaging/windows/Buddy.iss
-          python packaging/write_checksums.py "dist/Buddy-Setup-$version-x64.exe"
-      - uses: actions/upload-artifact@v4
+          $ErrorActionPreference = "Stop"
+          $dir = Join-Path $env:RUNNER_TEMP "BuddyInstall"
+          Start-Process -FilePath "dist\Buddy-Setup-$env:VERSION-x64.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$dir" -Wait
+          if (-not (Test-Path "$dir\Buddy.exe")) { throw "Installer did not install Buddy.exe" }
+          if (-not (Test-Path "$dir\unins000.exe")) { throw "No uninstaller was installed" }
+          $menu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Buddy.lnk"
+          if (-not (Test-Path $menu)) { throw "Start Menu shortcut missing: $menu" }
+          $env:BUDDY_DATA_DIR = Join-Path $env:RUNNER_TEMP "buddy-installed-smoke"
+          $env:BUDDY_SMOKE_TEST = "1"
+          $result = Join-Path $env:RUNNER_TEMP "smoke-installed.txt"
+          # Buddy.exe is a GUI app (no console): wait for it, and read its result FILE
+          Start-Process -FilePath "$dir\Buddy.exe" -ArgumentList "--smoke-test","--smoke-out=$result" -Wait
+          if (-not (Test-Path $result)) { throw "Installed Buddy.exe wrote no smoke-test result" }
+          $text = Get-Content $result -Raw
+          Write-Host $text
+          if ($text -notmatch "SMOKE OK") { throw "Installed Buddy.exe did not start: $text" }
+          Start-Process -FilePath "$dir\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          Start-Sleep -Seconds 3
+          if (Test-Path "$dir\Buddy.exe") { throw "Uninstall left Buddy.exe behind" }
+      - uses: actions/upload-artifact@v7
         with:
-          name: buddy-windows-x64
-          path: dist/*
+          name: release-windows
+          path: dist/Buddy-Setup-*.exe
           if-no-files-found: error
 
+  # ------------------------------------------------------------------ Linux x86_64 (+ ChromeOS via the .deb)
   linux:
-    needs: check-version
-    runs-on: ubuntu-latest
+    needs: check
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt -r packaging/requirements-build.txt
-      - name: Build Linux standalone bundle
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: python packaging/build_nuitka.py --smoke-test --jobs 4
-      - name: Build AppImage and Debian package
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: System packages (build + Qt runtime)
         run: |
-          python packaging/make_icons.py --out build/icons
-          if [ ! -d build/nuitka/Buddy.dist ]; then mv build/nuitka/main.dist build/nuitka/Buddy.dist; fi
-          VERSION=$(python -c "from version import APP_VERSION; print(APP_VERSION)")
-          curl -fsSL -o /tmp/appimagetool "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
-          chmod +x /tmp/appimagetool
-          APPIMAGE_EXTRACT_AND_RUN=1 python packaging/linux/package_linux.py --bundle build/nuitka/Buddy.dist --icons build/icons --version "$VERSION" --appimagetool /tmp/appimagetool
-          python packaging/write_checksums.py dist/Buddy-"$VERSION"-linux-*.AppImage dist/Buddy-"$VERSION"-linux-*.deb
-      - uses: actions/upload-artifact@v4
+          sudo apt-get update
+          sudo apt-get install -y patchelf ccache build-essential xvfb dpkg-dev libgl1 libegl1 libfontconfig1 \
+            libdbus-1-3 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libpulse0
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+      - name: Build Buddy (Nuitka) + smoke test
+        run: xvfb-run -a python packaging/build_nuitka.py --skip-tests --smoke-test
+      - name: AppImage
+        run: packaging/linux/make_appimage.sh "$VERSION" x86_64
+      - name: .deb (also the ChromeOS installer)
+        run: packaging/linux/make_deb.sh "$VERSION" amd64
+      - name: Test the AppImage (launch the finished file)
+        run: |
+          chmod +x dist/*.AppImage
+          BUDDY_DATA_DIR="$RUNNER_TEMP/appimage-smoke" BUDDY_SMOKE_TEST=1 xvfb-run -a \
+            "dist/Buddy-${VERSION}-linux-x86_64.AppImage" --appimage-extract-and-run --smoke-test --smoke-out="$RUNNER_TEMP/smoke-appimage.txt" || true
+          cat "$RUNNER_TEMP/smoke-appimage.txt"; grep -q "SMOKE OK" "$RUNNER_TEMP/smoke-appimage.txt"
+      - name: Test the .deb (contents, install, launch the installed command)
+        run: |
+          DEB="dist/Buddy-${VERSION}-linux-amd64.deb"
+          [ "$(dpkg -c "$DEB" | grep -cE "opt/buddy/Buddy$|usr/bin/buddy$|applications/buddy.desktop$|apps/buddy.png$")" -ge 4 ]
+          sudo apt-get install -y "./$DEB"
+          BUDDY_DATA_DIR="$RUNNER_TEMP/deb-smoke" BUDDY_SMOKE_TEST=1 xvfb-run -a buddy --smoke-test --smoke-out="$RUNNER_TEMP/smoke-deb.txt" || true
+          cat "$RUNNER_TEMP/smoke-deb.txt"; grep -q "SMOKE OK" "$RUNNER_TEMP/smoke-deb.txt"
+          sudo apt-get remove -y buddy-assistant && [ ! -e /opt/buddy/Buddy ]
+      - uses: actions/upload-artifact@v7
         with:
-          name: buddy-linux-x86_64
-          path: dist/*
+          name: release-linux-x86_64
+          path: |
+            dist/*.AppImage
+            dist/*.deb
           if-no-files-found: error
+
+  # Best effort: PySide6 ships Linux arm64 wheels only for glibc 2.39+, so this needs Ubuntu 24.04.
+  # A failure here never blocks the release.
+  linux-arm64:
+    needs: check
+    runs-on: ubuntu-24.04-arm
+    continue-on-error: true
+    timeout-minutes: 150
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      MIN_GLIBC: "2.39"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf ccache build-essential xvfb dpkg-dev libgl1 libegl1 libfontconfig1 \
+            libdbus-1-3 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libpulse0
+      - run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+      - run: xvfb-run -a python packaging/build_nuitka.py --skip-tests --smoke-test
+      - run: packaging/linux/make_appimage.sh "$VERSION" aarch64
+      - run: packaging/linux/make_deb.sh "$VERSION" arm64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-linux-arm64
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------ gate: only FINISHED installers pass
+  final-check:
+    needs: [check, mac, windows, linux]
+    if: ${{ !cancelled() && needs.mac.result == 'success' && needs.windows.result == 'success' && needs.linux.result == 'success' }}
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Check the final files and list sizes
+        run: |
+          cd dist
+          missing=0
+          for f in "Buddy-${VERSION}-macos-apple-silicon.dmg" "Buddy-${VERSION}-macos-intel.dmg" \
+                   "Buddy-Setup-${VERSION}-x64.exe" "Buddy-${VERSION}-linux-x86_64.AppImage" \
+                   "Buddy-${VERSION}-linux-amd64.deb" "Buddy-macos-arm64-${VERSION}.zip" "Buddy-macos-x86_64-${VERSION}.zip"; do
+            if [ ! -f "$f" ]; then echo "MISSING: $f"; missing=1; fi
+          done
+          [ "$missing" = 0 ] || exit 1
+          for f in *.dmg *.exe *.AppImage *.deb; do
+            size=$(stat -c %s "$f"); [ "$size" -gt 10000000 ] || { echo "$f is suspiciously small ($size bytes)"; exit 1; }
+          done
+          {
+            echo "### Buddy ${VERSION}: final downloads"
+            echo "| File | Size |"; echo "|---|---|"
+            for f in *; do echo "| \`$f\` | $(du -h "$f" | cut -f1) |"; done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          ls -la
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [macos-universal, windows, linux]
-    runs-on: ubuntu-latest
+    needs: [final-check]
+    runs-on: ubuntu-22.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
+          pattern: release-*
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - name: Checksums (the in-app updater verifies its macOS zip against the .sha256)
+        run: |
+          cd dist
+          for f in *; do sha256sum "$f" > "$f.sha256"; done
+          ls -la
+      - uses: softprops/action-gh-release@v3
         with:
-          files: |
-            dist/*.dmg
-            dist/*.zip
-            dist/*.exe
-            dist/*.AppImage
-            dist/*.deb
-            dist/*.sha256
+          files: dist/*
           generate_release_notes: true

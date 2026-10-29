@@ -9,13 +9,18 @@ def _size(text):
     return "%d B" % n if n < 1024 else "%.1f KB" % (n / 1024)
 
 
+def _quote(text):
+    """Quote a string for display. json.dumps would double every backslash in a Windows path."""
+    return '"%s"' % text if '"' not in text and "\n" not in text else json.dumps(text, ensure_ascii=False)
+
+
 def format_value(key, value, limit=120):
     if isinstance(value, str):
         if key in _NEVER_CUT and len(value) <= 500 and "\n" not in value:
-            return json.dumps(value, ensure_ascii=False)
+            return _quote(value)
         lines = len(value.splitlines()) or 1
         if len(value) <= limit and lines == 1:
-            return json.dumps(value, ensure_ascii=False)
+            return _quote(value)
         head = value[:limit].replace("\n", "⏎")
         return '"%s…" <%d line%s, %s>' % (head, lines, "" if lines == 1 else "s", _size(value))
     if isinstance(value, (list, dict)):

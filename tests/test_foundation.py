@@ -1,6 +1,7 @@
 """Isolated storage tests: temp database, no network, no GUI."""
 import os
 import sys
+from contextlib import closing
 import tempfile
 import types
 import unittest
@@ -57,11 +58,13 @@ class FoundationTests(unittest.TestCase):
 
         path = Path(self.db.get_db_path())
         path.unlink()
-        with sqlite3.connect(path) as conn:
+        # sqlite3's own `with` only commits; closing() really closes, so Windows can delete the file
+        with closing(sqlite3.connect(path)) as conn:
             conn.execute(
                 "CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER, "
                 "role TEXT, content TEXT, tool_calls TEXT, tool_call_id TEXT, created_at REAL)"
             )
+            conn.commit()
         self.db._DB_PATH = None
         self.db.init_db()
         with self.db._connect() as conn:

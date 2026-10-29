@@ -1,3 +1,5 @@
+> **Start with [PACKAGING.md](PACKAGING.md).** This older note predates the installers/universal build.
+
 # Signing and notarization
 
 ## Free GitHub release flow

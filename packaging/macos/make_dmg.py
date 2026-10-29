@@ -1,85 +1,55 @@
-"""Create a compressed macOS disk image containing Buddy and Applications."""
+"""Build the polished drag-to-Applications DMG (light-blue background, app + Applications link).
 
+  python packaging/macos/make_dmg.py --app dist/Buddy.app --out dist/Buddy-macos-0.9.8.dmg [--icon Buddy.icns]
+
+Uses `dmgbuild` (pure Python, no Finder scripting, so it works on headless CI).
+"""
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
 
-def run(args: list[str]) -> None:
-    subprocess.run(args, check=True)
+
+def retina_background(workdir: Path) -> Path:
+    """Combine 1x + 2x PNGs into one multi-resolution TIFF so the art is crisp on Retina Macs."""
+    one, two = HERE / "dmg_background.png", HERE / "dmg_background@2x.png"
+    if shutil.which("tiffutil"):
+        out = workdir / "background.tiff"
+        for flag in ("-cathidpicheck", "-cat"):      # strict check first, then the lenient join
+            result = subprocess.run(["tiffutil", flag, str(one), str(two), "-out", str(out)], capture_output=True)
+            if result.returncode == 0 and out.exists():
+                return out
+    return one
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser()
     parser.add_argument("--app", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--background", type=Path)
+    parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--icon", type=Path)
+    parser.add_argument("--volname", default="Buddy")
     args = parser.parse_args()
-    if not args.app.is_dir() or args.app.suffix != ".app":
-        raise SystemExit(f"Not a macOS app bundle: {args.app}")
-
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="buddy-dmg-") as temporary:
-        stage = Path(temporary) / "Buddy"
-        writable = Path(temporary) / "Buddy-rw.dmg"
-        mountpoint = Path(temporary) / "Mounted"
-        stage.mkdir()
-        # Preserve code-signature extended attributes, resource forks, and ACLs.
-        run(["ditto", "--rsrc", "--extattr", "--acl", str(args.app), str(stage / args.app.name)])
-        (stage / "Applications").symlink_to("/Applications")
-        background_path = None
-        if args.background and args.background.is_file():
-            background = stage / ".background"
-            background.mkdir()
-            run(["ditto", str(args.background), str(background / "dmg_background@2x.png")])
-            background_path = ".background/dmg_background@2x.png"
-        run(["hdiutil", "create", "-volname", "Buddy", "-srcfolder", str(stage), "-ov", "-format", "UDRW", str(writable)])
-        mountpoint.mkdir()
-        run(["hdiutil", "attach", "-nobrowse", "-noverify", "-mountpoint", str(mountpoint), str(writable)])
-        try:
-            if background_path:
-                script = '''
-                on run argv
-                  set mountPath to item 1 of argv
-                  set backgroundPath to item 2 of argv
-                  tell application "Finder"
-                    open POSIX file mountPath
-                    delay 2
-                    tell front window
-                      set current view to icon view
-                      set toolbar visible to false
-                      set statusbar visible to false
-                      set bounds to {120, 120, 840, 570}
-                      set icon size of icon view options to 96
-                      set arrangement of icon view options to not arranged
-                      set background picture of icon view options to POSIX file backgroundPath
-                      set position of item "Buddy.app" to {230, 245}
-                      set position of item "Applications" to {620, 245}
-                    end tell
-                    close front window
-                  end tell
-                end run
-                '''
-                subprocess.run(
-                    ["osascript", "-", str(mountpoint), str(mountpoint / background_path)],
-                    input=script,
-                    text=True,
-                    check=True,
-                    capture_output=True,
-                )
-        except (OSError, subprocess.CalledProcessError) as error:
-            print(f"Could not set the Finder disk image layout; keeping a functional DMG ({error})")
-        finally:
-            subprocess.run(["hdiutil", "detach", str(mountpoint)], check=True, capture_output=True)
-        args.output.unlink(missing_ok=True)
-        run([
-            "hdiutil", "convert", str(writable), "-ov", "-format", "UDZO",
-            "-imagekey", "zlib-level=9", "-o", str(args.output),
-        ])
-    print(f"Created {args.output}")
+    if not args.app.exists():
+        raise SystemExit(f"{args.app} not found")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    if args.out.exists():
+        args.out.unlink()
+    with tempfile.TemporaryDirectory() as tmp:
+        bg = retina_background(Path(tmp))
+        cmd = [sys.executable, "-m", "dmgbuild", "-s", str(HERE / "dmg_settings.py"),
+               "-D", f"app={args.app}", "-D", f"bg={bg}"]
+        if args.icon:
+            cmd += ["-D", f"icon={args.icon}"]
+        result = subprocess.run(cmd + [args.volname, str(args.out)])
+        if result.returncode != 0 or not args.out.exists():
+            raise SystemExit("dmgbuild failed; refusing to publish a DMG without the designed background")
+    print("created", args.out)
     return 0
 
 

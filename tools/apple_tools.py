@@ -261,7 +261,8 @@ def apple_calendar_create_event(title: str, start_iso: str, end_iso: str = None,
     out = _run_applescript(script)
     if _is_permission_error(out):
         return out
-    when = f"{start_dt.strftime('%a %b %-d')}, {start_dt.strftime('%-I:%M %p')} to {end_dt.strftime('%-I:%M %p')}"
+    clock = lambda d: d.strftime("%I:%M %p").lstrip("0")      # %-I / %-d are not valid on Windows
+    when = f"{start_dt.strftime('%a %b')} {start_dt.day}, {clock(start_dt)} to {clock(end_dt)}"
     return f'Created "{title}" on {when}' + (f' in calendar "{out}".' if out else ".")
 
 

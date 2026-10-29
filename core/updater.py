@@ -109,15 +109,18 @@ def _platform_tag() -> str:
     return {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux")
 
 
-def pick_asset(assets, platform_tag=None):
-    """Only the macOS ZIP supports automatic in-place updates; other platforms
-    should open the release page so users get their correct installer."""
+def pick_asset(assets, platform_tag=None, machine=None):
+    """The release carries a DMG/installer/AppImage/.deb per OS plus one in-place-updatable
+    macOS ZIP. Only the macOS ZIP can be applied automatically; everyone else gets the
+    release page (their installer is there), never another platform's file."""
     tag = platform_tag or _platform_tag()
     if tag != "macos":
         return None
+    import platform as _platform
+    cpu = "arm64" if (machine or _platform.machine()).lower() in ("arm64", "aarch64") else "x86_64"
     for asset in assets or []:
         name = asset.get("name", "").lower()
-        if name.endswith(".zip") and "macos" in name:
+        if name.endswith(".zip") and "macos" in name and cpu in name:
             return asset
     return None
 

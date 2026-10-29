@@ -34,21 +34,61 @@ _TEXT_EXT = {".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".json", ".md
 _DENY_PARTS = ("/.ssh", "/.gnupg", "/.aws", "/Library/Keychains", "/.config/gh")
 _DENY_PREFIX = ("/System", "/usr", "/bin", "/sbin", "/etc", "/private/etc", "/Library", "/Applications")
 _DENY_HOME_FILES = (".zshrc", ".bashrc", ".bash_profile", ".zprofile", ".gitconfig", ".netrc")
+_WIN_DENY_PREFIX = ("/Windows", "/Program Files", "/ProgramData")   # drive letter is stripped before comparing
+_WIN = _sys.platform == "win32"
 _PROJECTS = "~/BuddyProjects"
 _MAX_OUT = 6000
 _SESSION = {"changed": {}}  # abs path -> number of edits this run
 
 
 # ----------------------------------------------------------------- helpers
+def _is_denied(raw, resolved):
+    """True if a path is a system/credential location, however it is spelled.
+
+    On Windows "/etc/hosts" resolves to "D:\\etc\\hosts", which a plain startswith("/etc") misses.
+    So test the raw text AND the resolved path, with backslashes turned into slashes, the drive
+    letter removed, and case ignored."""
+    spellings = {str(raw).replace("\\", "/"), str(resolved).replace("\\", "/")}
+    spellings |= {_re.sub(r"^[A-Za-z]:", "", s) for s in spellings}
+    low = [s.lower() for s in spellings]
+    prefixes = tuple(d.lower().rstrip("/") for d in _DENY_PREFIX + _WIN_DENY_PREFIX)
+    under = lambda value, prefix: value == prefix or value.startswith(prefix + "/")
+    return (any(under(s, prefix) for s in low for prefix in prefixes)
+            or any(part.lower() in s for s in low for part in _DENY_PARTS))
+
+
 def _safe(path):
-    p = _Path(_os.path.expanduser(path or "")).resolve()
-    s = str(p)
-    home = str(_Path.home())
-    if any(s.startswith(d) for d in _DENY_PREFIX) or any(part in s for part in _DENY_PARTS):
-        raise PermissionError("Buddy won't touch %s (system or credential location)." % s)
-    if _os.path.dirname(s) == home and _os.path.basename(s) in _DENY_HOME_FILES:
-        raise PermissionError("Buddy won't edit %s (shell/git config)." % s)
+    raw = _os.path.expanduser(path or "")
+    p = _Path(raw).resolve()
+    if _is_denied(raw, p.as_posix()):
+        raise PermissionError("Buddy won't touch %s (system or credential location)." % p)
+    if p.parent == _Path.home().resolve() and p.name.lower() in {name.lower() for name in _DENY_HOME_FILES}:
+        raise PermissionError("Buddy won't edit %s (shell/git config)." % p)
     return p
+
+
+def _venv_bin(venv):
+    return _Path(venv) / ("Scripts" if _WIN else "bin")
+
+
+def _quote_arg(arg, windows=None):
+    """Quote one argument for the shell that subprocess(shell=True) uses (cmd.exe on Windows)."""
+    return _subprocess.list2cmdline([arg]) if (_WIN if windows is None else windows) else _shlex.quote(arg)
+
+
+def _new_group():
+    """Popen kwargs so a timed-out command can be killed along with everything it started."""
+    return {"creationflags": getattr(_subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if _WIN else {"start_new_session": True}
+
+
+def _kill_tree(proc):
+    if _WIN:
+        _subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+        return
+    try:
+        _os.killpg(proc.pid, _signal.SIGKILL)
+    except OSError:
+        proc.kill()
 
 
 def _backup_root():
@@ -107,7 +147,7 @@ def _tail(text, limit=_MAX_OUT):
 
 def _env(folder, headless):
     env = dict(_os.environ, PYTHONUNBUFFERED="1", PYTHONDONTWRITEBYTECODE="1")  # no stale .pyc after a same-second edit
-    venv_bin = folder / ".venv" / "bin"
+    venv_bin = _venv_bin(folder / ".venv")
     if venv_bin.is_dir():
         env["PATH"] = str(venv_bin) + _os.pathsep + env.get("PATH", "")
         env["VIRTUAL_ENV"] = str(folder / ".venv")
@@ -157,7 +197,7 @@ def code_overview(folder: str, depth: int = 3) -> str:
             size = f.stat().st_size
         except OSError:
             continue
-        lines.append("  %s (%s)" % (rel, ("%dB" % size) if size < 2048 else ("%dKB" % (size // 1024))))
+        lines.append("  %s (%s)" % (rel.as_posix(), ("%dB" % size) if size < 2048 else ("%dKB" % (size // 1024))))
         shown += 1
         if shown >= 120:
             lines.append("  … more files; narrow with code_search")
@@ -195,7 +235,7 @@ def code_search(folder: str, pattern: str, file_glob: str = "") -> str:
         try:
             for n, line in enumerate(f.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
                 if rx.search(line):
-                    hits.append("%s:%d: %s" % (f.relative_to(root), n, line.strip()[:160]))
+                    hits.append("%s:%d: %s" % (f.relative_to(root).as_posix(), n, line.strip()[:160]))
                     if len(hits) >= 60:
                         return "\n".join(hits) + "\n… (60 shown; refine the pattern)"
         except OSError:
@@ -306,7 +346,8 @@ def code_setup_env(folder: str, packages: str = "") -> str:
     pkgs = packages.split()
     if not pkgs:
         return "Environment ready at %s" % venv
-    r = _subprocess.run([str(venv / "bin" / "pip"), "install", "-q", *pkgs], capture_output=True, text=True, timeout=600)
+    venv_python = _venv_bin(venv) / ("python.exe" if _WIN else "python")
+    r = _subprocess.run([str(venv_python), "-m", "pip", "install", "-q", *pkgs], capture_output=True, text=True, timeout=600)
     if r.returncode:
         return "pip install failed:\n" + _tail(r.stderr or r.stdout, 2500)
     return "Installed %s into %s" % (", ".join(pkgs), venv)
@@ -322,15 +363,12 @@ def code_run(folder: str, command: str, timeout: int = 60, headless: bool = Fals
         return blocked
     timeout = max(5, min(int(timeout), 600))
     proc = _subprocess.Popen(command, shell=True, cwd=str(root), env=_env(root, headless), text=True,
-                             stdout=_subprocess.PIPE, stderr=_subprocess.STDOUT, start_new_session=True)
+                             stdout=_subprocess.PIPE, stderr=_subprocess.STDOUT, **_new_group())
     try:
         out, _ = proc.communicate(timeout=timeout)
         return "exit code %d\n%s" % (proc.returncode, _tail(out))
     except _subprocess.TimeoutExpired:
-        try:
-            _os.killpg(proc.pid, _signal.SIGKILL)
-        except OSError:
-            proc.kill()
+        _kill_tree(proc)
         out, _ = proc.communicate()
         return ("TIMED OUT after %ds and was stopped (a game or server that never exits does this — "
                 "verify it with a headless test instead).\n%s" % (timeout, _tail(out)))
@@ -347,7 +385,7 @@ def code_test(folder: str) -> str:
     venv_python = root / ".venv" / ("Scripts/python.exe" if _sys.platform == "win32" else "bin/python")
     py = str(venv_python) if venv_python.exists() else _python_executable()
     probe = _subprocess.run([py, "-c", "import pytest"], cwd=str(root), capture_output=True)
-    quoted_py = _shlex.quote(py)
+    quoted_py = _quote_arg(py)
     cmd = "%s -m pytest -q -x --tb=short" % quoted_py if probe.returncode == 0 else "%s -m unittest discover -v" % quoted_py
     return code_run(str(root), cmd, 180, headless=True)
 
@@ -358,6 +396,6 @@ def code_launch(folder: str, command: str) -> str:
     blocked = _guard_command(command)
     if blocked:
         return blocked
-    _subprocess.Popen(command, shell=True, cwd=str(root), env=_env(root, False), start_new_session=True,
+    _subprocess.Popen(command, shell=True, cwd=str(root), env=_env(root, False), **_new_group(),
                       stdout=_subprocess.DEVNULL, stderr=_subprocess.DEVNULL)
     return "Launched: %s (in %s). It runs on its own; the user can close its window when done." % (command, root)

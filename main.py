@@ -20,6 +20,69 @@ except ImportError:
     from gui import BuddyWindow
 
 
+def _smoke_out_path():
+    """`--smoke-out=FILE` (or `--smoke-out FILE`). The Windows build has no console, so stdout is
+    invisible there; the result is written to this file instead (and printed where possible)."""
+    for i, arg in enumerate(sys.argv):
+        if arg.startswith("--smoke-out="):
+            return arg.split("=", 1)[1]
+        if arg == "--smoke-out" and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+    return None
+
+
+def _smoke_report(message: str) -> None:
+    path = _smoke_out_path()
+    if path:
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(message + "\n")
+        except OSError:
+            pass
+    try:
+        print(message, file=sys.stderr if message.startswith("SMOKE FAIL") else sys.stdout, flush=True)
+    except Exception:
+        pass  # no console (Windows GUI build): the file above is the record
+
+
+def smoke_test() -> int:
+    """`Buddy --smoke-test [--smoke-out=FILE]`: CI launches the freshly built app with this flag. It
+    proves the bundle starts, Qt plugins load, assets are present and the window builds, then
+    exits 0 without starting the backend, tracking, or touching real user data."""
+    try:
+        import importlib
+        for name in ("PySide6.QtMultimedia", "PySide6.QtTextToSpeech", "PySide6.QtSvg", "requests",
+                     "openrouter", "openrouter.utils.url", "googleapiclient", "certifi"):
+            try:
+                importlib.import_module(name)
+            except Exception as exc:  # a missing module/plugin is exactly what this test must catch
+                _smoke_report(f"SMOKE FAIL: could not import {name}: {exc}")
+                return 1
+        from gui.icons import BUDDY_LOGO_PATH, MEMORY_BRAIN_ICON_PATH
+        for asset in (BUDDY_LOGO_PATH, MEMORY_BRAIN_ICON_PATH):
+            if not asset.exists():
+                _smoke_report(f"SMOKE FAIL: missing asset {asset}")
+                return 1
+        from tools.paths import app_root
+        if not (app_root() / "knowledge").exists():
+            _smoke_report("SMOKE FAIL: knowledge/ folder is missing from the bundle")
+            return 1
+        app = QApplication(sys.argv[:1])
+        window = BuddyWindow()
+        window.show_window()
+        import time
+        for _ in range(20):                      # let the window paint; no long-running event loop
+            app.processEvents()
+            time.sleep(0.05)
+    except Exception as exc:
+        import traceback
+        _smoke_report(f"SMOKE FAIL: {exc}\n{traceback.format_exc()}")
+        return 1
+    _smoke_report("SMOKE OK")
+    # Skip Qt teardown: background threads still running at exit would abort the process.
+    os._exit(0)
+
+
 def main():
     if "--smoke-test" in sys.argv:
         sys.exit(smoke_test())
@@ -58,40 +121,6 @@ def main():
     except Exception:
         pass
     sys.exit(app.exec())
-
-
-def smoke_test() -> int:
-    """Construct the bundled UI, verify assets/imports, then exit cleanly for CI."""
-    import importlib
-    import time
-
-    for name in ("PySide6.QtMultimedia", "PySide6.QtSvg", "requests", "openrouter",
-                 "openrouter.utils.url", "googleapiclient", "certifi"):
-        try:
-            importlib.import_module(name)
-        except Exception as exc:
-            print(f"SMOKE FAIL: could not import {name}: {exc}", file=sys.stderr)
-            return 1
-
-    from gui.icons import BUDDY_LOGO_PATH, MEMORY_BRAIN_ICON_PATH
-    from tools.paths import app_root
-    for asset in (BUDDY_LOGO_PATH, MEMORY_BRAIN_ICON_PATH):
-        if not asset.exists():
-            print(f"SMOKE FAIL: missing asset {asset}", file=sys.stderr)
-            return 1
-    if not (app_root() / "knowledge").exists():
-        print("SMOKE FAIL: knowledge folder is missing from the bundle", file=sys.stderr)
-        return 1
-
-    app = QApplication(sys.argv[:1])
-    window = BuddyWindow()
-    window.show()  # avoid first-run modal dialogs and exercise only the bundled UI
-    for _ in range(6):
-        app.processEvents()
-        time.sleep(0.05)
-    print("SMOKE OK", flush=True)
-    # Avoid Qt teardown aborting while daemon workers are still winding down.
-    os._exit(0)
 
 
 if __name__ == "__main__":

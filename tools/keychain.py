@@ -26,6 +26,8 @@ def _sidecar_path():
 
 
 def _use_keychain():
+    if os.environ.get("BUDDY_SMOKE_TEST"):      # CI: no human to click a Keychain prompt
+        return False
     return sys.platform == "darwin"
 
 

@@ -1,5 +1,7 @@
 # Build-only dependencies. Runtime installs should use ../requirements.txt.
 Nuitka>=2.7
 zstandard>=0.23
+ordered-set>=4.1
 pytest
 Pillow>=11.0
+dmgbuild>=1.6; sys_platform == "darwin"

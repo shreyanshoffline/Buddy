@@ -202,7 +202,7 @@ class MessagesDecodeTests(unittest.TestCase):
         con.executemany("INSERT INTO chat_message_join VALUES (1, ?)", [(i,) for i in (1, 2, 3, 4)])
         con.commit()
         con.close()
-        with mock.patch.dict(os.environ, {"HOME": home}):
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}):   # Windows reads USERPROFILE
             out = t.get_unread_messages()
         texts = sorted(r["text"] for r in out)
         self.assertEqual(texts, ["are we playing?", "plain text"])

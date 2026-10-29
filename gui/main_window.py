@@ -3,6 +3,7 @@ composer, and the background workers that talk to core so the UI thread
 never blocks on an LLM call."""
 import sys
 import random
+from datetime import datetime
 import threading
 from pathlib import Path
 from PySide6.QtWidgets import (
@@ -373,6 +374,8 @@ class BuddyWindow(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
+        if hasattr(self, "greeting") and self.greeting.isVisible():
+            self.greeting.setText(self._random_greeting())
         self._maybe_show_intro_tip()
 
     def _maybe_show_intro_tip(self):
@@ -381,8 +384,8 @@ class BuddyWindow(QWidget):
         the first time the app is ever shown, rather than relying purely on
         hover tooltips nobody finds."""
         profile = core.get_profile()
-        if profile.get("has_seen_intro_tip"):
-            return
+        if profile.get("has_seen_intro_tip") or not profile.get("onboarding_complete"):
+            return  # show it once, and only after onboarding (never on top of it)
         core.update_profile(has_seen_intro_tip=True)
         QMessageBox.information(
             self, "Welcome to Buddy",
@@ -905,7 +908,7 @@ class BuddyWindow(QWidget):
         self.talk_page = TalkToBuddyPage(close_callback=self.hide)
         self.plugins_page = PluginsPage(close_callback=self.hide)
         self.memory_page = MemoryPage(close_callback=self.hide)
-        self.onboarding_page = OnboardingPage(close_callback=self.hide, on_complete=self.show_chat_view)
+        self.onboarding_page = OnboardingPage(close_callback=self.hide, on_complete=self._after_onboarding)
         self.content_stack.addWidget(self.settings_page)
         self.content_stack.addWidget(self.library_page)
         self.content_stack.addWidget(self.billing_page)
@@ -1293,24 +1296,32 @@ class BuddyWindow(QWidget):
         self._refresh_suggestions()
 
     def _random_greeting(self):
-        """Personalizes the greeting with the user's saved name, if any —
-        falls back to a friendly generic greeting for a fresh install."""
-        name = (core.get_profile().get("name") or "").strip()
-        if name:
-            return random.choice([
-                f"Hi {name}, what's on your mind?",
-                f"Hi, how can I help you {name}?",
-                f"Let's dive in, {name}",
-                f"Welcome back, {name}!",
-                "Ready when you are",
-            ])
+        """Greets the user by first name and time of day. The very first chat after
+        onboarding gets a proper welcome instead of a generic (or "Welcome back!") line."""
+        profile = core.get_profile()
+        name = (profile.get("name") or "").strip()
+        first = name.split()[0] if name else ""
+        hour = datetime.now().hour
+        part = ("Good morning" if 5 <= hour < 12 else "Good afternoon" if 12 <= hour < 17
+                else "Good evening" if 17 <= hour < 22 else "Hey, night owl")
+        if not profile.get("has_seen_intro_tip"):  # first run: the intro tip has not been shown yet
+            return (f"Welcome to Buddy, {first}! 👋 What should we do first?" if first
+                    else "Welcome to Buddy! 👋 What should we do first?")
+        who = f", {first}" if first else ""
         return random.choice([
-            "Hi there, what's on your mind?",
-            "Hi, how can I help you today?",
-            "Let's dive in",
-            "Welcome back!",
-            "Ready when you are",
+            f"{part}{who}! What's on your mind?",
+            f"Hi{who}, how can I help?",
+            f"Let's dive in{who}",
+            f"{part}{who}. Ready when you are",
+            f"Welcome back{who}!",
         ])
+
+    def _after_onboarding(self):
+        """Onboarding just saved the user's name: greet them by it, then show the one-time tip."""
+        self.show_chat_view()
+        if hasattr(self, "greeting"):
+            self.greeting.setText(self._random_greeting())
+        QTimer.singleShot(500, self._maybe_show_intro_tip)
 
     def _new_chat(self):
         self.current_conversation_id = None

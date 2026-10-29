@@ -229,7 +229,8 @@ def test_code_tools_safety_and_undo(tmp_path, monkeypatch):
     assert "Restored" in c.code_undo(str(f)) and f.read_text() == "x = 2\n"
     assert "won't touch" in _perm(c.code_write, "/etc/hosts", "x")
     assert "sudo" in c.code_run(str(tmp_path), "sudo ls")
-    assert c.code_run(str(tmp_path), "sleep 30", timeout=5).startswith("TIMED OUT")
+    sleeper = '"%s" -c "import time; time.sleep(30)"' % __import__("sys").executable   # `sleep` does not exist on Windows
+    assert c.code_run(str(tmp_path), sleeper, timeout=5).startswith("TIMED OUT")
     assert "exit code 0" in c.code_run(str(tmp_path), "echo hi")
 
 

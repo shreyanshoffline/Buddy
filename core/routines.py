@@ -179,4 +179,4 @@ def context_line(now=None, sessions=None):
         return ""
     names = ", ".join(n for _, n in (h["item"] for h in hs[:4]))
     return "Routine: around %s on %s this user usually uses %s." % (
-        now.strftime("%-I:%M %p"), "weekends" if now.weekday() >= 5 else "weekdays", names)
+        now.strftime("%I:%M %p").lstrip("0"), "weekends" if now.weekday() >= 5 else "weekdays", names)

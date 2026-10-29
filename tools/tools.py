@@ -61,7 +61,7 @@ except Exception:
 try:
     import requests as _requests
     HAS_REQUESTS = True
-except ImportError:
+except Exception:
     HAS_REQUESTS = False
 
 
@@ -71,7 +71,7 @@ try:
     from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
     HAS_GMAIL = True
-except ImportError:
+except Exception:
     HAS_GMAIL = False
 
 
