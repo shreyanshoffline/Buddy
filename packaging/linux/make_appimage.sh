@@ -31,5 +31,6 @@ if [ ! -x "$TOOL" ]; then
 fi
 mkdir -p "$ROOT/dist"
 # --appimage-extract-and-run: CI runners have no FUSE
-ARCH="$ARCH" "$TOOL" --appimage-extract-and-run "$APPDIR" "$ROOT/dist/Buddy-${VERSION}-linux-${ARCH}.AppImage"
+export ARCH
+"$TOOL" --appimage-extract-and-run "$APPDIR" "$ROOT/dist/Buddy-${VERSION}-linux-${ARCH}.AppImage"
 echo "created dist/Buddy-${VERSION}-linux-${ARCH}.AppImage"

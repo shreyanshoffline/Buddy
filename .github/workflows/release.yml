@@ -102,7 +102,7 @@ jobs:
           python packaging/macos/make_dmg.py --app build/bundle/Buddy.app --icon build/icons/Buddy.icns \
             --out "dist/Buddy-${VERSION}-macos-${{ matrix.label }}.dmg"
       - name: Verify the DMG (mount, copy the app out, check it, launch the copy)
-        run: packaging/macos/verify_dmg.sh "dist/Buddy-${VERSION}-macos-${{ matrix.label }}.dmg" "${{ matrix.cpu }}" "$VERSION"
+        run: bash packaging/macos/verify_dmg.sh "dist/Buddy-${VERSION}-macos-${{ matrix.label }}.dmg" "${{ matrix.cpu }}" "$VERSION"
       - name: Sign + notarize the DMG (only with Apple credentials)
         if: env.HAS_APPLE_CERT == 'true'
         env:
@@ -230,9 +230,9 @@ jobs:
           path: ${{ github.workspace }}/.nuitka-cache
           key: nuitka-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: AppImage
-        run: packaging/linux/make_appimage.sh "$VERSION" x86_64
+        run: bash packaging/linux/make_appimage.sh "$VERSION" x86_64
       - name: .deb (also the ChromeOS installer)
-        run: packaging/linux/make_deb.sh "$VERSION" amd64
+        run: bash packaging/linux/make_deb.sh "$VERSION" amd64
       - name: Test the AppImage (launch the finished file)
         run: |
           chmod +x dist/*.AppImage

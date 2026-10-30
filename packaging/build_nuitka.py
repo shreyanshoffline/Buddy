@@ -195,7 +195,9 @@ def smoke_test(bundle: Path) -> None:
     print(f"==> smoke test: {exe}", flush=True)
     result = subprocess.run([str(exe), "--smoke-test", f"--smoke-out={out_file}"], cwd=bundle.parent,
                             env=isolated_env(), capture_output=True, text=True, timeout=240)
-    verdict = out_file.read_text(encoding="utf-8") if out_file.exists() else "(no result file written)"
+    verdict = (out_file.read_text(encoding="utf-8") if out_file.exists() else
+               "(no result file written: the app exited before the smoke test ran. Read the output above; "
+               "this is almost always an import-time crash or a library calling sys.exit())")
     print(result.stdout, result.stderr, verdict, sep="\n")
     if result.returncode != 0 or "SMOKE OK" not in verdict:
         raise SystemExit(f"Smoke test FAILED (exit code {result.returncode}): {verdict.strip()}")

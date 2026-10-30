@@ -354,6 +354,64 @@ class SmokeTestFlagTests(unittest.TestCase):
         self.assertIn("SMOKE OK", result.stdout)
 
 
+class ReleaseRunRegressionTests(unittest.TestCase):
+    """Real failures from the first full release run, pinned so they cannot come back."""
+
+    def test_import_survives_a_library_that_calls_sys_exit(self):
+        # Linux run: pyautogui -> mouseinfo called sys.exit() because tkinter is not in the bundle, so
+        # the app died at import, before the smoke test could write its result.
+        fake = Path(tempfile.mkdtemp())
+        (fake / "pyautogui.py").write_text("import sys\nprint('NOTE: You must install tkinter')\nsys.exit()\n")
+        env = dict(os.environ, PYTHONPATH=str(fake) + os.pathsep + str(ROOT), BUDDY_DATA_DIR=tempfile.mkdtemp())
+        result = subprocess.run([sys.executable, "-c", "import tools.tools as t; print('HAS=%s' % t.HAS_PYAUTOGUI)"],
+                                cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("HAS=False", result.stdout)
+
+    def test_workflow_runs_shell_scripts_through_bash(self):
+        # macOS run: "packaging/macos/verify_dmg.sh: Permission denied" (git had no executable bit)
+        text = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if re.search(r"packaging/[\w/.-]+\.sh", line) and "run:" in line:
+                self.assertIn("run: bash packaging/", line, line)
+
+    @unittest.skipUnless(__import__("shutil").which("git") and (ROOT / ".git").exists(), "needs a git checkout")
+    def test_shell_scripts_are_executable_in_git(self):
+        out = subprocess.run(["git", "ls-files", "-s", "packaging"], cwd=ROOT, capture_output=True, text=True).stdout
+        modes = {line.split()[-1]: line.split()[0] for line in out.splitlines()}
+        scripts = {p: m for p, m in modes.items() if p.endswith(".sh")}
+        self.assertTrue(scripts)
+        self.assertEqual({p: m for p, m in scripts.items() if m != "100755"}, {})
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and __import__("shutil").which("dpkg-deb"), "needs dpkg-deb")
+    def test_deb_script_builds_a_complete_package(self):
+        from PIL import Image
+        root = Path(tempfile.mkdtemp())
+        shutil = __import__("shutil")
+        shutil.copytree(ROOT / "packaging" / "linux", root / "packaging" / "linux")
+        (root / "build" / "bundle" / "Buddy").mkdir(parents=True)
+        app = root / "build" / "bundle" / "Buddy" / "Buddy"
+        app.write_text("#!/bin/sh\n")
+        app.chmod(0o755)
+        icons = root / "build" / "icons" / "icons"
+        icons.mkdir(parents=True)
+        for size in (16, 24, 32, 48, 64, 128, 256, 512):
+            Image.new("RGBA", (size, size), (0, 0, 255, 255)).save(icons / f"{size}.png")
+        subprocess.run(["bash", str(root / "packaging/linux/make_deb.sh"), "9.9.9", "amd64"], check=True, capture_output=True)
+        deb = root / "dist" / "Buddy-9.9.9-linux-amd64.deb"
+        listing = subprocess.run(["dpkg-deb", "-c", str(deb)], capture_output=True, text=True).stdout
+        for want in ("opt/buddy/Buddy", "usr/bin/buddy", "applications/buddy.desktop", "apps/buddy.png"):
+            self.assertIn(want, listing)
+        info = subprocess.run(["dpkg-deb", "-I", str(deb)], capture_output=True, text=True).stdout
+        self.assertIn("Package: buddy-assistant", info)
+        self.assertIn("libxcb-cursor0", info)
+
+    def test_ci_runs_lint_and_the_packaging_dry_run(self):
+        text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for needle in ("actionlint", "shellcheck", "packaging/linux/dry_run.sh"):
+            self.assertIn(needle, text)
+
+
 class WindowsCompatTests(unittest.TestCase):
     """Windows bugs that CI on Linux can still catch, because they are logic, not OS calls."""
 

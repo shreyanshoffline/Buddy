@@ -52,16 +52,17 @@ try:
     import pyautogui
     pyautogui.FAILSAFE = True
     HAS_PYAUTOGUI = True
-except Exception:
-    # PyAutoGUI can raise platform/display errors (for example KeyError when
-    # DISPLAY is unset on Linux) during import, even when installed.
+except (Exception, SystemExit):
+    # PyAutoGUI can raise platform/display errors (KeyError when DISPLAY is unset on Linux) during
+    # import, and its MouseInfo helper calls sys.exit() when tkinter is missing (the packaged app
+    # deliberately ships without tkinter). SystemExit is not an Exception, so catch it explicitly.
     pyautogui = None
     HAS_PYAUTOGUI = False
 
 try:
     import requests as _requests
     HAS_REQUESTS = True
-except Exception:
+except (Exception, SystemExit):
     HAS_REQUESTS = False
 
 
@@ -71,7 +72,7 @@ try:
     from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
     HAS_GMAIL = True
-except Exception:
+except (Exception, SystemExit):
     HAS_GMAIL = False
 
 

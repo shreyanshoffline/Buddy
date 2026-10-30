@@ -20,6 +20,8 @@ GitHub builds everything. You do not need a Mac, a Windows PC and a Linux box.
 | Debian/Ubuntu/Mint, ChromeOS | `Buddy-<ver>-linux-amd64.deb` | double-click; ChromeOS: turn on Linux (Settings > Developers) first |
 
 Also in the release: `Buddy-macos-<cpu>-<ver>.zip` is **only** for Buddy's in-app updater. Do not hand it to people. Each file has a `.sha256`.
+Quick checks run on every push (`ci.yml` > packaging-checks): actionlint on the workflows, shellcheck on the scripts, and `packaging/linux/dry_run.sh`, which builds and launches a stand-in .deb and AppImage in about a minute, so mistakes surface before the 1.5-hour build.
+
 Linux arm64 is not built: Nuitka's linker overflows on AArch64 for an app this size, and PySide6's arm64 wheels need glibc 2.39 anyway (so no ARM Chromebooks).
 
 ## 3. What CI proves before anything is published

@@ -38,3 +38,20 @@ jobs:
         env:
           BUDDY_DATA_DIR: ${{ runner.temp }}/buddy-test-data
         run: python -m pytest -q tests
+
+  # Seconds-to-minutes checks that catch workflow/script mistakes BEFORE a 1.5-hour release build.
+  packaging-checks:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip && python -m pip install actionlint-py shellcheck-py Pillow
+      - name: Lint the workflows (syntax, expressions, contexts)
+        run: actionlint .github/workflows/release.yml .github/workflows/ci.yml
+      - name: Lint the shell scripts
+        run: shellcheck -S warning packaging/macos/verify_dmg.sh packaging/linux/*.sh
+      - name: Dry-run the Linux packaging (.deb + AppImage) with a stand-in app
+        run: bash packaging/linux/dry_run.sh
