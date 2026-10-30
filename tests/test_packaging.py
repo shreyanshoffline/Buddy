@@ -338,6 +338,131 @@ class DmgVerifyScriptTests(unittest.TestCase):
         self.assertEqual(subprocess.run(["bash", "-n", "packaging/macos/verify_dmg.sh"], cwd=ROOT).returncode, 0)
 
 
+@unittest.skipIf(os.name == "nt" or not __import__("shutil").which("bash"), "needs bash")
+class VerifyDmgBehaviourTests(unittest.TestCase):
+    """Runs the REAL verify_dmg.sh with stand-ins for the macOS-only tools (hdiutil, lipo, codesign,
+    ditto, PlistBuddy) against a fake mounted DMG. The default layout is exactly what dmgbuild 1.6.7
+    produced in CI (hidden .background.tiff at the top), which the first version of the script rejected."""
+
+    SHIMS = {
+        "hdiutil": """#!/bin/bash
+if [ "$1" = attach ]; then
+  while [ $# -gt 0 ]; do [ "$1" = -mountpoint ] && MP="$2"; shift; done
+  cp -a "$FAKE_TREE"/. "$MP"/
+fi
+exit 0
+""",
+        "ditto": '#!/bin/bash\ncp -a "$1" "$2"\n',
+        "lipo": '#!/bin/bash\necho "$FAKE_ARCH"\n',
+        "codesign": "#!/bin/bash\nexit ${FAKE_CODESIGN_EXIT:-0}\n",
+        "plistbuddy": """#!/usr/bin/env python3
+import plistlib, sys
+key = sys.argv[2].replace("Print :", "")
+with open(sys.argv[3], "rb") as handle:
+    info = plistlib.load(handle)
+if key not in info:
+    sys.exit(1)
+print(info[key])
+""",
+    }
+
+    def setUp(self):
+        from PIL import Image
+        self.Image = Image
+        self.tmp = Path(tempfile.mkdtemp())
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        for name, body in self.SHIMS.items():
+            (self.bin / name).write_text(body)
+            (self.bin / name).chmod(0o755)
+        self.tree = self.tmp / "tree"
+        app = self.tree / "Buddy.app" / "Contents"
+        (app / "MacOS").mkdir(parents=True)
+        (app / "Resources").mkdir()
+        import plistlib
+        (app / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleShortVersionString": "9.9.9", "CFBundleIdentifier": "com.hackclub.buddy",
+            "NSMicrophoneUsageDescription": "Buddy listens when you talk to it.", "CFBundleIconFile": "Buddy.icns"}))
+        (app / "Resources" / "Buddy.icns").write_bytes(b"icns")
+        self.exe = app / "MacOS" / "Buddy"
+        self.set_app('#!/bin/bash\nfor a in "$@"; do case "$a" in --smoke-out=*) echo "SMOKE OK" > "${a#--smoke-out=}";; esac; done\n')
+        os.symlink("/Applications", self.tree / "Applications")
+        (self.tree / ".DS_Store").write_bytes(b"\0" * 64)
+        (self.tree / ".VolumeIcon.icns").write_bytes(b"icns")
+        self.set_background(".background.tiff", (205, 230, 252))
+        (self.tmp / "fake.dmg").write_bytes(b"dmg")
+
+    def set_app(self, script):
+        self.exe.write_text(script)
+        self.exe.chmod(0o755)
+
+    def set_background(self, relpath, colour):
+        for old in list(self.tree.glob(".background*")):
+            shutil = __import__("shutil")
+            shutil.rmtree(old) if old.is_dir() else old.unlink()
+        if relpath:
+            target = self.tree / relpath
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self.Image.new("RGB", (660, 400), colour).save(target, format="TIFF" if relpath.endswith("tiff") else "PNG")
+
+    def run_script(self, arch="arm64", version="9.9.9", **extra):
+        env = dict(os.environ, PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}", FAKE_TREE=str(self.tree),
+                   FAKE_ARCH=extra.pop("fake_arch", "arm64"), PLISTBUDDY=str(self.bin / "plistbuddy"), **extra)
+        result = subprocess.run(["bash", str(ROOT / "packaging/macos/verify_dmg.sh"), str(self.tmp / "fake.dmg"), arch, version],
+                                env=env, capture_output=True, text=True, timeout=60)
+        return result.returncode, result.stdout + result.stderr
+
+    def test_real_dmgbuild_layout_passes(self):
+        code, out = self.run_script()
+        self.assertEqual(code, 0, out)
+        self.assertIn("VERIFY OK", out)
+        self.assertIn(".background.tiff", out)
+
+    def test_older_background_folder_layout_also_passes(self):
+        self.set_background(".background/dmg_background.png", (205, 230, 252))
+        code, out = self.run_script()
+        self.assertEqual(code, 0, out)
+
+    def test_missing_background_fails_clearly(self):
+        self.set_background(None, None)
+        code, out = self.run_script()
+        self.assertNotEqual(code, 0)
+        self.assertIn("background image is missing", out)
+
+    def test_wrong_colour_background_fails(self):
+        self.set_background(".background.tiff", (20, 20, 20))
+        code, out = self.run_script()
+        self.assertNotEqual(code, 0)
+        self.assertIn("not the light-blue artwork", out)
+
+    def test_wrong_cpu_fails(self):
+        code, out = self.run_script(arch="x86_64", fake_arch="arm64")
+        self.assertNotEqual(code, 0)
+        self.assertIn("expected x86_64", out)
+
+    def test_wrong_version_fails(self):
+        code, out = self.run_script(version="1.2.3")
+        self.assertNotEqual(code, 0)
+        self.assertIn("version", out)
+
+    def test_broken_signature_fails(self):
+        code, out = self.run_script(FAKE_CODESIGN_EXIT="1")
+        self.assertNotEqual(code, 0)
+        self.assertIn("signature invalid", out)
+
+    def test_app_that_does_not_start_fails(self):
+        self.set_app("#!/bin/bash\nexit 3\n")
+        code, out = self.run_script()
+        self.assertNotEqual(code, 0)
+        self.assertIn("did not start", out)
+
+    def test_missing_applications_shortcut_fails(self):
+        (self.tree / "Applications").unlink()
+        code, out = self.run_script()
+        self.assertNotEqual(code, 0)
+        self.assertIn("Applications shortcut", out)
+
+
 class SmokeTestFlagTests(unittest.TestCase):
     def test_result_is_written_to_a_file_for_the_console_less_windows_build(self):
         out = Path(tempfile.mkdtemp()) / "result.txt"
