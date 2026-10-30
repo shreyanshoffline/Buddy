@@ -19,10 +19,14 @@ chmod +x "$T/build/bundle/Buddy/Buddy"
 
 bash "$T/packaging/linux/make_deb.sh" 0.0.0 amd64
 DEB="$T/dist/Buddy-0.0.0-linux-amd64.deb"
+# Capture first, then grep. Never `dpkg-deb -c | grep -q`: grep -q quits at the first match, dpkg-deb's
+# tar then gets a broken pipe, and `set -o pipefail` turns that into a false failure.
+LISTING="$(dpkg-deb -c "$DEB")"
 for want in "opt/buddy/Buddy" "usr/bin/buddy" "applications/buddy.desktop" "apps/buddy.png"; do
-    dpkg-deb -c "$DEB" | grep -q "$want$" || { echo "DRY RUN FAILED: $want missing from the .deb"; exit 1; }
+    grep -q "$want\$" <<<"$LISTING" || { echo "DRY RUN FAILED: $want missing from the .deb"; exit 1; }
 done
-dpkg-deb -I "$DEB" | grep -q "Package: buddy-assistant"
+INFO="$(dpkg-deb -I "$DEB")"
+grep -q "Package: buddy-assistant" <<<"$INFO" || { echo "DRY RUN FAILED: wrong package name"; exit 1; }
 
 bash "$T/packaging/linux/make_appimage.sh" 0.0.0 x86_64
 IMG="$T/dist/Buddy-0.0.0-linux-x86_64.AppImage"

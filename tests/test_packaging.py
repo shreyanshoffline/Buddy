@@ -406,6 +406,19 @@ class ReleaseRunRegressionTests(unittest.TestCase):
         self.assertIn("Package: buddy-assistant", info)
         self.assertIn("libxcb-cursor0", info)
 
+    def test_no_pipe_into_grep_q_under_pipefail(self):
+        # CI run: `dpkg-deb -c deb | grep -q x` failed under `set -o pipefail` (grep -q exits early,
+        # the writer gets SIGPIPE). Capture the output first instead.
+        pipe_into_quiet_grep = re.compile(r"\|\s*grep\s+(-[a-zA-Z]*q|--quiet)")
+        offenders = []
+        files = list((ROOT / "packaging").rglob("*.sh")) + list((ROOT / ".github/workflows").glob("*.yml"))
+        for f in files:
+            text = f.read_text(encoding="utf-8")
+            if "pipefail" in text or f.suffix == ".yml":
+                offenders += [f"{f.relative_to(ROOT)}: {l.strip()}" for l in text.splitlines()
+                              if pipe_into_quiet_grep.search(l) and not l.strip().startswith("#")]
+        self.assertEqual(offenders, [])
+
     def test_ci_runs_lint_and_the_packaging_dry_run(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         for needle in ("actionlint", "shellcheck", "packaging/linux/dry_run.sh"):
