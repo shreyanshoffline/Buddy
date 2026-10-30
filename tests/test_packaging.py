@@ -198,7 +198,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_release_builds_skip_tests_but_keep_the_smoke_test(self):
         invocations = [l for l in self.text.splitlines() if "packaging/build_nuitka.py" in l]
-        self.assertGreaterEqual(len(invocations), 4)
+        self.assertEqual(len(invocations), 3)      # mac (x2 via matrix), windows, linux
         for line in invocations:
             self.assertIn("--skip-tests", line)
             self.assertIn("--smoke-test", line)
@@ -231,9 +231,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("apt-get install -y \"./$DEB\"", steps)
         self.assertIn("libegl1", steps)
 
-    def test_arm_linux_never_blocks_the_release(self):
-        self.assertTrue(self.jobs["linux-arm64"]["continue-on-error"])
-        self.assertNotIn("linux-arm64", self.jobs["final-check"]["needs"])
+    def test_no_linux_arm64_job_and_compiler_cache_is_persisted(self):
+        self.assertNotIn("linux-arm64", self.jobs)             # its generated code overflows AArch64 branch range
+        self.assertIn("NUITKA_CACHE_DIR", self.text)
+        self.assertEqual(self.text.count("actions/cache/restore@v4"), 3)
+        self.assertEqual(self.text.count("actions/cache/save@v4"), 3)
+
+    def test_playwright_node_is_not_included_twice_on_macos_and_linux(self):
+        import build_nuitka
+        for system, expect in (("Darwin", True), ("Linux", True), ("Windows", False)):
+            with mock.patch.object(build_nuitka.platform, "system", lambda s=system: s):
+                cmd = build_nuitka.nuitka_command({"ico": Path("x.ico"), "icns": Path("x.icns")})
+            self.assertEqual("--noinclude-data-files=playwright/driver/node" in cmd, expect, system)
 
 
 class BuildScriptTests(unittest.TestCase):

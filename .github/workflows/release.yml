@@ -5,7 +5,6 @@ name: Buddy release
 #   macOS Intel          Buddy-<ver>-macos-intel.dmg
 #   Windows 10/11 x64    Buddy-Setup-<ver>-x64.exe
 #   Linux x86_64         Buddy-<ver>-linux-x86_64.AppImage + Buddy-<ver>-linux-amd64.deb  (.deb = ChromeOS too)
-#   Linux arm64 (optional, best effort)
 # Pushing a tag v<version> builds AND publishes a GitHub Release.
 # Run workflow by hand (Actions > Buddy release > Run workflow): builds only; files are in the run's Artifacts.
 # The full test suite runs in ci.yml; every job here still launches the finished app (--smoke-test).
@@ -20,6 +19,8 @@ on:
   workflow_dispatch:
 
 env:
+  NUITKA_CACHE_DIR: ${{ github.workspace }}/.nuitka-cache   # Nuitka's ccache lives here and is saved between runs
+  CCACHE_MAXSIZE: 2G
   PYTHON_VERSION: "3.12"        # Nuitka treats 3.14 as experimental; 3.12 is the tested build Python
 
 jobs:
@@ -50,7 +51,7 @@ jobs:
           - { runner: macos-15,       cpu: arm64,  label: apple-silicon }
           - { runner: macos-15-intel, cpu: x86_64, label: intel }
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
+    timeout-minutes: 240
     env:
       VERSION: ${{ needs.check.outputs.version }}
       MACOSX_DEPLOYMENT_TARGET: "13.0"
@@ -78,10 +79,23 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
           security set-key-partition-list -S apple-tool:,apple: -k "$PASS" "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+      - name: Restore compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.nuitka-cache
+          key: nuitka-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          restore-keys: |
+            nuitka-${{ runner.os }}-${{ runner.arch }}-
       - name: Build Buddy.app (Nuitka) + smoke test
         env:
           SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY || '-' }}
         run: python packaging/build_nuitka.py --skip-tests --smoke-test --zip
+      - name: Save compiler cache (even after a failed build, so the retry is fast)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.nuitka-cache
+          key: nuitka-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Make the DMG
         run: |
           mkdir -p dist
@@ -118,7 +132,7 @@ jobs:
   windows:
     needs: check
     runs-on: windows-2022
-    timeout-minutes: 150
+    timeout-minutes: 240
     env:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
@@ -131,8 +145,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r packaging/requirements-build.txt
           choco install innosetup -y --no-progress
+      - name: Restore compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.nuitka-cache
+          key: nuitka-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          restore-keys: |
+            nuitka-${{ runner.os }}-${{ runner.arch }}-
       - name: Build Buddy (Nuitka) + smoke test
         run: python packaging/build_nuitka.py --skip-tests --smoke-test
+      - name: Save compiler cache (even after a failed build, so the retry is fast)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.nuitka-cache
+          key: nuitka-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Build the installer
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" packaging\windows\Buddy.iss
@@ -169,7 +196,7 @@ jobs:
   linux:
     needs: check
     runs-on: ubuntu-22.04
-    timeout-minutes: 150
+    timeout-minutes: 240
     env:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
@@ -187,8 +214,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+      - name: Restore compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.nuitka-cache
+          key: nuitka-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          restore-keys: |
+            nuitka-${{ runner.os }}-${{ runner.arch }}-
       - name: Build Buddy (Nuitka) + smoke test
         run: xvfb-run -a python packaging/build_nuitka.py --skip-tests --smoke-test
+      - name: Save compiler cache (even after a failed build, so the retry is fast)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.nuitka-cache
+          key: nuitka-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: AppImage
         run: packaging/linux/make_appimage.sh "$VERSION" x86_64
       - name: .deb (also the ChromeOS installer)
@@ -210,39 +250,6 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: release-linux-x86_64
-          path: |
-            dist/*.AppImage
-            dist/*.deb
-          if-no-files-found: error
-
-  # Best effort: PySide6 ships Linux arm64 wheels only for glibc 2.39+, so this needs Ubuntu 24.04.
-  # A failure here never blocks the release.
-  linux-arm64:
-    needs: check
-    runs-on: ubuntu-24.04-arm
-    continue-on-error: true
-    timeout-minutes: 150
-    env:
-      VERSION: ${{ needs.check.outputs.version }}
-      MIN_GLIBC: "2.39"
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: System packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y patchelf ccache build-essential xvfb dpkg-dev libgl1 libegl1 libfontconfig1 \
-            libdbus-1-3 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
-            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libpulse0
-      - run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt -r packaging/requirements-build.txt
-      - run: xvfb-run -a python packaging/build_nuitka.py --skip-tests --smoke-test
-      - run: packaging/linux/make_appimage.sh "$VERSION" aarch64
-      - run: packaging/linux/make_deb.sh "$VERSION" arm64
-      - uses: actions/upload-artifact@v7
-        with:
-          name: release-linux-arm64
           path: |
             dist/*.AppImage
             dist/*.deb

@@ -128,6 +128,12 @@ def nuitka_command(icons: dict, jobs: int | None = None) -> list:
         "--include-data-dir=" + str(ROOT / "knowledge") + "=knowledge",
         "--include-data-dir=" + str(ROOT / "gui" / "assets") + "=gui/assets",
     ]
+    if not windows:
+        # macOS/Linux: the driver's extensionless `node` binary was added twice, once as a data file by
+        # --include-package-data=playwright and once as an executable by Nuitka's playwright plugin:
+        #   FATAL: data file ... 'playwright/driver/node' conflicts with exe 'playwright/driver/node'
+        # (Windows skips it because node.exe is recognised as a binary). Keep only the plugin's copy.
+        command.append("--noinclude-data-files=playwright/driver/node")
     if macos:
         command += ["--macos-create-app-bundle", "--macos-app-name=Buddy", f"--macos-app-version={APP_VERSION}",
                     f"--macos-signed-app-name={BUNDLE_ID}"]

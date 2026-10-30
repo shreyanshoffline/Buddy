@@ -20,7 +20,7 @@ def retina_background(workdir: Path) -> Path:
     """Combine 1x + 2x PNGs into one multi-resolution TIFF so the art is crisp on Retina Macs."""
     one, two = HERE / "dmg_background.png", HERE / "dmg_background@2x.png"
     if shutil.which("tiffutil"):
-        out = workdir / "background.tiff"
+        out = workdir / "dmg_background.tiff"
         for flag in ("-cathidpicheck", "-cat"):      # strict check first, then the lenient join
             result = subprocess.run(["tiffutil", flag, str(one), str(two), "-out", str(out)], capture_output=True)
             if result.returncode == 0 and out.exists():

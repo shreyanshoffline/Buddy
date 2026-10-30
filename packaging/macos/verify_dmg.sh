@@ -16,7 +16,7 @@ echo "== DMG layout"; ls -la "$MNT"
 [ -L "$MNT/Applications" ] && [ "$(readlink "$MNT/Applications")" = "/Applications" ] || fail "Applications shortcut missing"
 [ -d "$MNT/.background" ] || fail "custom light-blue background folder is missing"
 [ -f "$MNT/.DS_Store" ] || fail "Finder window layout (.DS_Store) is missing"
-[ -f "$MNT/.background/dmg_background.png" ] || [ -f "$MNT/.background/dmg_background@2x.png" ] || fail "custom background image is missing"
+ls "$MNT"/.background/dmg_background.* >/dev/null 2>&1 || fail "custom background image is missing (found: $(ls "$MNT/.background"))"
 echo "custom background + window layout present: $(ls "$MNT/.background")"
 
 echo "== copy out like drag-to-Applications"
@@ -39,7 +39,7 @@ echo "== signature"
 codesign --verify --deep --strict "$APP" || fail "code signature invalid after copying out of the DMG"
 
 echo "== launch the copied app"
-export BUDDY_DATA_DIR="$WORK/data" BUDDY_SMOKE_TEST=1
+export BUDDY_DATA_DIR="$WORK/data" BUDDY_SMOKE_TEST=1 QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
 "$APP/Contents/MacOS/Buddy" --smoke-test --smoke-out="$WORK/smoke.txt" || true
 cat "$WORK/smoke.txt" 2>/dev/null || true
 grep -q "SMOKE OK" "$WORK/smoke.txt" 2>/dev/null || fail "installed app did not start"
