@@ -34,6 +34,20 @@ class _StatusWorker(QThread):
         self.done.emit(tier)
 
 
+class _KeyCheckWorker(QThread):
+    """Checks a pasted AI key against its server without freezing the window."""
+    done = Signal(bool, str)
+
+    def __init__(self, api_key):
+        super().__init__()
+        self.api_key = api_key
+
+    def run(self):
+        import models
+        ok, message = models.validate_api_key(self.api_key)
+        self.done.emit(ok, message)
+
+
 class _HackClubPollWorker(QThread):
     """Checks the billing backend for the OAuth result without blocking Qt."""
     result = Signal(dict)
@@ -70,6 +84,8 @@ class BillingPage(CardPage):
         self.stack.addWidget(self.overview_page)
 
         self.plan_pages = {}
+        self.plan_detail_buttons = {}      # plan key -> the button on that plan's detail page
+        self._key_worker = None
         self.hacky_signin_button = None
         self.hacky_api_field = None
         self.hacky_api_save_button = None
@@ -106,11 +122,11 @@ class BillingPage(CardPage):
                 "title": "Hacky Buddy Plan",
                 "subtitle": "Free community access for Hack Club members",
                 "tag": "Hack Club",
-                "details": "Sign in with Hack Club and use your verified API key to activate Buddy access without paying.",
+                "details": "Paste your free Hack Club AI key to activate Buddy access without paying. Signing in with Hack Club is optional.",
                 "price": "Free with Hack Club",
                 "features": [
-                    "Hack Club verification required",
-                    "Use your verified Hack Club AI key",
+                    "Your own free Hack Club AI key (ai.hackclub.com)",
+                    "Key is checked before it is saved",
                     "Buddy access with optional community perks",
                     "Works for eligible students and club members",
                 ],
@@ -203,14 +219,18 @@ class BillingPage(CardPage):
 
     def _on_status_loaded(self, tier):
         profile = core.get_profile()
-        local_hacky = bool(profile.get("hackclub_verified") and profile.get("byo_api_key"))
-        if local_hacky and (tier or "free").lower() == "free":
+        # Pro/Max come from the billing server. Hacky Buddy is a LOCAL choice: keep it only if the user
+        # picked it (and still has a key). Having a saved key must never force someone onto Hacky;
+        # that is what made Free impossible to switch back to.
+        tier = (tier or "free").lower()
+        if tier == "free" and (profile.get("subscription_tier") or "free").lower() == "hacky" and profile.get("byo_api_key"):
             tier = "hacky"
         core.update_profile(subscription_tier=tier)
-        self.selected_plan = (tier or "free").lower()
+        self.selected_plan = tier
         self.status_label.setText(TIER_LABELS.get(self.selected_plan, "Free Plan"))
         if hasattr(self, "plan_grid_layout"):
             self._rebuild_plan_grid()
+        self._sync_plan_buttons()
 
     def _build_plan_grid(self):
         self._plans = [
@@ -465,7 +485,7 @@ class BillingPage(CardPage):
             ai_link.setStyleSheet(f"color: {PRIMARY_COLOR}; font-size: 12px; background: transparent; border: none;")
             link_layout.addWidget(ai_link)
 
-            api_note = QLabel("Once signed in and verified, go to the Hack Club AI dashboard and copy your API key into Settings.")
+            api_note = QLabel("Open Hack Club AI, create a free API key, and paste it below. Signing in with Hack Club is optional.")
             api_note.setWordWrap(True)
             api_note.setStyleSheet(f"color: {CARD_SUBTITLE_COLOR}; font-size: 11px; background: transparent; border: none;")
             link_layout.addWidget(api_note)
@@ -485,7 +505,6 @@ class BillingPage(CardPage):
             self.hacky_api_field.setEchoMode(QLineEdit.Password)
             self.hacky_api_field.setPlaceholderText("Hack Club AI API key")
             self.hacky_api_field.setStyleSheet(f"QLineEdit {{ background: {SECTION_CARD_BG}; border: 1px solid {BORDER_COLOR}; border-radius: 8px; padding: 9px; color: {TEXT_COLOR_DARK}; }}")
-            self.hacky_api_field.setVisible(bool(core.get_profile().get("hackclub_verified")))
             page_layout.addWidget(self.hacky_api_field)
 
             self.hacky_api_save_button = QPushButton("Save API key")
@@ -496,25 +515,13 @@ class BillingPage(CardPage):
                 QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
             """)
             self.hacky_api_save_button.clicked.connect(self._save_hacky_api_key)
-            self.hacky_api_save_button.setVisible(bool(core.get_profile().get("hackclub_verified")))
             page_layout.addWidget(self.hacky_api_save_button)
         else:
-            is_selected = self.selected_plan == key
-            action_btn.setText("Selected" if is_selected else "Select plan")
-            if is_selected:
-                action_btn.setStyleSheet(f"""
-                    QPushButton {{ background: {ACTIVE_BG_COLOR}; color: {PRIMARY_COLOR}; border: 1px solid {PRIMARY_COLOR};
-                        border-radius: 10px; padding: 10px 14px; font-size: 12px; font-weight: 700; }}
-                    QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
-                """)
-                action_btn.clicked.connect(lambda _, k=key: self._selected_plan_click(k))
-            else:
-                action_btn.setStyleSheet(f"""
-                    QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none;
-                        border-radius: 10px; padding: 10px 14px; font-size: 12px; font-weight: 700; }}
-                    QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
-                """)
-                action_btn.clicked.connect(lambda _, k=key: self._select_plan(k))
+            # Built ONCE, so it must not bake in "Selected": the label/behaviour follow the current plan.
+            self.plan_detail_buttons[key] = action_btn
+            action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            action_btn.clicked.connect(lambda _, k=key: self._plan_button_clicked(k))
+            self._style_plan_button(key)
         page_layout.addWidget(action_btn)
         page_layout.addStretch()
         return page
@@ -575,24 +582,36 @@ class BillingPage(CardPage):
         )
         if self.hacky_signin_button:
             self._update_hacky_button()
-        if self.hacky_api_field:
-            self.hacky_api_field.setVisible(verified)
-        if self.hacky_api_save_button:
-            self.hacky_api_save_button.setVisible(verified)
 
     def _save_hacky_api_key(self):
         profile = core.get_profile()
-        if not profile.get("hackclub_verified"):
-            QMessageBox.warning(self, "Verification required", "Verify your Hack Club account before saving an API key.")
-            return
-        api_key = self.hacky_api_field.text().strip() if self.hacky_api_field else ""
+        typed = self.hacky_api_field.text().strip() if self.hacky_api_field else ""
+        api_key = typed or (profile.get("byo_api_key") or "").strip()   # empty field: re-use the saved key
         if not api_key:
-            QMessageBox.warning(self, "API key required", "Enter your Hack Club AI API key first.")
+            QMessageBox.warning(self, "API key required", "Paste your Hack Club AI API key first (free at ai.hackclub.com).")
+            return
+        if not typed:
+            self._finish_hacky_key_save(api_key, True, "Using your saved key.")
+            return
+        if self.hacky_api_save_button:
+            self.hacky_api_save_button.setEnabled(False)
+            self.hacky_api_save_button.setText("Checking key…")
+        self._key_worker = _KeyCheckWorker(api_key)
+        self._key_worker.done.connect(lambda ok, message, key=api_key: self._finish_hacky_key_save(key, ok, message))
+        self._key_worker.start()
+
+    def _finish_hacky_key_save(self, api_key, ok, message):
+        if self.hacky_api_save_button:
+            self.hacky_api_save_button.setEnabled(True)
+            self.hacky_api_save_button.setText("Save API key")
+        if not ok:
+            QMessageBox.warning(self, "That key didn't work", f"{message}\n\nNothing was changed.")
             return
         core.update_profile(byo_api_key=api_key, subscription_tier="hacky")
-        self.selected_plan = "hacky"
-        self.status_label.setText("Hacky Buddy Plan")
-        QMessageBox.information(self, "Hacky Buddy enabled", "Your Hack Club API key was saved and Hacky Buddy is now active.")
+        if self.hacky_api_field:
+            self.hacky_api_field.clear()
+        self._select_plan("hacky", persist=False)
+        QMessageBox.information(self, "Hacky Buddy enabled", "Your key works and Hacky Buddy is now active.")
 
     def _create_compare_page(self):
         page = QWidget()
@@ -697,11 +716,42 @@ class BillingPage(CardPage):
         layout.addWidget(button_box)
         return page
 
-    def _select_plan(self, plan_key):
+    def _select_plan(self, plan_key, persist=True):
         self.selected_plan = plan_key
-        core.update_profile(subscription_tier=plan_key)
+        if persist:
+            core.update_profile(subscription_tier=plan_key)
         self.status_label.setText(TIER_LABELS.get(plan_key, "Free Plan"))
         self._rebuild_plan_grid()
+        self._sync_plan_buttons()
+
+    def _plan_button_clicked(self, plan_key):
+        if plan_key == self.selected_plan:
+            self._selected_plan_click(plan_key)
+        else:
+            self._select_plan(plan_key)
+
+    def _style_plan_button(self, plan_key):
+        button = self.plan_detail_buttons.get(plan_key)
+        if button is None:
+            return
+        selected = self.selected_plan == plan_key
+        button.setText("Selected" if selected else "Select plan")
+        if selected:
+            button.setStyleSheet(f"""
+                QPushButton {{ background: {ACTIVE_BG_COLOR}; color: {PRIMARY_COLOR}; border: 1px solid {PRIMARY_COLOR};
+                    border-radius: 10px; padding: 10px 14px; font-size: 12px; font-weight: 700; }}
+                QPushButton:hover {{ background: {HOVER_BG_COLOR}; }}
+            """)
+        else:
+            button.setStyleSheet(f"""
+                QPushButton {{ background: {PRIMARY_COLOR}; color: {ON_PRIMARY_TEXT}; border: none;
+                    border-radius: 10px; padding: 10px 14px; font-size: 12px; font-weight: 700; }}
+                QPushButton:hover {{ background: {PRIMARY_COLOR_DARK}; }}
+            """)
+
+    def _sync_plan_buttons(self):
+        for key in self.plan_detail_buttons:
+            self._style_plan_button(key)
 
     def _selected_plan_click(self, plan_key):
         if plan_key in ("free", "hacky"):

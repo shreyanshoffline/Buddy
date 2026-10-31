@@ -304,20 +304,15 @@ class SettingsPage(CardPage):
             layout.addWidget(text_edit)
             self.inputs[key] = text_edit
 
-        api_label = self._field_label("API Key (overrides the default)")
-        if not self.profile.get("hackclub_verified"):
-            api_label.setText("API Key (Hack Club verification required)")
+        api_label = self._field_label("API Key (Hack Club AI or OpenRouter)")
         layout.addWidget(api_label)
         api_field = QLineEdit()
         raw_key = self.profile.get("byo_api_key")
         api_field.setText(str(raw_key) if raw_key else "")
-        api_field.setPlaceholderText("Enter your own OpenRouter API key...")
+        api_field.setPlaceholderText("Paste your Hack Club AI key (free at ai.hackclub.com) or OpenRouter key")
         api_field.setEchoMode(QLineEdit.Password)
-        api_field.setReadOnly(not bool(self.profile.get("hackclub_verified")))
-        api_field.setProperty("requires_hackclub", True)
-        if not self.profile.get("hackclub_verified"):
-            api_field.setPlaceholderText("Sign in with a verified Hack Club account first")
-            api_field.setToolTip("Only verified Hack Club members can configure a custom API key")
+        api_field.setReadOnly(bool(raw_key))   # empty: type right away. Saved: click to edit.
+        api_field.setToolTip("Hack Club AI keys are free for Hack Club members: ai.hackclub.com")
         api_field.setCursor(Qt.CursorShape.PointingHandCursor)
         api_field.setStyleSheet(FIELD_STYLE)
         api_field.mousePressEvent = lambda event, le=api_field: self.on_box_clicked(event, le)

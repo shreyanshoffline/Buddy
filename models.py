@@ -1,6 +1,7 @@
 from openrouter import OpenRouter
 from dotenv import load_dotenv
 import os
+import re
 import time
 import base64
 import mimetypes
@@ -15,6 +16,40 @@ _client_cache = {"key": None, "client": None}
 
 class ProviderConfigurationError(RuntimeError):
     """A provider is unavailable or missing the configuration it needs."""
+
+
+# Hack Club AI is Buddy's default AI service (its keys start with "sk-hc-"). OpenRouter keys ("sk-or-")
+# keep working. A SERVER_URL in .env always wins, so developers can point Buddy anywhere.
+DEFAULT_SERVER_URL = "https://ai.hackclub.com/proxy/v1"
+OPENROUTER_SERVER_URL = "https://openrouter.ai/api/v1"
+
+NO_KEY_MESSAGE = (
+    "Buddy needs an AI key before it can answer. Get a free Hack Club AI key at ai.hackclub.com, "
+    "then paste it in Settings > API Key (or Plans > Hacky Buddy)."
+)
+BAD_KEY_MESSAGE = (
+    "The AI service rejected Buddy's key. Check the key in Settings > API Key. "
+    "Hack Club AI keys come from ai.hackclub.com; OpenRouter keys start with sk-or-."
+)
+
+
+def server_url_for(api_key=None):
+    """Which AI server a key belongs to."""
+    explicit = (os.getenv("SERVER_URL") or "").strip()
+    if explicit:
+        return explicit
+    if (api_key or "").strip().startswith("sk-or-"):
+        return OPENROUTER_SERVER_URL
+    return DEFAULT_SERVER_URL
+
+
+def looks_like_auth_error(message):
+    """True for the many ways a provider says 'no/invalid key' (401s, missing header, ...)."""
+    low = (message or "").lower()
+    return any(marker in low for marker in (
+        "missing authentication", "no auth credentials", "no cookie auth", "invalid api key",
+        "incorrect api key", "unauthorized", "authentication header", "invalid_api_key",
+    )) or bool(re.search(r"\b401\b", low))
 
 
 class _AttrDict(dict):
@@ -61,7 +96,7 @@ def provider_info():
             "url": (os.getenv("BUDDY_SELF_HOSTED_URL") or "").rstrip("/"),
             "model": os.getenv("BUDDY_SELF_HOSTED_MODEL") or "configured server model",
         }
-    return {"id": "openrouter", "label": "OpenRouter", "url": os.getenv("SERVER_URL") or "", "model": "per-route"}
+    return {"id": "openrouter", "label": "OpenRouter", "url": server_url_for(None), "model": "per-route"}
 
 
 class _LocalChat:
@@ -160,22 +195,27 @@ def _get_client():
 
 def _get_openrouter_client():
     """Return OpenRouter's client using the user's key when available."""
-    api_key = os.getenv("API_KEY")
+    api_key = (os.getenv("API_KEY") or "").strip()
     try:
         # Lazy import: storage.db imports this module for embeddings, so a
         # top-level import here would be circular. By the time this function
         # actually runs, both modules are fully loaded.
         from storage import db
         profile = db.get_profile()
-        custom_key = (profile or {}).get("byo_api_key")
+        custom_key = ((profile or {}).get("byo_api_key") or "").strip()
         if custom_key:
             api_key = custom_key
     except Exception:
         pass  # storage not ready yet (e.g. very first import) — use the env default
 
-    cache_key = ("openrouter", api_key, os.getenv("SERVER_URL", ""))
+    if not api_key:
+        # A fresh install has no .env and no saved key. Say so plainly instead of sending a request
+        # with no Authorization header and showing the provider's "Missing Authentication header".
+        raise ProviderConfigurationError(NO_KEY_MESSAGE)
+    server_url = server_url_for(api_key)
+    cache_key = ("openrouter", api_key, server_url)
     if _client_cache["key"] != cache_key:
-        _client_cache["client"] = OpenRouter(api_key=api_key, server_url=os.getenv("SERVER_URL"))
+        _client_cache["client"] = OpenRouter(api_key=api_key, server_url=server_url)
         _client_cache["key"] = cache_key
     return _client_cache["client"]
 
@@ -217,6 +257,8 @@ def _with_retry(fn, cancel_check=None):
             return fn()
         except Exception as e:
             last_exc = e
+            if looks_like_auth_error(str(e)) and not isinstance(e, ProviderConfigurationError):
+                raise ProviderConfigurationError(BAD_KEY_MESSAGE) from e   # never retry a bad key
             msg = str(e).lower()
             is_rate_limit = "429" in msg or "rate limit" in msg or "too many" in msg
             is_transient = "500" in msg or "502" in msg or "503" in msg or "timeout" in msg
@@ -232,14 +274,16 @@ EMBED_MODEL = "openai/text-embedding-3-small"
 
 
 def validate_api_key(api_key):
-    """Cheap live check used by Settings after the user pastes a key."""
+    """Cheap live check used after the user pastes a key. Returns (ok, message)."""
     key = (api_key or "").strip()
     if not key:
         return False, "No API key entered."
+    server_url = server_url_for(key)
+    model = "google/gemini-2.5-flash-lite" if server_url == OPENROUTER_SERVER_URL else "qwen/qwen3-32b"
     try:
-        client = OpenRouter(api_key=key, server_url=os.getenv("SERVER_URL"))
+        client = OpenRouter(api_key=key, server_url=server_url)
         client.chat.send(
-            model="google/gemini-2.5-flash-lite",
+            model=model,
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=8,
             timeout_ms=12_000,
@@ -247,8 +291,8 @@ def validate_api_key(api_key):
         return True, "Key works."
     except Exception as exc:
         msg = str(exc)
-        if "401" in msg or "unauthorized" in msg.lower():
-            return False, "That key was rejected."
+        if looks_like_auth_error(msg):
+            return False, "That key was rejected. Hack Club AI keys come from ai.hackclub.com."
         if "429" in msg or "rate" in msg.lower():
             return True, "Key accepted (rate limited on the test call)."
         return False, msg[:160]
