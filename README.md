@@ -46,20 +46,23 @@ Chats, settings, and memory use a local SQLite database. Tool access depends on 
 
 > [!WARNING]
 > AI can make mistakes. Review important answers and generated changes. Never paste passwords, API keys, or other secrets into a chat.
-## See Buddy
-These are some Screenshots of the live app after the first release. Look at these to understand the vibe of Buddy before downloading it.
 
-<!-- Example: save a screenshot as docs/images/chat.png, then remove the HTML comment around the image below. -->
-<!-- ![Buddy's chat screen](docs/images/chat.png) -->
+## Screenshots
+These are some screenshots of the live app after the first release. Look at these to understand the vibe of Buddy before downloading it.
 
-<!-- Add more screenshots here, for example the Memory, Talk, or Plugins screens. -->
-<!-- ![Buddy's Memory screen](docs/images/memory.png) -->
-<!-- ![Buddy's Talk screen](docs/images/talk.png) -->
-<!-- ![Buddy's Plugins screen](docs/images/plugins.png) -->
-<!-- ![Buddy's Settings screen](docs/images/settings.png) -->
+<p align="center">
+  <img src="docs/images/chat.png" alt="Buddy's chat screen" width="48%" />
+  <img src="docs/images/memory.png" alt="Buddy's memory screen" width="48%" />
+</p>
+<p align="center">
+  <img src="docs/images/talk.png" alt="Buddy's talk screen" width="48%" />
+  <img src="docs/images/plugins.png" alt="Buddy's plugins screen" width="48%" />
+</p>
+<p align="center">
+  <img src="docs/images/settings.png" alt="Buddy's settings screen" width="48%" />
+</p>
 
-Don't like the color? Change it! There is a dark mode as well as many different soft color options with amazing gradients especially Hack Club Red 
-
+Don't like the color? Change it! There is a dark mode as well as many different soft color options with amazing gradients, especially Hack Club Red.
 ## Download Buddy
 
 Go to [**Releases**](https://github.com/shreyanshoffline/Buddy/releases/latest) and download the installer for your computer:
