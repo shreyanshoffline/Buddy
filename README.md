@@ -57,6 +57,9 @@ These are some Screenshots of the live app after the first release. Look at thes
 <!-- ![Buddy's Talk screen](docs/images/talk.png) -->
 <!-- ![Buddy's Plugins screen](docs/images/plugins.png) -->
 <!-- ![Buddy's Settings screen](docs/images/settings.png) -->
+
+Don't like the color? Change it! There is a dark mode as well as many different soft color options with amazing gradients especially Hack Club Red 
+
 ## Download Buddy
 
 Go to [**Releases**](https://github.com/shreyanshoffline/Buddy/releases/latest) and download the installer for your computer:
